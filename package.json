@@ -1,0 +1,17 @@
+{
+  "name": "pi-qdrant-memory",
+  "version": "0.1.0",
+  "description": "Semantic, cross-session retrieval over durable conversation knowledge for pi.dev, backed by Qdrant.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.19" },
+  "scripts": {
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "@types/node": "^22.0.0"
+  },
+  "pi": { "extensions": ["./src/index.ts"] }
+}
