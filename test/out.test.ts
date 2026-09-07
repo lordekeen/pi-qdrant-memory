@@ -1,0 +1,169 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  message, errorEntry, helpEntry, statusEntry, searchEntry, searchHitView,
+  renderOut, outText, typeRole,
+} from "../src/out.ts";
+import type { OutEntry, OutLine, Span } from "../src/out.ts";
+import type { PointPayload, SearchHit } from "../src/types.ts";
+
+const spanText = (l: OutLine): string => l.spans.map((s: Span) => s.text).join("");
+const roles = (l: OutLine): Array<string | undefined> => l.spans.map((s: Span) => s.role ?? "default");
+
+function payload(type: string, text: string, extra: Partial<PointPayload> = {}): PointPayload {
+  return { type: type as PointPayload["type"], text, project_id: "pi-mem-p", ts: 1, source_kind: "remember_tool", ...extra };
+}
+function hit(p: PointPayload, score: number): SearchHit { return { id: "x", score, payload: p }; }
+
+const health = {
+  mode: "mode2",
+  qdrant: { state: "ok" as const, collection: "pi-mem-abc", points: 3 },
+  embeddings: { state: "ok" as const },
+  detail: {
+    collection: "pi-mem-abc", qdrantUrl: "http://localhost:6333",
+    model: "nomic-embed-text @ http://localhost:8080/v1",
+    dimension: 768, threshold: 0.15, maxResults: 10,
+  },
+};
+
+test("message renders its text verbatim, default role", () => {
+  const e = message("cleared: collection pi-mem-abc reset");
+  const lines = renderOut(e);
+  assert.equal(lines.length, 1);
+  assert.equal(spanText(lines[0]), "cleared: collection pi-mem-abc reset");
+  assert.deepEqual(roles(lines[0]), ["default"]);
+  assert.equal(outText(e), "cleared: collection pi-mem-abc reset");
+});
+
+test("error renders whole line with the error role", () => {
+  const e = errorEntry("error: search failed: down");
+  const lines = renderOut(e);
+  assert.deepEqual(roles(lines[0]), ["error"]);
+});
+
+test("help renders bold title + aligned rows with dim descriptions", () => {
+  const e = helpEntry([
+    { cmd: "qdrant-status", desc: "health" },
+    { cmd: "qdrant-settings", desc: "config" },
+  ]);
+  const lines = renderOut(e);
+  assert.equal(spanText(lines[0]), "commands");
+  assert.deepEqual(roles(lines[0]), ["bold"]);
+  // command column aligned to the longest name + 2
+  assert.equal(spanText(lines[1]), "qdrant-status".padEnd("qdrant-settings".length + 2) + "health");
+  assert.deepEqual(roles(lines[1]), ["default", "dim"]);
+});
+
+test("status collapsed is one card: bold mode + glyph rows", () => {
+  const e = statusEntry(health);
+  const lines = renderOut(e);
+  assert.equal(lines.length, 3);
+  assert.ok(lines.every((l) => l.card), "all collapsed rows are inside the card");
+  assert.equal(spanText(lines[0]), "memory: mode2");
+  assert.deepEqual(roles(lines[0]), ["bold", "default"]);
+  assert.equal(spanText(lines[1]), "qdrant: ✓ reachable · 3 points");
+  assert.deepEqual(roles(lines[1]), ["default", "success", "default"]);
+  assert.equal(spanText(lines[2]), "embeddings: ✓ reachable");
+});
+
+test("status states: NOT reachable uses error role, missing collection warns", () => {
+  const down = statusEntry({
+    ...health, qdrant: { state: "err" }, embeddings: { state: "err" },
+  });
+  const linesDown = renderOut(down);
+  assert.match(spanText(linesDown[1]), /✗ NOT reachable/);
+  assert.equal(roles(linesDown[1]).includes("error"), true);
+  assert.match(spanText(linesDown[2]), /✗ NOT reachable/);
+
+  const missing = statusEntry({
+    ...health, qdrant: { state: "warn", collection: "pi-mem-abc" },
+  });
+  const linesMissing = renderOut(missing);
+  assert.match(spanText(linesMissing[1]), /! collection pi-mem-abc does not exist yet/);
+  assert.equal(roles(linesMissing[1]).includes("warning"), true);
+});
+
+test("status expanded appends detail rows (no API keys)", () => {
+  const lines = renderOut(statusEntry(health), { expanded: true });
+  assert.equal(lines.length, 7); // 3 card rows + 4 detail rows
+  const text = lines.map(spanText).join("\n");
+  assert.match(text, /collection: pi-mem-abc/);
+  assert.match(text, /qdrant url: http:\/\/localhost:6333/);
+  assert.match(text, /dimension: 768 · threshold: 0.15 · maxResults: 10/);
+  assert.doesNotMatch(text, /apiKey|api_key|key=/i);
+  // detail rows are not part of the bg card
+  assert.ok(lines.slice(3).every((l) => l.card !== true));
+});
+
+test("search collapsed is one line with a colored top-type tag", () => {
+  const e = searchEntry([
+    searchHitView(hit(payload("fact", "use REST", { source_entry_id: "id1" }), 0.8765)),
+  ]);
+  const lines = renderOut(e);
+  assert.equal(lines.length, 1);
+  assert.equal(spanText(lines[0]), "1 result · top [fact] 0.88");
+  assert.deepEqual(roles(lines[0]), ["default", typeRole("fact"), "default"]);
+});
+
+test("search collapsed pluralizes and never shows preview text", () => {
+  const e = searchEntry([
+    searchHitView(hit(payload("decision", "alpha", { source_entry_id: "a" }), 0.9)),
+    searchHitView(hit(payload("fact", "beta", { session_id: "s1" }), 0.7)),
+  ]);
+  const collapsed = spanText(renderOut(e)[0]);
+  assert.match(collapsed, /^2 results · top \[decision\] 0\.90$/);
+  assert.doesNotMatch(collapsed, /alpha|beta/);
+});
+
+test("search expanded: verbatim text, colored meta, source pointer, blank between hits", () => {
+  const e = searchEntry([
+    searchHitView(hit(payload("decision", "alpha text", { source_entry_id: "a1" }), 0.9)),
+    searchHitView(hit(payload("constraint", "beta text", { session_id: "s1" }), 0.7)),
+  ]);
+  const lines = renderOut(e, { expanded: true });
+  assert.equal(lines.length, 5); // meta+text + blank + meta+text
+  assert.equal(spanText(lines[0]), "[decision] 0.90 (source_entry_id=a1)");
+  assert.deepEqual(roles(lines[0]), [typeRole("decision"), "default", "dim"]);
+  assert.equal(spanText(lines[1]), "alpha text");
+  assert.deepEqual(roles(lines[1]), ["default"]);
+  assert.equal(spanText(lines[2]), "");
+  assert.equal(spanText(lines[3]), "[constraint] 0.70 (session_id=s1)");
+  assert.equal(roles(lines[3])[0], typeRole("constraint"));
+  assert.equal(spanText(lines[4]), "beta text");
+});
+
+test("search long text is never truncated when expanded", () => {
+  const long = "x".repeat(500);
+  const e = searchEntry([searchHitView(hit(payload("fact", long), 0.5))]);
+  assert.equal(spanText(renderOut(e, { expanded: true })[1]), long);
+});
+
+test("search hit with no pointer says so", () => {
+  const v = searchHitView(hit(payload("fact", "orphan"), 0.4));
+  assert.equal(v.pointer, "no source pointer");
+});
+
+test("search hit tolerates a payload without text", () => {
+  const broken = { type: "decision", project_id: "p", ts: 1, source_kind: "remember_tool" } as unknown as PointPayload;
+  const v = searchHitView(hit(broken, 0.5));
+  assert.equal(v.text, "");
+});
+
+test("search zero hits falls back to a plain message line", () => {
+  const lines = renderOut(searchEntry([]));
+  assert.equal(lines.length, 1);
+  assert.equal(spanText(lines[0]), "No relevant memory found.");
+});
+
+test("typeRole maps every memory type to a semantic slot", () => {
+  assert.equal(typeRole("decision"), "accent");
+  assert.equal(typeRole("fact"), "success");
+  assert.equal(typeRole("constraint"), "warning");
+  assert.equal(typeRole("preference"), "dim");
+  assert.equal(typeRole("session_summary"), "muted");
+});
+
+test("message splitting on newlines keeps error wording in error kind only", () => {
+  const e: OutEntry = message("settings: scoreThreshold updated (reloaded at runtime)");
+  assert.equal(outText(e), "settings: scoreThreshold updated (reloaded at runtime)");
+});
