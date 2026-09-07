@@ -1,4 +1,4 @@
-import { makeRuntime } from "./deps.ts";
+import { makeRuntime, applyConfig } from "./deps.ts";
 import type { MakeRuntimeIO } from "./deps.ts";
 import { loadConfig, writeConfigFile } from "./config.ts";
 import { agentDirFromEnv, detectBlackhole } from "./mode.ts";
@@ -61,10 +61,10 @@ function ctxSessionId(ctx: unknown): string | undefined {
 }
 
 function buildIO(api: WireApi, rt: RuntimeDeps): HandlerIO {
-  return depsToIO({
-    ...rt,
-    readConfig: rt.readConfig,
-    writeConfig: rt.writeConfig,
+  // Live view over `rt`: handlers read cfg/projectId/embed/qdrant through getters,
+  // so a session_start project-id refresh or a runtime config reload (applyConfig)
+  // is immediately visible to slash-command handlers — never a stale copy.
+  return depsToIO(rt, {
     print: (t) => api.sendMessage(`/qdrant: ${t}`),
   });
 }
@@ -263,13 +263,22 @@ export default async function factory(api: unknown): Promise<void> {
     });
   };
 
+  // Assigned by makeRuntime below; writeConfig may run later (after a settings
+  // write) and needs to reload the assembled runtime onto the new config.
+  let rt: RuntimeDeps | undefined;
+
   const io: MakeRuntimeIO = {
     readConfig: () => loadConfig(agentDir, env),
-    writeConfig: (c) => writeConfigFile(agentDir, c),
+    writeConfig: (c) => {
+      writeConfigFile(agentDir, c);
+      // Reload-on-save (design D13): reflect the new settings immediately by
+      // re-reading the canonical file and swapping cfg + embed/qdrant clients.
+      if (rt) applyConfig(rt, loadConfig(agentDir, env));
+    },
     print: sendText,
   };
 
-  const rt = await makeRuntime(agentDir, process.cwd(), env, io);
+  rt = await makeRuntime(agentDir, process.cwd(), env, io);
 
   const family = new Map<string, { description: string; members: Array<{ sub: string; execute: (args: string[]) => Promise<void> }> }>();
 
@@ -320,8 +329,9 @@ export default async function factory(api: unknown): Promise<void> {
     });
   }
 
-  // Keep a reference so a future session_shutdown wiring can flush in-flight work.
-  // pi tears down event subscriptions itself on runtime replacement, so `cleanup`
-  // is intentionally not invoked here (avoiding double-unsubscribe semantics).
+  // pi tracks and releases event-bus subscriptions on runtime teardown and the
+  // adapter's `on` intentionally returns a no-op, so the structural `cleanup`
+  // returned by wireApi is a no-op here — it only matters for unit tests with the
+  // fake WireApi. Keep a reference so future wiring can flush in-flight work.
   void cleanup;
 }

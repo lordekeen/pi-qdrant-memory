@@ -53,6 +53,30 @@ test("settingsHandler persists field=value and prints confirmation", async () =>
   assert.match(d.printed.join("\n"), /scoreThreshold/);
 });
 
+test("settingsHandler rejects invalid mode and non-positive numerics", async () => {
+  const d = io();
+  await settingsHandler(d, "mode", "bogus");
+  assert.equal(d.written.length, 0);
+  assert.match(d.printed.join("\n"), /auto \| blackhole \| own/);
+  await settingsHandler(d, "expectedDimension", "0");
+  assert.equal(d.written.length, 0);
+  assert.match(d.printed.join("\n"), /positive/);
+});
+
+test("statusHandler distinguishes a missing collection from an unreachable server", async () => {
+  const qdrant404: QdrantLike = {
+    async ensureCollection() { return "created"; }, async upsert() {},
+    async search() { return []; },
+    async count() { throw new Error("Qdrant request POST ... failed: HTTP 404"); },
+    async clearCollection() {},
+  };
+  const d = io({ qdrant: qdrant404 });
+  await statusHandler(d);
+  const all = d.printed.join("\n");
+  assert.doesNotMatch(all, /NOT reachable/);
+  assert.match(all, /does not exist yet/);
+});
+
 test("rememberHandler prints success and upserts", async () => {
   const d = io();
   await rememberHandler(d, "use REST", "decision");

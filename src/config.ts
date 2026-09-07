@@ -29,10 +29,12 @@ export function isConfigMode(v: string | undefined): v is ConfigMode {
   return v === "auto" || v === "blackhole" || v === "own";
 }
 
-function numEnv(raw: string | undefined, fallback: number): number {
-  if (raw === undefined) return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : fallback;
+function numEnv(raw: string | undefined, fileValue: unknown, def: number): number {
+  // Coerce string/number file or env values; non-finite values fall back to `def`
+  // so a corrupt file never leaks a string into a numeric config field.
+  const src = raw !== undefined ? raw : fileValue !== undefined ? fileValue : def;
+  const n = typeof src === "number" ? src : Number(src);
+  return Number.isFinite(n) ? n : def;
 }
 
 export function loadConfig(agentDir: string, env: NodeJS.ProcessEnv = process.env): Config {
@@ -55,9 +57,9 @@ export function loadConfig(agentDir: string, env: NodeJS.ProcessEnv = process.en
     embeddingBaseURL: env.PI_QDRANT_EMBEDDING_BASE_URL ?? fromFile.embeddingBaseURL ?? DEFAULTS.embeddingBaseURL,
     embeddingModel: env.PI_QDRANT_EMBEDDING_MODEL ?? fromFile.embeddingModel ?? DEFAULTS.embeddingModel,
     embeddingApiKey: env.PI_QDRANT_EMBEDDING_API_KEY ?? fromFile.embeddingApiKey ?? DEFAULTS.embeddingApiKey,
-    expectedDimension: numEnv(env.PI_QDRANT_EXPECTED_DIMENSION, fromFile.expectedDimension ?? DEFAULTS.expectedDimension),
-    scoreThreshold: numEnv(env.PI_QDRANT_SCORE_THRESHOLD, fromFile.scoreThreshold ?? DEFAULTS.scoreThreshold),
-    maxResults: numEnv(env.PI_QDRANT_MAX_RESULTS, fromFile.maxResults ?? DEFAULTS.maxResults),
+    expectedDimension: numEnv(env.PI_QDRANT_EXPECTED_DIMENSION, fromFile.expectedDimension, DEFAULTS.expectedDimension),
+    scoreThreshold: numEnv(env.PI_QDRANT_SCORE_THRESHOLD, fromFile.scoreThreshold, DEFAULTS.scoreThreshold),
+    maxResults: numEnv(env.PI_QDRANT_MAX_RESULTS, fromFile.maxResults, DEFAULTS.maxResults),
     mode,
   };
 }

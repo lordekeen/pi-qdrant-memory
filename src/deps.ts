@@ -37,3 +37,16 @@ export async function makeRuntime(
     print: io.print,
   };
 }
+
+/**
+ * Swap a runtime onto a new config at runtime (reload-on-save): replaces `cfg`
+ * and rebuilds the embedding/Qdrant clients so a `/qdrant settings` write takes
+ * effect immediately instead of at the next session.
+ */
+export function applyConfig(rt: RuntimeDeps, cfg: Config): void {
+  rt.cfg = cfg;
+  const embeddingClient = new EmbeddingClient(
+    cfg.embeddingBaseURL, cfg.embeddingModel, cfg.embeddingApiKey, cfg.expectedDimension);
+  rt.embed = (text: string) => embeddingClient.embed(text);
+  rt.qdrant = new QdrantClient(cfg.qdrantUrl, cfg.qdrantApiKey);
+}

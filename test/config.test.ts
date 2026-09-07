@@ -66,3 +66,16 @@ test("numeric env overrides parse to numbers", () => {
     assert.equal(cfg.maxResults, 5);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("numeric file values are coerced and corrupt values fall back to defaults", () => {
+  const dir = tempAgentDir();
+  try {
+    // String-typed numerics in the JSON file (hand-edited or from another client)
+    // must be coerced, and junk must fall back to defaults rather than leak through.
+    writeConfigFile(dir, { expectedDimension: "768", scoreThreshold: "bogus", maxResults: 25 });
+    const cfg = loadConfig(dir, {});
+    assert.equal(cfg.expectedDimension, 768);
+    assert.equal(cfg.scoreThreshold, DEFAULTS.scoreThreshold);
+    assert.equal(cfg.maxResults, 25);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

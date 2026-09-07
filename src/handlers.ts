@@ -1,4 +1,5 @@
 import { resolveMode, detectBlackhole } from "./mode.ts";
+import { isConfigMode } from "./config.ts";
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
 import { renderHits } from "./render.ts";
 import type { QdrantLike } from "./qdrant.ts";
@@ -16,11 +17,24 @@ export interface HandlerIO {
   print(text: string): void;
 }
 
-export function depsToIO(deps: RuntimeDeps): HandlerIO {
+export interface DepsToIOOptions { print?: (text: string) => void; }
+
+/**
+ * Adapt a `RuntimeDeps` to a `HandlerIO`. Fields are exposed as live getters over
+ * `deps` (not copies) so a session_start project-id refresh or a runtime config
+ * reload is immediately visible to slash-command handlers.
+ */
+export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): HandlerIO {
   return {
-    cfg: deps.cfg, agentDir: deps.agentDir, cwd: deps.cwd, projectId: deps.projectId,
-    embed: deps.embed, qdrant: deps.qdrant,
-    readConfig: deps.readConfig, writeConfig: deps.writeConfig, print: deps.print,
+    get cfg() { return deps.cfg; },
+    get agentDir() { return deps.agentDir; },
+    get cwd() { return deps.cwd; },
+    get projectId() { return deps.projectId; },
+    get embed() { return deps.embed; },
+    get qdrant() { return deps.qdrant; },
+    readConfig: deps.readConfig,
+    writeConfig: deps.writeConfig,
+    print: options.print ?? deps.print,
   };
 }
 
@@ -30,11 +44,17 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
   const mode = resolveMode(io.cfg, detectBlackhole(io.agentDir));
   let count = -1;
   let qdrantOk = true;
-  try { count = await io.qdrant.count(io.projectId); } catch { qdrantOk = false; }
+  let collectionMissing = false;
+  try { count = await io.qdrant.count(io.projectId); } catch (err) {
+    qdrantOk = false;
+    // Qdrant is reachable but the project collection does not exist yet
+    // (fresh project or after /qdrant clear) — distinguish from a down server.
+    if (/HTTP 404/.test(String(err))) { qdrantOk = true; collectionMissing = true; }
+  }
   let embedOk = true;
   try { await io.embed("probe"); } catch { embedOk = false; }
   io.print(`mode: ${mode}`);
-  io.print(`qdrant: ${qdrantOk ? `reachable, collection ${io.projectId} has ${count} points` : "NOT reachable"}`);
+  io.print(`qdrant: ${!qdrantOk ? "NOT reachable" : collectionMissing ? `reachable, collection ${io.projectId} does not exist yet` : `reachable, collection ${io.projectId} has ${count} points`}`);
   io.print(`embeddings: ${embedOk ? `reachable (${io.cfg.embeddingModel} @ ${io.cfg.embeddingBaseURL})` : "NOT reachable"}`);
   return { exit: false };
 }
@@ -48,7 +68,13 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
       if (typeof cfg[key] === "number") {
         const n = Number(value);
         if (!Number.isFinite(n)) { io.print(`settings: ${field} expects a number`); return { exit: false }; }
+        if (key === "expectedDimension" || key === "maxResults") {
+          if (!(n > 0)) { io.print(`settings: ${field} expects a positive number`); return { exit: false }; }
+        }
         (next as Record<string, unknown>)[key] = n;
+      } else if (key === "mode") {
+        if (!isConfigMode(value)) { io.print(`settings: mode must be one of auto | blackhole | own`); return { exit: false }; }
+        (next as Record<string, unknown>)[key] = value;
       } else {
         (next as Record<string, unknown>)[key] = value === "null" ? null : value;
       }

@@ -15,3 +15,10 @@ test("renderHits shows type, score, text, and source pointer", () => {
 test("renderHits handles empty results", () => {
   assert.equal(renderHits([]), "No relevant memory found.");
 });
+
+test("renderHits tolerates a hit whose payload lacks text", () => {
+  const payload = { type: "decision", project_id: "p", ts: 1, source_kind: "blackhole_reflection" } as unknown as PointPayload;
+  const out = renderHits([{ id: "x", score: 0.5, payload }]);
+  assert.match(out, /0\.50/);
+  assert.doesNotThrow(() => renderHits([{ id: "x", score: 0.5, payload }]));
+});
