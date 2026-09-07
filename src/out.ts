@@ -86,6 +86,15 @@ export function typeRole(type: MemoryType): OutlineRole { return TYPE_ROLE[type]
 const GLYPH: Record<StatusState, string> = { ok: "✓", warn: "!", err: "✗" };
 const STATE_ROLE: Record<StatusState, OutlineRole> = { ok: "success", warn: "warning", err: "error" };
 
+/** Zero-hit search copy — one plain non-expandable line (DESIGN.md search-results). */
+export const EMPTY_SEARCH_TEXT = "No relevant memory found.";
+
+const PREVIEW_MAX = 200;
+/** The one width this extension ever chooses (DESIGN.md Layout + search-results). */
+function previewText(text: string): string {
+  return text.length > PREVIEW_MAX ? `${text.slice(0, PREVIEW_MAX)}…` : text;
+}
+
 // ── Outline rendering ────────────────────────────────────────────────────────
 
 export interface OutlineOptions { expanded?: boolean; }
@@ -97,7 +106,7 @@ function statusCardLines(health: StatusHealth): OutLine[] {
   if (q.state === "ok") {
     out.push({ card: true, spans: [s("qdrant: "), s(`${GLYPH.ok} `, STATE_ROLE.ok), s(`reachable · ${q.points} points`)] });
   } else if (q.state === "warn") {
-    out.push({ card: true, spans: [s("qdrant: "), s(`${GLYPH.warn} `, STATE_ROLE.warn), s(`collection ${q.collection} does not exist yet`)] });
+    out.push({ card: true, spans: [s("qdrant: "), s(`${GLYPH.warn} collection ${q.collection} does not exist yet`, STATE_ROLE.warn)] });
   } else {
     out.push({ card: true, spans: [s("qdrant: "), s(`${GLYPH.err} NOT reachable`, STATE_ROLE.err)] });
   }
@@ -122,15 +131,18 @@ function statusDetailLines(d: StatusHealth["detail"]): OutLine[] {
 }
 
 function searchCollapsed(hits: SearchHitView[]): OutLine[] {
-  if (hits.length === 0) return [{ spans: [s("No relevant memory found.")] }];
   const top = hits[0];
-  return [{
-    spans: [
-      s(`${hits.length} ${hits.length === 1 ? "result" : "results"} · top `),
-      s(`[${top.type}]`, typeRole(top.type)),
-      s(` ${top.score.toFixed(2)}`),
-    ],
-  }];
+  if (!top) return [{ spans: [s(EMPTY_SEARCH_TEXT)] }];
+  const spans: Span[] = [
+    s(`${hits.length} ${hits.length === 1 ? "result" : "results"} · top `),
+    s(`[${top.type}]`, typeRole(top.type)),
+    s(` ${top.score.toFixed(2)}`),
+  ];
+  // Collapsed preview of the top hit — default/unadorned knowledge text,
+  // truncated only here, never when expanded (DESIGN.md search-results).
+  const preview = previewText(top.text);
+  if (preview) spans.push(s(" · "), s(preview));
+  return [{ spans }];
 }
 
 function searchExpanded(hits: SearchHitView[]): OutLine[] {
@@ -144,7 +156,9 @@ function searchExpanded(hits: SearchHitView[]): OutLine[] {
 }
 
 function helpLines(rows: HelpRow[]): OutLine[] {
-  const width = Math.min(Math.max(...rows.map((r) => r.cmd.length), 0) + 2, 26);
+  // Align to the longest command; the host truncates at the terminal edge — the
+  // extension never chooses a truncating width (DESIGN.md Layout).
+  const width = Math.max(...rows.map((r) => r.cmd.length), 0) + 2;
   const lines: OutLine[] = [{ spans: [s("commands", "bold")] }];
   for (const r of rows) {
     lines.push({ spans: [s(r.cmd.padEnd(width)), s(r.desc, "dim")] });

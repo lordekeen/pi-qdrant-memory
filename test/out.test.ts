@@ -54,6 +54,18 @@ test("help renders bold title + aligned rows with dim descriptions", () => {
   assert.deepEqual(roles(lines[1]), ["default", "dim"]);
 });
 
+test("help aligns usage commands past 26 chars without jamming the description", () => {
+  const rows = [
+    { cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
+    { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field (e.g. scoreThreshold 0.2)" },
+  ];
+  const lines = renderOut(helpEntry(rows));
+  const width = Math.max(...rows.map((r) => r.cmd.length)) + 2; // 31 — an old 26-cap jammed here
+  assert.equal(spanText(lines[1]), "/qdrant-status".padEnd(width) + "connection health + active mode + collection status");
+  assert.equal(spanText(lines[2]), "/qdrant-settings <key> <value>".padEnd(width) + "persist a config field (e.g. scoreThreshold 0.2)");
+  assert.equal(spanText(lines[2]).indexOf("persist"), width);
+});
+
 test("status collapsed is one card: bold mode + glyph rows", () => {
   const e = statusEntry(health);
   const lines = renderOut(e);
@@ -79,8 +91,10 @@ test("status states: NOT reachable uses error role, missing collection warns", (
     ...health, qdrant: { state: "warn", collection: "pi-mem-abc" },
   });
   const linesMissing = renderOut(missing);
-  assert.match(spanText(linesMissing[1]), /! collection pi-mem-abc does not exist yet/);
-  assert.equal(roles(linesMissing[1]).includes("warning"), true);
+  // Whole-value warning slot, symmetric to the error row's "✗ NOT reachable"
+  // (DESIGN.md status-card variants: "does not exist yet — warning slot").
+  assert.equal(spanText(linesMissing[1]), "qdrant: ! collection pi-mem-abc does not exist yet");
+  assert.deepEqual(roles(linesMissing[1]), ["default", "warning"]);
 });
 
 test("status expanded appends detail rows (no API keys)", () => {
@@ -95,24 +109,30 @@ test("status expanded appends detail rows (no API keys)", () => {
   assert.ok(lines.slice(3).every((l) => l.card !== true));
 });
 
-test("search collapsed is one line with a colored top-type tag", () => {
+test("search collapsed is one line with a colored top-type tag + top-hit preview", () => {
   const e = searchEntry([
     searchHitView(hit(payload("fact", "use REST", { source_entry_id: "id1" }), 0.8765)),
   ]);
   const lines = renderOut(e);
   assert.equal(lines.length, 1);
-  assert.equal(spanText(lines[0]), "1 result · top [fact] 0.88");
-  assert.deepEqual(roles(lines[0]), ["default", typeRole("fact"), "default"]);
+  assert.equal(spanText(lines[0]), "1 result · top [fact] 0.88 · use REST");
+  assert.deepEqual(roles(lines[0]), ["default", typeRole("fact"), "default", "default", "default"]);
 });
 
-test("search collapsed pluralizes and never shows preview text", () => {
+test("search collapsed pluralizes and previews the top hit verbatim when short", () => {
   const e = searchEntry([
     searchHitView(hit(payload("decision", "alpha", { source_entry_id: "a" }), 0.9)),
     searchHitView(hit(payload("fact", "beta", { session_id: "s1" }), 0.7)),
   ]);
   const collapsed = spanText(renderOut(e)[0]);
-  assert.match(collapsed, /^2 results · top \[decision\] 0\.90$/);
-  assert.doesNotMatch(collapsed, /alpha|beta/);
+  assert.equal(collapsed, "2 results · top [decision] 0.90 · alpha");
+});
+
+test("search collapsed preview truncates at 200 chars with …, never when expanded", () => {
+  const long = "y".repeat(250);
+  const e = searchEntry([searchHitView(hit(payload("fact", long), 0.5))]);
+  assert.equal(spanText(renderOut(e)[0]), `1 result · top [fact] 0.50 · ${"y".repeat(200)}…`);
+  assert.equal(spanText(renderOut(e, { expanded: true })[1]), long);
 });
 
 test("search expanded: verbatim text, colored meta, source pointer, blank between hits", () => {
