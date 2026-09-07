@@ -18,7 +18,15 @@ export interface RendererTheme {
   bg?(slot: string, text: string): string;
 }
 
-export interface RendererOptions { expanded?: boolean; }
+export interface RendererOptions {
+  expanded?: boolean;
+  /**
+   * Component ctors override for unit tests. Production always passes only
+   * `{ expanded }`, so these resolve from the lazy pi-tui import below.
+   */
+  TextCtor?: TextCtor;
+  BoxCtor?: BoxCtor;
+}
 
 /** Background slot for the one status card. Fallback to plain rows if absent. */
 const CARD_BG_SLOT = "customMessageBg";
@@ -98,39 +106,55 @@ function collapseHint(entry: OutEntry, expanded: boolean): string {
   return ` (${hint})`;
 }
 
-function textComponent(text: string): EntryComponent | undefined {
-  return modules.Text ? new modules.Text(text) : undefined;
+function textComponent(text: string, TextCtor: TextCtor | undefined): EntryComponent | undefined {
+  return TextCtor ? new TextCtor(text) : undefined;
 }
 
 /** Status rows live in a bg Box when available; everything degrades to plain text. */
-function buildStatus(entry: OutEntry, expanded: boolean, linesIn: OutLine[], theme: RendererTheme): EntryComponent | undefined {
+function buildStatus(
+  entry: OutEntry,
+  expanded: boolean,
+  linesIn: OutLine[],
+  theme: RendererTheme,
+  TextCtor: TextCtor | undefined,
+  BoxCtor: BoxCtor | undefined,
+): EntryComponent | undefined {
   const lines = [...linesIn];
   const hint = collapseHint(entry, expanded);
   if (hint && lines.length) {
     const last = lines[lines.length - 1];
-    lines[lines.length - 1] = { spans: [...last.spans, { text: hint, role: "muted" as OutlineRole }] };
+    // Spread keeps the card flag: a collapsed card must keep every row inside
+    // the shared background (DESIGN.md status-card).
+    lines[lines.length - 1] = { ...last, spans: [...last.spans, { text: hint, role: "muted" as OutlineRole }] };
   }
   const cardLines = lines.filter((l) => l.card === true);
   const bodyLines = lines.filter((l) => l.card !== true);
 
   // Plain path (no Box, no bg, or any failure below): styled text.
-  const plain = (): EntryComponent | undefined => textComponent(styledLines(lines, theme).join("\n"));
+  const plain = (): EntryComponent | undefined => textComponent(styledLines(lines, theme).join("\n"), TextCtor);
 
   if (cardLines.length === 0) return plain();
   try {
-    const BoxCtor = modules.Box;
     const bgFn = theme.bg;
     if (!BoxCtor || typeof bgFn !== "function") return plain();
-    const bg = (t: string): string => bgFn(CARD_BG_SLOT, t);
-    const cardBox = new BoxCtor(1, 1, bg);
+    // pi's theme.bg is a Theme class method that reads `this` (this.bgColors); a
+    // detached reference would run with `this === undefined` and throw. And the
+    // Box invokes this fn on pi's own deferred render pass — outside every catch
+    // in this module — so an error here would kill pi (AGENTS.md §6). Call it
+    // with the theme as receiver and swallow render-time failures into an
+    // unstyled line: the card degrades, never crashes.
+    const slotBg = (t: string): string => {
+      try { return bgFn.call(theme, CARD_BG_SLOT, t); } catch { return t; }
+    };
+    const cardBox = new BoxCtor(1, 1, slotBg);
     for (const cl of cardLines) {
-      const child = textComponent(styledLine(cl, theme));
+      const child = textComponent(styledLine(cl, theme), TextCtor);
       if (child) cardBox.addChild(child);
     }
     const container = new BoxCtor(0, 0);
     container.addChild(cardBox);
     if (bodyLines.length) {
-      const bodyText = textComponent(styledLines(bodyLines, theme).join("\n"));
+      const bodyText = textComponent(styledLines(bodyLines, theme).join("\n"), TextCtor);
       if (bodyText) container.addChild(bodyText);
     }
     return container;
@@ -145,22 +169,26 @@ function buildStatus(entry: OutEntry, expanded: boolean, linesIn: OutLine[], the
  */
 export function renderEntryComponent(entryData: unknown, options?: RendererOptions, theme?: RendererTheme): EntryComponent | undefined {
   void loadRendererModules();
-  if (!modules.Text || !theme) return undefined;
+  // Ctor seam: tests inject fakes via options; pi only ever passes { expanded },
+  // so production resolves them from the lazy pi-tui import.
+  const TextCtor = options?.TextCtor ?? modules.Text;
+  const BoxCtor = options?.BoxCtor ?? modules.Box;
+  if (!TextCtor || !theme) return undefined;
   const entry = entryData as OutEntry | undefined;
   if (!entry || typeof entry !== "object" || typeof (entry as { kind?: unknown }).kind !== "string") return undefined;
   const expanded = options?.expanded ?? false;
   const lines = renderOut(entry, { expanded });
 
-  if (entry.kind === "status") return buildStatus(entry, expanded, lines, theme);
+  if (entry.kind === "status") return buildStatus(entry, expanded, lines, theme, TextCtor, BoxCtor);
   // message / error / help / search: one multi-line styled Text (search gets the hint when collapsed)
   const hint = collapseHint(entry, expanded);
   const out: OutLine[] = [...lines];
   if (hint && out.length) {
     const last = out[out.length - 1];
-    out[out.length - 1] = { spans: [...last.spans, { text: hint, role: "muted" as OutlineRole }] };
+    out[out.length - 1] = { ...last, spans: [...last.spans, { text: hint, role: "muted" as OutlineRole }] };
   }
   try {
-    return textComponent(styledLines(out, theme).join("\n"));
+    return textComponent(styledLines(out, theme).join("\n"), TextCtor);
   } catch {
     return undefined;
   }
