@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Config, ConfigMode } from "./types.ts";
 
 export const DEFAULTS: Config = {
@@ -16,6 +16,13 @@ export const DEFAULTS: Config = {
 
 export function configPath(agentDir: string): string {
   return join(agentDir, "pi-qdrant-memory", "pi-qdrant-memory-config.json");
+}
+
+/** Persist a full config back to the canonical JSON file (mkdir -p). */
+export function writeConfigFile(agentDir: string, cfg: Config): void {
+  const file = configPath(agentDir);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n", "utf8");
 }
 
 export function isConfigMode(v: string | undefined): v is ConfigMode {

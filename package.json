@@ -6,7 +6,7 @@
   "license": "MIT",
   "engines": { "node": ">=22.19" },
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
