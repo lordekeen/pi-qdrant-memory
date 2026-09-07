@@ -166,16 +166,20 @@ resolve at runtime, render the same rows as plain text — never throw.
 
 ### search-results (`/qdrant-search`)
 
-One entry per query. **Collapsed** (default) is a single summary line:
+One entry per query. **Collapsed** (default) is a single summary line ending in
+a preview of the top hit's text:
 
 ```
-3 results · top [fact] 0.87   (enter to expand)
+2 results · top [constraint] 0.91 · Score thresholds are shared…   (enter to expand)
 ```
 
 - The per-type tag on the "top" hit is colored per the Colors map; count and
   score are plain/dim.
-- Only expandable when hits exist (hits are hidden, so the hint is legitimate);
-  a collapsed preview of the top hit may carry the `…` ellipsis at 200 chars.
+- The preview shows the top hit's text — default-colored and unadorned
+  (verbatim invariant) — truncated at 200 chars with `…` when longer. This is
+  the one truncation the extension ever does; expanding never truncates.
+- Only expandable when hits exist (the preview hides the rest of every hit, so
+  the hint is legitimate).
 
 **Expanded** renders every hit, verbatim and never truncated:
 

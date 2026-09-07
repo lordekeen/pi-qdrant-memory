@@ -58,7 +58,8 @@ when you change ingest/search/embedding paths and have both servers up.
 | File | Role |
 | --- | --- |
 | `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, `/qdrant-*` commands, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). |
-| `src/handlers.ts` | Slash-command handlers (status/settings/remember/search/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime). |
+| `src/handlers.ts` | Slash-command handlers (status/settings/remember/search/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command.
+| `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested.
 | `src/config.ts` | `DEFAULTS`, `loadConfig` (defaults → file → env precedence), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form). |
 | `src/mode.ts` | Runtime mode resolution: `detectBlackhole`, `resolveMode` (mode1 = blackhole present; mode2 = own capture), `agentDirFromEnv`. |
 | `src/project.ts` | `projectIdFrom` — hashes the nearest git root realpath → `pi-mem-<16hex>`. |
@@ -67,12 +68,14 @@ when you change ingest/search/embedding paths and have both servers up.
 | `src/ids.ts` | `normalizeText`, `contentHash`, `pointId` (deterministic ids). |
 | `src/blackhole.ts` | Read pi-blackhole pending artifacts (Mode 1) — `parseOmEntry`, `readPendingArtifacts`. |
 | `src/ingest.ts` | `ingestItems` batch upsert + `artifactToIngestItem`. |
-| `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic` — shared by tools and commands. |
+| `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic` — shared by tools and commands; take `ToolDeps` (no output channel). |
 | `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point), `autoSnapshot`. |
-| `src/render.ts` | `renderHits` — search-result text blocks. |
+| `src/render.ts` | Tool-path text blocks (`renderHits` + `sourcePointer`), LLM-facing — deliberately outside the entry UI. |
+| `src/entry-render.ts` | Lazy pi-tui renderer: maps an `OutEntry` (via `renderOut` roles) to `Text`/`Box` components + `keyHint`. `RendererOptions.TextCtor/BoxCtor` is the unit-test seam. |
 | `src/deps.ts` | `makeRuntime` (assembles cfg + clients + handlers IO), `applyConfig` (hot reload after settings writes). |
-| `src/types.ts` | Shared types: `Config`, `MemoryType`, `SourceKind`, `PointPayload`, `SearchHit`, `RuntimeDeps`. |
+| `src/types.ts` | Shared types: `Config`, `MemoryType`, `SourceKind`, `PointPayload`, `SearchHit`, `RuntimeDeps`, `ToolDeps`. |
 | `src/pi-tui.d.ts` | Ambient types for the lazy `@earendil-works/pi-tui` import. |
+| `src/pi-coding-agent.d.ts` | Ambient types for the lazy `@earendil-works/pi-coding-agent` import (`keyHint`). |
 | `test/*.test.ts` | One test file per module, `node:test` + `node:assert/strict`. `integration.smoke.test.ts` is opt-in. |
 | `docs/specs/` | Original design doc, implementation plan, plan review. |
 
@@ -80,17 +83,21 @@ when you change ingest/search/embedding paths and have both servers up.
 
 - **Adding a tool**: define it in `wireApi` (`src/index.ts`) with plain
   JSON-Schema `parameters`, `promptSnippet`, and `promptGuidelines`; put the logic
-  in `tools-core.ts` so tools and commands share it.
+  in `tools-core.ts` (typed against `ToolDeps` — never the full `RuntimeDeps`) so
+  tools and commands share it.
 - **Adding a command**: add a single-token def to the `commands` array in
   `wireApi` (name `qdrant-<verb>`, `execute(args: string)`), implement the
-  handler in `handlers.ts`, print through `io.print`, add it to `helpHandler`,
-  register a test in `test/handlers.test.ts` and assert registration in
-  `test/index.test.ts` and `test/factory.test.ts`.
+  handler in `handlers.ts`, emit one structured entry through `io.emit(...)`
+  (builders + role rules live in `src/out.ts`; DESIGN.md owns the strings), add
+  it to `helpHandler`, register a test in `test/handlers.test.ts` and assert
+  registration in `test/index.test.ts` and `test/factory.test.ts`.
 - **Changing config**: update `Config` in `types.ts`, `DEFAULTS`+`loadConfig`
   precedence in `config.ts`, and `SETTING_FIELDS` in `handlers.ts` so the form
   covers it. Validation goes in `setConfigField` — CLI and form share it.
-- **Changing output text**: consult `DESIGN.md` first (prefixes, hit-block
-  format, error rows). Keep output plain text via entries.
+- **Changing output text**: consult `DESIGN.md` first (exact strings, glyphs,
+  role slots, collapse/expand, error rows). Content + per-line roles go in
+  `src/out.ts` (`renderOut` is the single source of truth and is unit-tested
+  without pi-tui); `src/entry-render.ts` only maps roles → host-theme slots.
 
 ## Environment & config for tests
 
