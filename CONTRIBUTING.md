@@ -49,7 +49,7 @@ Then in a pi session:
 - `/qdrant-remember <text>` / `/qdrant-search <query>` — manual store/search
 - `/qdrant-clear` — reset the current project's collection
 
-The agent tools `remember` and `memory_search` are what most users exercise.
+The agent tools `memory_save` and `memory_search` are what most users exercise.
 
 Notes for live testing:
 
@@ -58,7 +58,7 @@ Notes for live testing:
   output is *not* sent via `sendMessage`.
 - If your pi runs `pi-permission-system`, the new tools prompt for approval until
   allowlisted. Local dev allowlist:
-  `"memory_search": "allow"`, `"remember": "allow"` in
+  `"memory_search": "allow"`, `"memory_save": "allow"` in
   `~/.pi/agent/extensions/pi-permission-system/config.json`.
 - Keep an eye on the footer: `🧠 Memory: mode1 (pi-mem-…)` means pi-blackhole was
   detected (Mode 1); `mode2` means own compaction capture.

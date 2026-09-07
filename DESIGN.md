@@ -152,7 +152,7 @@ CLI write would and do **not** reach confirm; declining confirm prints
 
 ### agent-tool-results
 
-`remember` and `memory_search` return plain text to the model: `remembered
+`memory_save` and `memory_search` return plain text to the model: `remembered
 (remember_tool): <text>` or `memory_search failed: <reason>` on errors, and for
 searches the same hit-block format as `command-output-entry`. No UI is drawn for
 tool calls.

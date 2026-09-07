@@ -5,7 +5,7 @@ Semantic, cross-session/cross-project retrieval over durable conversation knowle
 Complements the ecosystem: `codegraph` = current code structure (exact/graph); `pi-blackhole` = durable decision
 capture (lexical recall); **this extension = semantic retrieval** over that durable knowledge.
 
-- **`remember`** (agent tool) — persist a durable decision/constraint/preference.
+- **`memory_save`** (agent tool) — persist a durable decision/constraint/preference.
 - **`memory_search`** (agent tool) — semantic search of prior durable knowledge.
 - **`/qdrant-*`** command set — `qdrant-status`, `qdrant-settings`, `qdrant-remember`, `qdrant-search`, `qdrant-clear`, `qdrant-help`.
   Each is a unique single-token pi command (no subcommand parsing): `/qdrant-status`, `/qdrant-settings <key> <value>`, …
@@ -68,11 +68,11 @@ Env overrides at load, precedence defaults → file → env:
 
 ## Agent tools
 
-- `remember(text, type?)` — persist a durable decision/constraint/preference. Type defaults to `decision`.
+- `memory_save(text, type?)` — persist a durable decision/constraint/preference. Type defaults to `decision`.
 - `memory_search(query, type?, limit?)` — semantic search of prior durable knowledge (limit capped by `maxResults`).
 
 The tools carry always-on prompt guidance (via `promptSnippet`/`promptGuidelines`): the model is nudged to call
-`remember` when a decision/constraint/preference settles (with concise, self-contained statements, without
+`memory_save` when a decision/constraint/preference settles (with concise, self-contained statements, without
 re-recording what auto-capture covers) and to call `memory_search` when resuming prior work or before re-deciding.
 No companion skill is needed for the core loop — the guidance ships with the tools.
 

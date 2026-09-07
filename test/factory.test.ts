@@ -39,7 +39,7 @@ test("factory registers tools, /qdrant commands, and lifecycle hooks", async () 
     // Two tools under their canonical names.
     assert.equal(tools.length, 2);
     const toolNames = (tools as Array<{ name: string }>).map((t) => t.name).sort();
-    assert.deepEqual(toolNames, ["memory_search", "remember"]);
+    assert.deepEqual(toolNames, ["memory_save", "memory_search"]);
 
     // Command output is an entry renderer + appendEntry channel (human-visible,
     // never in the LLM context).

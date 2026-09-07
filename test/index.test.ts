@@ -35,13 +35,13 @@ const rt: RuntimeDeps = {
   readConfig: () => rt.cfg, writeConfig: () => {}, print: () => {},
 };
 
-test("wireApi registers remember and memory_search tools", () => {
+test("wireApi registers memory_save and memory_search tools", () => {
   const api = fakeApi();
   const cleanup = wireApi(api, rt);
   try {
     assert.equal(api.tools.length, 2);
     const names = (api.tools as Array<{ name: string }>).map((t) => t.name).sort();
-    assert.deepEqual(names, ["memory_search", "remember"]);
+    assert.deepEqual(names, ["memory_save", "memory_search"]);
   } finally { cleanup(); }
 });
 

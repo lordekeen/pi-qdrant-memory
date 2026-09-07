@@ -83,15 +83,15 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
 
   // ── Agent tools ────────────────────────────────────────────────────────────
   api.registerTool({
-    name: "remember",
-    label: "remember",
+    name: "memory_save",
+    label: "memory_save",
     description:
       "Persist a durable decision, constraint, or preference from the conversation so future sessions can recall it semantically.",
-    promptSnippet: "remember(text, type?) — persist a durable decision/constraint/preference for future sessions.",
+    promptSnippet: "memory_save(text, type?) — persist a durable decision/constraint/preference for future sessions.",
     promptGuidelines: [
-      "When a design choice is finalized, a constraint is stated, or a user preference is made explicit, call remember to persist it.",
-      "Remember only concise, self-contained statements that will matter in a future session; write them so they read correctly outside this conversation.",
-      "Don't re-record what auto-capture already covers (session summaries, blackhole observations/reflections are ingested automatically) — use remember for decisions and rationale the auto-capture would lose.",
+      "When a design choice is finalized, a constraint is stated, or a user preference is made explicit, call memory_save to persist it.",
+      "Keep the statement concise and self-contained so it reads correctly outside this conversation.",
+      "Don't re-record what auto-capture already covers (session summaries, blackhole observations/reflections are ingested automatically) — use memory_save for decisions and rationale the auto-capture would lose.",
     ],
     parameters: {
       type: "object",

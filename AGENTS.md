@@ -10,7 +10,7 @@ plan + plan review) for the original intent and decision log.
 A **pi.dev extension** (TypeScript, no build step) giving the pi agent semantic,
 cross-session/cross-project retrieval over durable conversation knowledge. It
 embeds knowledge text into a per-project Qdrant collection and exposes it to the
-agent via two tools (`remember`, `memory_search`) and to the human via the
+agent via two tools (`memory_save`, `memory_search`) and to the human via the
 `/qdrant-*` command set.
 
 ## Commands (run these before claiming anything works)
