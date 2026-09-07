@@ -1,0 +1,9 @@
+# CodeGraph index (local machine state)
+.codegraph/
+
+# pi session/task state
+.pi/
+
+# dependencies / build artifacts
+node_modules/
+*.log
