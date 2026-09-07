@@ -175,7 +175,11 @@ export async function rememberHandler(io: HandlerIO, text: string, type?: Memory
   // io is structurally a ToolDeps (cfg/projectId/embed/qdrant); tools-core takes
   // that narrow type and needs no output channel.
   const res = await rememberLogic(io, text, type);
-  if (res.ok) io.emit(message(`remembered (${res.value.source_kind}): ${res.value.text}`));
+  // Command voice: plain "remembered: <text>" (DESIGN.md message). The stored
+  // point's source_kind ("remember_tool") is provenance data that drives the
+  // deterministic point id — it is never echoed to the human; only the
+  // LLM-facing memory_save return names it (DESIGN.md agent-tool-results).
+  if (res.ok) io.emit(message(`remembered: ${res.value.text}`));
   else io.emit(errorEntry(`error: ${res.error}`));
   return { exit: false };
 }

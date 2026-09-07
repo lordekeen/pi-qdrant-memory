@@ -88,7 +88,12 @@ test("statusHandler distinguishes a missing collection from an unreachable serve
 test("rememberHandler prints success and upserts", async () => {
   const d = io();
   await rememberHandler(d, "use REST", "decision");
-  assert.match(d.printed.join("\n"), /use REST/);
+  const all = d.printed.join("\n");
+  assert.match(all, /use REST/);
+  // Command voice: plain "remembered: <text>" — never the stored point's
+  // internal source kind "remember_tool" (DESIGN.md message vs agent-tool-results).
+  assert.match(all, /remembered: use REST/);
+  assert.doesNotMatch(all, /remember_tool/);
 });
 
 test("searchHandler prints no-relevant-memory message on empty", async () => {

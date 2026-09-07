@@ -205,11 +205,15 @@ One plain one-line entry each — `/qdrant-remember`, `/qdrant-clear`, and
 leading label may be dimmed):
 
 ```
-remembered (remember_tool): <verbatim text>
+remembered: <verbatim text>
 cleared: collection pi-mem-… reset
 settings: scoreThreshold updated (reloaded at runtime)
 settings: scoreThreshold unchanged (cancelled)
 ```
+
+The `/qdrant-remember` confirmation is command voice: plain `remembered:`
+without echoing the stored point's internal source kind (the memory_save tool
+return is the one surface that names it — see agent-tool-results).
 
 ### error
 
