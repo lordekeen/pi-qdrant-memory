@@ -43,3 +43,11 @@ export interface RuntimeDeps {
   writeConfig(c: Config): void;
   print(text: string): void;
 }
+
+/** The runtime slice remember/search tool logic needs — no output channel. */
+export interface ToolDeps {
+  cfg: Config;
+  projectId: string;
+  embed(text: string): Promise<number[]>;
+  qdrant: QdrantLike;
+}

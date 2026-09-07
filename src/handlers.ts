@@ -1,7 +1,7 @@
 import { resolveMode, detectBlackhole } from "./mode.ts";
 import { setConfigField } from "./config.ts";
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
-import { errorEntry, helpEntry, message, outText, searchEntry, searchHitView, statusEntry } from "./out.ts";
+import { errorEntry, helpEntry, message, outText, searchEntry, searchHitView, statusEntry, EMPTY_SEARCH_TEXT } from "./out.ts";
 import type { OutEntry, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
 import type { Config, MemoryType, RuntimeDeps } from "./types.ts";
@@ -18,9 +18,6 @@ export interface HandlerIO {
   /** Emit one structured output entry (message/error/help/status/search). */
   emit(e: OutEntry): void;
 }
-
-/** RuntimeDeps.print is never used by tools-core; satisfy the type at tool call sites. */
-const silentPrint = (): void => {};
 
 export interface DepsToIOOptions { emit?: (e: OutEntry) => void; }
 
@@ -175,24 +172,24 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
 }
 
 export async function rememberHandler(io: HandlerIO, text: string, type?: MemoryType): Promise<HandlerResult> {
-  const res = await rememberLogic({
-    cfg: io.cfg, agentDir: io.agentDir, cwd: io.cwd, projectId: io.projectId,
-    embed: io.embed, qdrant: io.qdrant, readConfig: io.readConfig, writeConfig: io.writeConfig, print: silentPrint,
-  }, text, type);
+  // io is structurally a ToolDeps (cfg/projectId/embed/qdrant); tools-core takes
+  // that narrow type and needs no output channel.
+  const res = await rememberLogic(io, text, type);
   if (res.ok) io.emit(message(`remembered (${res.value.source_kind}): ${res.value.text}`));
   else io.emit(errorEntry(`error: ${res.error}`));
   return { exit: false };
 }
 
 export async function searchHandler(io: HandlerIO, query: string, type?: MemoryType): Promise<HandlerResult> {
-  const res = await memorySearchLogic({
-    cfg: io.cfg, agentDir: io.agentDir, cwd: io.cwd, projectId: io.projectId,
-    embed: io.embed, qdrant: io.qdrant, readConfig: io.readConfig, writeConfig: io.writeConfig, print: silentPrint,
-  }, query, type);
+  const res = await memorySearchLogic(io, query, type);
   if (res.ok) {
-    io.emit(res.value.length === 0 ? message("No relevant memory found.") : searchEntry(res.value.map(searchHitView)));
+    io.emit(res.value.length === 0 ? message(EMPTY_SEARCH_TEXT) : searchEntry(res.value.map(searchHitView)));
   } else {
-    io.emit(errorEntry(`error: ${res.error}`));
+    // Command voice: /qdrant-search failures read "error: search failed:
+    // <reason>" (plan §1.2) — not the LLM tool's "memory_search failed:" lead,
+    // which stays on the memory_search tool return (DESIGN.md agent-tool-results).
+    const reason = res.error.replace(/^memory_search( failed)?: /, "");
+    io.emit(errorEntry(`error: search failed: ${reason}`));
   }
   return { exit: false };
 }

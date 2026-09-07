@@ -209,7 +209,11 @@ test("searchHandler emits an error entry when the search fails", async () => {
   const d = io({ qdrant: qdrantErr });
   await searchHandler(d, "query");
   assert.equal(d.emitted[0].kind, "error");
-  assert.match(d.printed.join("\n"), /error: memory_search failed: .*connection refused/);
+  // Command voice: /qdrant-search failures read "error: search failed: <reason>"
+  // (plan §1.2), never the LLM tool's "memory_search failed:" lead (DESIGN.md
+  // agent-tool-results — which stays on the memory_search tool return).
+  assert.match(d.printed.join("\n"), /error: search failed: .*connection refused/);
+  assert.doesNotMatch(d.printed.join("\n"), /memory_search failed/);
 });
 
 test("rememberHandler emits an error entry when embedding fails", async () => {

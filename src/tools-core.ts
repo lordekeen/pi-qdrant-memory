@@ -2,13 +2,13 @@ import { ingestItems, ensureAndGet } from "./ingest.ts";
 import type { IngestDeps, IngestItem } from "./ingest.ts";
 import { pointId } from "./ids.ts";
 import type { QdrantPoint } from "./qdrant.ts";
-import type { MemoryType, PointPayload, RuntimeDeps, SearchHit } from "./types.ts";
+import type { MemoryType, PointPayload, SearchHit, ToolDeps } from "./types.ts";
 
 export type ToolResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 const MAX_TEXT = 4000;
 
-export async function rememberLogic(deps: RuntimeDeps, text: string, type?: MemoryType): Promise<ToolResult<PointPayload>> {
+export async function rememberLogic(deps: ToolDeps, text: string, type?: MemoryType): Promise<ToolResult<PointPayload>> {
   const trimmed = text.trim();
   if (!trimmed) return { ok: false, error: "remember: text is empty" };
   if (trimmed.length > MAX_TEXT) return { ok: false, error: `remember: text too long (>${MAX_TEXT} chars)` };
@@ -33,7 +33,7 @@ export async function rememberLogic(deps: RuntimeDeps, text: string, type?: Memo
 }
 
 export async function memorySearchLogic(
-  deps: RuntimeDeps,
+  deps: ToolDeps,
   query: string,
   type?: MemoryType,
   limit?: number,
@@ -58,11 +58,11 @@ export async function memorySearchLogic(
   }
 }
 
-export function normalizeDepsForTools(deps: RuntimeDeps): { ingest: IngestDeps; dim: number } {
+export function normalizeDepsForTools(deps: ToolDeps): { ingest: IngestDeps; dim: number } {
   return { ingest: { embed: deps.embed, qdrant: deps.qdrant, projectId: deps.projectId }, dim: deps.cfg.expectedDimension };
 }
 
-export async function ingestViaItems(deps: RuntimeDeps, items: IngestItem[]): Promise<{ attempted: number; ingested: number }> {
+export async function ingestViaItems(deps: ToolDeps, items: IngestItem[]): Promise<{ attempted: number; ingested: number }> {
   const { ingest, dim } = normalizeDepsForTools(deps);
   await ensureAndGet(ingest, dim);
   return ingestItems(ingest, dim, items);
