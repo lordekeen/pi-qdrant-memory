@@ -82,9 +82,11 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     label: "remember",
     description:
       "Persist a durable decision, constraint, or preference from the conversation so future sessions can recall it semantically.",
-    promptSnippet: "remember(text, type?) — persist a durable decision/constraint/preference.",
+    promptSnippet: "remember(text, type?) — persist a durable decision/constraint/preference for future sessions.",
     promptGuidelines: [
-      "When a design choice is finalized, a constraint is stated, or a user preference is made explicit, call remember to persist it across sessions.",
+      "When a design choice is finalized, a constraint is stated, or a user preference is made explicit, call remember to persist it.",
+      "Remember only concise, self-contained statements that will matter in a future session; write them so they read correctly outside this conversation.",
+      "Don't re-record what auto-capture already covers (session summaries, blackhole observations/reflections are ingested automatically) — use remember for decisions and rationale the auto-capture would lose.",
     ],
     parameters: {
       type: "object",
@@ -108,6 +110,8 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     promptSnippet: "memory_search(query, type?, limit?) — semantic search of prior durable knowledge.",
     promptGuidelines: [
       "When reasoning about something the project may have decided before, call memory_search to recall prior durable knowledge before re-deciding.",
+      "At the start of a session resuming prior project work, call memory_search for relevant prior decisions before assuming you have no context.",
+      "memory_search covers conversation-only knowledge, not file content — for code structure or files use codegraph / read / grep instead.",
     ],
     parameters: {
       type: "object",

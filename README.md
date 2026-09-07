@@ -70,6 +70,11 @@ Env overrides at load, precedence defaults → file → env:
 - `remember(text, type?)` — persist a durable decision/constraint/preference. Type defaults to `decision`.
 - `memory_search(query, type?, limit?)` — semantic search of prior durable knowledge (limit capped by `maxResults`).
 
+The tools carry always-on prompt guidance (via `promptSnippet`/`promptGuidelines`): the model is nudged to call
+`remember` when a decision/constraint/preference settles (with concise, self-contained statements, without
+re-recording what auto-capture covers) and to call `memory_search` when resuming prior work or before re-deciding.
+No companion skill is needed for the core loop — the guidance ships with the tools.
+
 ## Modes
 
 - **Mode 1 (pi-blackhole present, coexistence):** reads pi-blackhole's pending durable artifacts
