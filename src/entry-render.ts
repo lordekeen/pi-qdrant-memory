@@ -106,6 +106,21 @@ function collapseHint(entry: OutEntry, expanded: boolean): string {
   return ` (${hint})`;
 }
 
+/**
+ * Append the muted expand hint to the last line of a collapsed entry. Spreads
+ * the last line so its other props (e.g. the status card flag) survive — a
+ * collapsed card must keep every row inside the shared background (DESIGN.md
+ * status-card).
+ */
+function withCollapseHint(linesIn: OutLine[], entry: OutEntry, expanded: boolean): OutLine[] {
+  const hint = collapseHint(entry, expanded);
+  if (!hint || linesIn.length === 0) return linesIn;
+  const lines = [...linesIn];
+  const last = lines[lines.length - 1];
+  lines[lines.length - 1] = { ...last, spans: [...last.spans, { text: hint, role: "muted" as OutlineRole }] };
+  return lines;
+}
+
 function textComponent(text: string, TextCtor: TextCtor | undefined): EntryComponent | undefined {
   return TextCtor ? new TextCtor(text) : undefined;
 }
@@ -119,14 +134,7 @@ function buildStatus(
   TextCtor: TextCtor | undefined,
   BoxCtor: BoxCtor | undefined,
 ): EntryComponent | undefined {
-  const lines = [...linesIn];
-  const hint = collapseHint(entry, expanded);
-  if (hint && lines.length) {
-    const last = lines[lines.length - 1];
-    // Spread keeps the card flag: a collapsed card must keep every row inside
-    // the shared background (DESIGN.md status-card).
-    lines[lines.length - 1] = { ...last, spans: [...last.spans, { text: hint, role: "muted" as OutlineRole }] };
-  }
+  const lines = withCollapseHint(linesIn, entry, expanded);
   const cardLines = lines.filter((l) => l.card === true);
   const bodyLines = lines.filter((l) => l.card !== true);
 
@@ -181,12 +189,7 @@ export function renderEntryComponent(entryData: unknown, options?: RendererOptio
 
   if (entry.kind === "status") return buildStatus(entry, expanded, lines, theme, TextCtor, BoxCtor);
   // message / error / help / search: one multi-line styled Text (search gets the hint when collapsed)
-  const hint = collapseHint(entry, expanded);
-  const out: OutLine[] = [...lines];
-  if (hint && out.length) {
-    const last = out[out.length - 1];
-    out[out.length - 1] = { ...last, spans: [...last.spans, { text: hint, role: "muted" as OutlineRole }] };
-  }
+  const out = withCollapseHint(lines, entry, expanded);
   try {
     return textComponent(styledLines(out, theme).join("\n"), TextCtor);
   } catch {
