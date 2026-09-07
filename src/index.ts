@@ -10,7 +10,8 @@ import { artifactToIngestItem, ingestItems } from "./ingest.ts";
 import { captureAtCompaction } from "./capture.ts";
 import { projectIdFrom } from "./project.ts";
 import { statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler, depsToIO } from "./handlers.ts";
-import type { HandlerIO } from "./handlers.ts";
+import type { HandlerIO, SettingsUI } from "./handlers.ts";
+import { runSettingsForm } from "./handlers.ts";
 import type { MemoryType, RuntimeDeps } from "./types.ts";
 
 /**
@@ -26,6 +27,8 @@ export interface WireApi {
   appendEntry(type: string, data: unknown): void;
   sendMessage(text: string): void;
   setStatus(text: string): void;
+  /** Interactive ctx.ui (select/input/confirm) when a command runs in the TUI. */
+  requestUI?(): SettingsUI | undefined;
 }
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown };
@@ -139,11 +142,16 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     { name: "qdrant-status", description: "Connection health, active mode, collection status", execute: async () => { await statusHandler(io); } },
     {
       name: "qdrant-settings",
-      description: "Persist a config field: /qdrant-settings <key> <value>",
+      description: "Settings form, or persist a config field: /qdrant-settings <key> <value>",
       execute: async (args) => {
         const trimmed = args.trim();
         const field = trimmed.split(/\s+/)[0] ?? "";
-        if (!field) { await settingsHandler(io); return; }
+        if (!field) {
+          const ui = api.requestUI?.();
+          if (ui) { await runSettingsForm(ui, io); return; }
+          await settingsHandler(io); // no interactive UI (headless tests / rpc): print usage
+          return;
+        }
         const value = trimmed.slice(trimmed.indexOf(field) + field.length).trim();
         await settingsHandler(io, field, value === "" ? undefined : value);
       },
@@ -275,7 +283,13 @@ export default async function factory(api: unknown): Promise<void> {
   const env = process.env;
   const agentDir = agentDirFromEnv(env);
 
-  let currentUi: { setStatus?: (key: string, text: string | undefined) => void; notify?: (text: string, level?: string) => void } | undefined;
+  let currentUi: {
+    setStatus?: (key: string, text: string | undefined) => void;
+    notify?: (text: string, level?: string) => void;
+    select?: (title: string, options: string[]) => Promise<string | undefined>;
+    input?: (title: string, placeholder?: string) => Promise<string | undefined>;
+    confirm?: (title: string, message: string) => Promise<boolean>;
+  } | undefined;
 
   // pi-tui's `Text` component, loaded lazily: pi's extension loader aliases
   // `@earendil-works/pi-tui` to its bundled copy, but plain-node test runs never
@@ -352,6 +366,15 @@ export default async function factory(api: unknown): Promise<void> {
     sendMessage: sendText,
     setStatus: (text) => {
       try { currentUi?.setStatus?.(QDRANT_STATUS_KEY, text); } catch { /* status is best-effort */ }
+    },
+    requestUI: () => {
+      // Only expose the interactive dialogs when the current ui context really
+      // has them (interactive TUI does; rpc/print contexts may not).
+      const u = currentUi;
+      if (!u || typeof u.select !== "function" || typeof u.input !== "function" || typeof u.confirm !== "function") {
+        return undefined;
+      }
+      return { select: u.select, input: u.input, confirm: u.confirm } satisfies SettingsUI;
     },
   };
 

@@ -1,5 +1,5 @@
 import { resolveMode, detectBlackhole } from "./mode.ts";
-import { isConfigMode } from "./config.ts";
+import { setConfigField } from "./config.ts";
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
 import { renderHits } from "./render.ts";
 import type { QdrantLike } from "./qdrant.ts";
@@ -62,31 +62,83 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
 export async function settingsHandler(io: HandlerIO, field?: string, value?: string): Promise<HandlerResult> {
   const cfg = io.readConfig();
   if (field && value !== undefined) {
-    const key = field as keyof Config;
-    if (key in cfg) {
-      const next = { ...cfg };
-      if (typeof cfg[key] === "number") {
-        const n = Number(value);
-        if (!Number.isFinite(n)) { io.print(`settings: ${field} expects a number`); return { exit: false }; }
-        if (key === "expectedDimension" || key === "maxResults") {
-          if (!(n > 0)) { io.print(`settings: ${field} expects a positive number`); return { exit: false }; }
-        }
-        (next as Record<string, unknown>)[key] = n;
-      } else if (key === "mode") {
-        if (!isConfigMode(value)) { io.print(`settings: mode must be one of auto | blackhole | own`); return { exit: false }; }
-        (next as Record<string, unknown>)[key] = value;
-      } else {
-        (next as Record<string, unknown>)[key] = value === "null" ? null : value;
-      }
-      io.writeConfig(next);
-      io.print(`settings: ${field} updated (reloaded at runtime)`);
-      return { exit: false };
-    }
-    io.print(`settings: unknown key ${field}`);
+    const applied = setConfigField(cfg, field, value);
+    if (!applied.ok) { io.print(applied.error); return { exit: false }; }
+    io.writeConfig(applied.next);
+    io.print(`settings: ${field} updated (reloaded at runtime)`);
     return { exit: false };
   }
-  io.print(`settings: usage — /qdrant-settings <key> <value> (keys: mode, embeddingBaseURL, embeddingModel, expectedDimension, scoreThreshold, maxResults)`);
+  io.print(`settings: usage — /qdrant-settings opens the interactive form; /qdrant-settings <key> <value> sets a field (keys: mode, embeddingBaseURL, embeddingModel, expectedDimension, scoreThreshold, maxResults, qdrantUrl, qdrantApiKey, embeddingApiKey)`);
   return { exit: false };
+}
+
+/** The interactive pieces of `ctx.ui` that the settings form needs. */
+export interface SettingsUI {
+  select(title: string, options: string[]): Promise<string | undefined>;
+  input(title: string, placeholder?: string): Promise<string | undefined>;
+  confirm(title: string, message: string): Promise<boolean>;
+}
+
+/** Editable fields in a stable order, all config keys minus nothing. */
+const SETTING_FIELDS = [
+  "mode",
+  "embeddingBaseURL",
+  "embeddingModel",
+  "expectedDimension",
+  "scoreThreshold",
+  "maxResults",
+  "qdrantUrl",
+  "qdrantApiKey",
+  "embeddingApiKey",
+] as const;
+
+type SettingField = (typeof SETTING_FIELDS)[number];
+
+function displayValue(value: unknown): string {
+  return value === null ? "null" : typeof value === "string" ? value : String(value);
+}
+
+/**
+ * Interactive settings form, driven through `ctx.ui` (select/input/confirm).
+ * Esc or an empty input cancels the current step; the write only happens after
+ * an explicit confirm. Validation is shared with the CLI via `setConfigField`.
+ */
+export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<void> {
+  const cfg = io.readConfig();
+  const optionToKey = new Map<string, SettingField>();
+  const options = SETTING_FIELDS.map((k) => {
+    const label = `${k} = ${displayValue((cfg as unknown as Record<string, unknown>)[k])}`;
+    optionToKey.set(label, k);
+    return label;
+  });
+  const pick = await ui.select("Qdrant Memory — choose a setting to edit", options);
+  if (!pick) return; // Esc cancels the whole form
+  const key = optionToKey.get(pick);
+  if (!key) return;
+  const cur = (cfg as unknown as Record<string, unknown>)[key];
+
+  let raw: string | undefined;
+  if (key === "mode") {
+    raw = await ui.select(`mode — currently ${displayValue(cur)}`, ["auto", "blackhole", "own"]);
+  } else if (typeof cur === "number") {
+    const positive = key === "expectedDimension" || key === "maxResults";
+    raw = await ui.input(`${key} (${positive ? "positive " : ""}number)`, String(cur));
+  } else {
+    raw = await ui.input(`${key}`, cur === null ? undefined : String(cur));
+  }
+  const value = raw === undefined ? undefined : raw.trim();
+  if (value === undefined || value === "") return; // cancelled / cleared input
+
+  const applied = setConfigField(cfg, key, value);
+  if (!applied.ok) { io.print(applied.error); return; }
+  const nextValue = (applied.next as unknown as Record<string, unknown>)[key];
+  const ok = await ui.confirm(
+    `Save ${key}?`,
+    `${key} = ${displayValue(nextValue)}  (was ${displayValue(cur)}; run /qdrant-settings again to edit another field)`,
+  );
+  if (!ok) { io.print(`settings: ${key} unchanged (cancelled)`); return; }
+  io.writeConfig(applied.next);
+  io.print(`settings: ${key} updated (reloaded at runtime)`);
 }
 
 export async function rememberHandler(io: HandlerIO, text: string, type?: MemoryType): Promise<HandlerResult> {

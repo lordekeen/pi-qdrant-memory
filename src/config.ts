@@ -29,6 +29,35 @@ export function isConfigMode(v: string | undefined): v is ConfigMode {
   return v === "auto" || v === "blackhole" || v === "own";
 }
 
+/**
+ * Apply a validated `field = value` write to a config copy. Shared by the CLI
+ * (`/qdrant-settings <key> <value>`) and the interactive form so both accept and
+ * reject exactly the same values. `value` is always a raw string from the user.
+ */
+export function setConfigField(
+  cfg: Config,
+  field: string,
+  value: string,
+): { ok: true; next: Config } | { ok: false; error: string } {
+  if (!(field in cfg)) return { ok: false, error: `settings: unknown key ${field}` };
+  const cur = (cfg as unknown as Record<string, unknown>)[field];
+  const next = { ...cfg } as unknown as Record<string, unknown>;
+  if (field === "mode") {
+    if (!isConfigMode(value)) return { ok: false, error: "settings: mode must be one of auto | blackhole | own" };
+    next[field] = value;
+  } else if (typeof cur === "number") {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return { ok: false, error: `settings: ${field} expects a number` };
+    if ((field === "expectedDimension" || field === "maxResults") && !(n > 0)) {
+      return { ok: false, error: `settings: ${field} expects a positive number` };
+    }
+    next[field] = n;
+  } else {
+    next[field] = value === "null" ? null : value;
+  }
+  return { ok: true, next: next as unknown as Config };
+}
+
 function numEnv(raw: string | undefined, fileValue: unknown, def: number): number {
   // Coerce string/number file or env values; non-finite values fall back to `def`
   // so a corrupt file never leaks a string into a numeric config field.

@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler,
+  statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler, runSettingsForm,
 } from "../src/handlers.ts";
-import type { HandlerIO } from "../src/handlers.ts";
+import type { HandlerIO, SettingsUI } from "../src/handlers.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
 import type { Config } from "../src/types.ts";
 
@@ -94,6 +94,77 @@ test("clearHandler calls clearCollection and prints confirmation", async () => {
   await clearHandler(d);
   assert.equal(d.written.length, 1);
   assert.match(d.printed.join("\n"), /cleared|reset/i);
+});
+
+test("runSettingsForm edits a numeric field after confirm", async () => {
+  const d = io();
+  const ui: SettingsUI = {
+    async select(_title, options) {
+      return options.find((o) => o.startsWith("scoreThreshold ="));
+    },
+    async input(_title, _placeholder) { return "0.25"; },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(d.written.length, 1);
+  assert.equal(d.written[0].scoreThreshold, 0.25);
+  assert.match(d.printed.join("\n"), /scoreThreshold updated/);
+});
+
+test("runSettingsForm Esc on the field list writes nothing", async () => {
+  const d = io();
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return "0.25"; },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(d.written.length, 0);
+  assert.equal(d.printed.length, 0);
+});
+
+test("runSettingsForm rejects an invalid value before confirming", async () => {
+  const d = io();
+  let confirms = 0;
+  const ui: SettingsUI = {
+    async select(_title, options) { return options.find((o) => o.startsWith("scoreThreshold =")); },
+    async input() { return "not-a-number"; },
+    async confirm() { confirms++; return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(confirms, 0);
+  assert.equal(d.written.length, 0);
+  assert.match(d.printed.join("\n"), /expects a number/);
+});
+
+test("runSettingsForm leaves config untouched when confirm is declined", async () => {
+  const d = io();
+  const ui: SettingsUI = {
+    async select(_title, options) { return options.find((o) => o.startsWith("scoreThreshold =")); },
+    async input() { return "0.3"; },
+    async confirm() { return false; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(d.written.length, 0);
+  assert.match(d.printed.join("\n"), /unchanged \(cancelled\)/);
+});
+
+test("runSettingsForm mode field uses a nested select", async () => {
+  const d = io();
+  let secondSelectTitle = "";
+  const ui: SettingsUI = {
+    async select(title, options) {
+      if (title.startsWith("Qdrant Memory")) return options.find((o) => o.startsWith("mode ="));
+      secondSelectTitle = title;
+      return "own";
+    },
+    async input() { throw new Error("mode must not open a text input"); },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.match(secondSelectTitle, /mode/);
+  assert.equal(d.written.length, 1);
+  assert.equal(d.written[0].mode, "own");
 });
 
 test("helpHandler prints the command list", async () => {
