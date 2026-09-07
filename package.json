@@ -7,7 +7,8 @@
   "engines": { "node": ">=22.19" },
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:smoke": "QDRANT_MEMORY_SMOKE=1 node --test test/integration.smoke.test.ts"
   },
   "devDependencies": {
     "typescript": "^5.8.0",

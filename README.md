@@ -100,5 +100,6 @@ npm test          # node --test over test/**/*.test.ts
 npm run typecheck # tsc --noEmit (needs devDependencies installed)
 ```
 
-Opt-in end-to-end smoke test (requires real Qdrant on `:6333` and an OpenAI-compatible embeddings server on
-`:8080/v1`): `QDRANT_MEMORY_SMOKE=1 npm run test:smoke`.
+Opt-in end-to-end smoke test (requires real Qdrant on `:6333` and an OpenAI-compatible embeddings server):
+`QDRANT_MEMORY_SMOKE=1 npm run test:smoke`. Server endpoints are overridable via `QDRANT_MEMORY_URL`,
+`QDRANT_MEMORY_EMBED_URL`, `QDRANT_MEMORY_EMBED_MODEL`, and `QDRANT_MEMORY_EMBED_DIM`.

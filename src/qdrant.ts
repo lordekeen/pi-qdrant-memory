@@ -97,8 +97,10 @@ export class QdrantClient implements QdrantLike {
   }): Promise<SearchHit[]> {
     const must: unknown[] = [{ key: "project_id", match: { value: opts.projectId } }];
     if (opts.type) must.push({ key: "type", match: { value: opts.type } });
+    // The query API takes the vector under `query` (score_threshold is rejected for
+    // a top-level `vector` in current Qdrant versions).
     const json = await this.request("POST", `/collections/${encodeURIComponent(name)}/points/query`, {
-      vector,
+      query: vector,
       limit: opts.limit,
       score_threshold: opts.threshold,
       with_payload: true,
