@@ -180,7 +180,9 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
         rt.projectId = await projectIdFrom(cwd);
       } catch { /* keep the factory-time anchor */ }
     }
-    api.setStatus(`qdrant-memory: ${mode} (${rt.projectId})`);
+    // Footer statusline — icon-led like ketch's "🌐 ketch: active", but with the
+    // mode + project collection instead of repeating the extension name.
+    api.setStatus(`🧠 ${mode} (${rt.projectId})`);
     if (mode === "mode1") await ingestPending();
     // Mode 2 safety-net auto snapshot (spec §3.3) is intentionally NOT wired here:
     // an early-session snapshot needs mid-session content distillation access that
