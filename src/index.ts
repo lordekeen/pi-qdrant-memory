@@ -34,9 +34,11 @@ const OK = (text: string): ToolTextResult => ({ content: [{ type: "text", text }
 const ERR = (text: string): ToolTextResult => ({ content: [{ type: "text", text }], details: undefined });
 
 interface CommandDef {
-  name: string; // "<family> <sub>", e.g. "qdrant status"
+  /** Single-token command name as typed after the slash, e.g. "qdrant-status". */
+  name: string;
   description: string;
-  execute: (args: string[]) => Promise<void>;
+  /** Receives the raw argument string — everything after the command token. */
+  execute: (args: string) => Promise<void>;
 }
 
 /** Extract a durable summary text from an event payload when one is present. */
@@ -129,16 +131,27 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
   });
 
   // ── /qdrant command family ─────────────────────────────────────────────────
-  // Each entry is "<family> <sub>" so a single /qdrant dispatcher (see the real
-  // factory adapter) can route subcommands — pi resolves "/qdrant status" as the
-  // "qdrant" command with args "status ...".
+  // One pi command per unique single-token name: pi resolves "/qdrant-status" as
+  // the command "qdrant-status" with everything after the first space as its raw
+  // args. No subcommand parsing, and every command is individually discoverable
+  // and autocompletable in the TUI.
   const commands: CommandDef[] = [
-    { name: "qdrant status", description: "Connection health, active mode, collection status", execute: async () => { await statusHandler(io); } },
-    { name: "qdrant settings", description: "Edit settings: /qdrant settings <key> <value>", execute: async (a) => { await settingsHandler(io, a[0], a[1]); } },
-    { name: "qdrant remember", description: "Save durable knowledge now: /qdrant remember <text>", execute: async (a) => { await rememberHandler(io, a.join(" ")); } },
-    { name: "qdrant search", description: "Semantic search: /qdrant search <query>", execute: async (a) => { await searchHandler(io, a.join(" ")); } },
-    { name: "qdrant clear", description: "Reset the current project's collection", execute: async () => { await clearHandler(io); } },
-    { name: "qdrant help", description: "List /qdrant commands", execute: async () => { await helpHandler(io); } },
+    { name: "qdrant-status", description: "Connection health, active mode, collection status", execute: async () => { await statusHandler(io); } },
+    {
+      name: "qdrant-settings",
+      description: "Persist a config field: /qdrant-settings <key> <value>",
+      execute: async (args) => {
+        const trimmed = args.trim();
+        const field = trimmed.split(/\s+/)[0] ?? "";
+        if (!field) { await settingsHandler(io); return; }
+        const value = trimmed.slice(trimmed.indexOf(field) + field.length).trim();
+        await settingsHandler(io, field, value === "" ? undefined : value);
+      },
+    },
+    { name: "qdrant-remember", description: "Save durable knowledge now: /qdrant-remember <text>", execute: async (args) => { await rememberHandler(io, args.trim()); } },
+    { name: "qdrant-search", description: "Semantic search: /qdrant-search <query>", execute: async (args) => { await searchHandler(io, args.trim()); } },
+    { name: "qdrant-clear", description: "Reset the current project's collection", execute: async () => { await clearHandler(io); } },
+    { name: "qdrant-help", description: "List /qdrant commands", execute: async () => { await helpHandler(io); } },
   ];
   for (const c of commands) api.registerCommand({ name: c.name, description: c.description, execute: c.execute });
 
@@ -284,19 +297,29 @@ export default async function factory(api: unknown): Promise<void> {
 
   rt = await makeRuntime(agentDir, process.cwd(), env, io);
 
-  const family = new Map<string, { description: string; members: Array<{ sub: string; execute: (args: string[]) => Promise<void> }> }>();
-
   const adapter: WireApi = {
     registerTool: (def) => pi.registerTool(def),
     registerCommand: (def) => {
-      // Coalesce "<family> <sub>" defs into per-family member lists; the real pi
-      // dispatcher resolves "/qdrant <sub>" as command "qdrant" (first token).
-      const d = def as { name?: string; description?: string; execute?: (args: string[]) => Promise<void> };
-      const [fam, sub] = (d.name ?? "").split(" ");
-      if (!fam) return;
-      let f = family.get(fam);
-      if (!f) { f = { description: `${fam} command family`, members: [] }; family.set(fam, f); }
-      f.members.push({ sub: sub ?? "help", execute: d.execute ?? (async () => {}) });
+      // One real pi command per def. pi resolves "/qdrant-status" as the command
+      // "qdrant-status" and passes everything after the first space as the raw
+      // `args` string, so each def runs directly on its own argument text — no
+      // family coalescing or subcommand dispatch in the adapter.
+      const d = def as { name?: string; description?: string; execute?: (args: string) => Promise<void> };
+      if (!d.name) return;
+      pi.registerCommand(d.name, {
+        description: d.description,
+        handler: async (args: string, ctx: unknown) => {
+          const ui = (ctx as { ui?: unknown } | undefined)?.ui as typeof currentUi;
+          if (ui) currentUi = ui;
+          try {
+            await d.execute?.(args);
+          } catch (err) {
+            // Surface handler failures as a visible message instead of relying on
+            // pi's (easily missed) extension-error channel.
+            sendText(`error: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        },
+      });
     },
     on: (event, handler) => {
       pi.on(event, (payload, ctx) => {
@@ -315,23 +338,6 @@ export default async function factory(api: unknown): Promise<void> {
   };
 
   const cleanup = wireApi(adapter, rt);
-
-  // Register each command family as a single real pi command that dispatches on
-  // its first argument (e.g. "/qdrant status", "/qdrant remember <text>").
-  for (const [fam, f] of family) {
-    pi.registerCommand(fam, {
-      description: `${f.description}: ${f.members.map((m) => m.sub).join(", ")}`,
-      handler: async (args: string, ctx: unknown) => {
-        const tokens = args.trim().split(/\s+/).filter(Boolean);
-        const sub = tokens[0] ?? "help";
-        const rest = tokens.slice(1);
-        const ui = (ctx as { ui?: unknown } | undefined)?.ui as typeof currentUi;
-        if (ui) currentUi = ui;
-        const member = f.members.find((m) => m.sub === sub) ?? f.members.find((m) => m.sub === "help");
-        await member?.execute(rest);
-      },
-    });
-  }
 
   // pi tracks and releases event-bus subscriptions on runtime teardown and the
   // adapter's `on` intentionally returns a no-op, so the structural `cleanup`

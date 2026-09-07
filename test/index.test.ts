@@ -45,12 +45,12 @@ test("wireApi registers remember and memory_search tools", () => {
   } finally { cleanup(); }
 });
 
-test("wireApi registers the /qdrant command family", () => {
+test("wireApi registers the /qdrant command set", () => {
   const api = fakeApi();
   const cleanup = wireApi(api, rt);
   try {
     const names = (api.commands as Array<{ name: string }>).map((c) => c.name);
-    for (const n of ["qdrant status", "qdrant settings", "qdrant remember", "qdrant search", "qdrant clear", "qdrant help"]) {
+    for (const n of ["qdrant-status", "qdrant-settings", "qdrant-remember", "qdrant-search", "qdrant-clear", "qdrant-help"]) {
       assert.ok(names.includes(n), `missing command ${n}`);
     }
   } finally { cleanup(); }

@@ -7,7 +7,8 @@ capture (lexical recall); **this extension = semantic retrieval** over that dura
 
 - **`remember`** (agent tool) — persist a durable decision/constraint/preference.
 - **`memory_search`** (agent tool) — semantic search of prior durable knowledge.
-- **`/qdrant`** command family — `status`, `settings`, `remember`, `search`, `clear`, `help`.
+- **`/qdrant-*`** command set — `qdrant-status`, `qdrant-settings`, `qdrant-remember`, `qdrant-search`, `qdrant-clear`, `qdrant-help`.
+  Each is a unique single-token pi command (no subcommand parsing): `/qdrant-status`, `/qdrant-settings <key> <value>`, …
 - Mode-aware: with pi-blackhole installed it ingests blackhole's durable artifacts; without it, it captures
   pi's own compaction summary as a `session_summary`.
 
@@ -35,7 +36,7 @@ Runtime is in-process; no background resources are started by the factory (all l
 ## Config
 
 Single source of truth: `~/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json`
-(honors `PI_CODING_AGENT_DIR`). The file is canonical and portable — edit it via `/qdrant settings`, not by
+(honors `PI_CODING_AGENT_DIR`). The file is canonical and portable — edit it via `/qdrant-settings`, not by
 hand. If absent, the defaults below apply (zero-config run).
 
 | Key | Default | Meaning |
@@ -57,13 +58,13 @@ Env overrides at load, precedence defaults → file → env:
 
 ## Commands
 
-`/qdrant status` — connection health + active mode + collection point count.
-`/qdrant settings [key value]` — persist a config field (TUI settings form is a future shell on the same
-`writeConfig` path).
-`/qdrant remember <text>` — manual durable save.
-`/qdrant search <query>` — manual semantic search.
-`/qdrant clear` — reset the current project's collection.
-`/qdrant help` — this list.
+`/qdrant-status` — connection health + active mode + collection point count.
+`/qdrant-settings <key> <value>` — persist a config field (`mode`, `embeddingBaseURL`, `embeddingModel`,
+`expectedDimension`, `scoreThreshold`, `maxResults`). Bare `/qdrant-settings` prints usage.
+`/qdrant-remember <text>` — manual durable save.
+`/qdrant-search <query>` — manual semantic search.
+`/qdrant-clear` — reset the current project's collection.
+`/qdrant-help` — this list.
 
 ## Agent tools
 
@@ -82,11 +83,11 @@ No companion skill is needed for the core loop — the guidance ships with the t
   `session_shutdown`. It **never** claims the `session_before_compact` hook.
 - **Mode 2 (pi-blackhole absent):** claims `session_before_compact` and captures pi's own compaction
   summary (from the `session_compact` event) as a `session_summary` point — fire-and-forget so capture can
-  never stall compaction. `/qdrant remember` is the manual safety net.
+  never stall compaction. `/qdrant-remember` is the manual safety net.
 
 An early-session auto snapshot (spec §3.3 safety net) is not yet wired: it needs mid-session content
 distillation access this extension does not currently have, so Mode 2's safety nets are the compaction
-capture and `/qdrant remember`.
+capture and `/qdrant-remember`.
 
 ## Data model (summary)
 

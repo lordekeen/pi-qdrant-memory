@@ -25,7 +25,7 @@ function fakePi() {
   return { pi, tools, commands, events, messages };
 }
 
-test("factory registers tools, one /qdrant family command, and lifecycle hooks", async () => {
+test("factory registers tools, /qdrant commands, and lifecycle hooks", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-qm-factory-"));
   mkdirSync(join(dir, "pi-qdrant-memory"), { recursive: true });
   const prev = process.env.PI_CODING_AGENT_DIR;
@@ -39,10 +39,10 @@ test("factory registers tools, one /qdrant family command, and lifecycle hooks",
     const toolNames = (tools as Array<{ name: string }>).map((t) => t.name).sort();
     assert.deepEqual(toolNames, ["memory_search", "remember"]);
 
-    // The /qdrant family coalesces into one real command (pi dispatches on the
-    // first token of "/qdrant <sub>").
-    assert.ok(commands.has("qdrant"), "expected a single 'qdrant' command");
-    assert.match(commands.get("qdrant")!.description ?? "", /status.*remember.*search/);
+    // One real pi command per unique single-token name (pi resolves
+    // "/qdrant-status" as the command "qdrant-status" — no subcommand parsing).
+    const cmdNames = [...commands.keys()].sort();
+    assert.deepEqual(cmdNames, ["qdrant-clear", "qdrant-help", "qdrant-remember", "qdrant-search", "qdrant-settings", "qdrant-status"]);
 
     // No pi-blackhole config in the temp agent dir → mode2 → lifecycle hooks.
     const registered = events.map((e) => e.event);
@@ -56,7 +56,7 @@ test("factory registers tools, one /qdrant family command, and lifecycle hooks",
   }
 });
 
-test("factory: /qdrant command dispatches subcommands and defaults to help", async () => {
+test("factory: qdrant-help prints the command list; bad settings key is rejected", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-qm-factory-"));
   mkdirSync(join(dir, "pi-qdrant-memory"), { recursive: true });
   const prev = process.env.PI_CODING_AGENT_DIR;
@@ -64,20 +64,13 @@ test("factory: /qdrant command dispatches subcommands and defaults to help", asy
   const { pi, commands, messages } = fakePi();
   try {
     await factory(pi);
-    const qdrant = commands.get("qdrant")!;
-    assert.ok(qdrant, "expected the qdrant command");
 
-    // "/qdrant help" → helpHandler output routed through sendMessage (no network).
-    await qdrant.handler("help", {});
-    assert.ok(messages.join("\n").includes("/qdrant status"), "help output missing command list");
+    // "/qdrant-help" → helpHandler output routed through sendMessage (no network).
+    await commands.get("qdrant-help")!.handler("", {});
+    assert.ok(messages.join("\n").includes("/qdrant-status"), "help output missing command list");
 
-    // "/qdrant" with no args → defaults to help.
-    const before = messages.length;
-    await qdrant.handler("", {});
-    assert.ok(messages.length > before, "bare /qdrant should print the help list");
-
-    // "/qdrant settings badkey 1" → unknown-key message, no crash.
-    await qdrant.handler("settings definitely-not-a-key 1", {});
+    // "/qdrant-settings badkey 1" → unknown-key message, no crash.
+    await commands.get("qdrant-settings")!.handler("definitely-not-a-key 1", {});
     assert.ok(messages.join("\n").includes("unknown key"), "expected an unknown-key message");
   } finally {
     if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
@@ -93,11 +86,11 @@ test("factory: a settings write persists and triggers a runtime config reload", 
   const { pi, commands, messages } = fakePi();
   try {
     await factory(pi);
-    const qdrant = commands.get("qdrant")!;
+    const settings = commands.get("qdrant-settings")!;
 
     // Write a valid numeric setting — persists to the canonical file and reloads
     // the runtime (applyConfig) without any network I/O.
-    await qdrant.handler("settings scoreThreshold 0.99", {});
+    await settings.handler("scoreThreshold 0.99", {});
     assert.ok(messages.join("\n").includes("scoreThreshold updated"));
     const { readFileSync } = await import("node:fs");
     const { configPath } = await import("../src/config.ts");
@@ -105,7 +98,7 @@ test("factory: a settings write persists and triggers a runtime config reload", 
     assert.equal(onDisk.scoreThreshold, 0.99);
 
     // Invalid write is rejected and leaves the file unchanged (no clobber).
-    await qdrant.handler("settings maxResults not-a-number", {});
+    await settings.handler("maxResults not-a-number", {});
     const onDisk2 = JSON.parse(readFileSync(configPath(dir), "utf8")) as { scoreThreshold?: unknown; maxResults?: unknown };
     assert.equal(onDisk2.scoreThreshold, 0.99);
     assert.equal(onDisk2.maxResults, 10); // unchanged default

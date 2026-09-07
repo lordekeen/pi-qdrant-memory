@@ -100,7 +100,7 @@ test("helpHandler prints the command list", async () => {
   const d = io();
   await helpHandler(d);
   const all = d.printed.join("\n");
-  for (const c of ["/qdrant status", "/qdrant settings", "/qdrant remember", "/qdrant search", "/qdrant clear", "/qdrant help"]) {
+  for (const c of ["/qdrant-status", "/qdrant-settings", "/qdrant-remember", "/qdrant-search", "/qdrant-clear", "/qdrant-help"]) {
     assert.match(all, new RegExp(c.replace("/", "\\/")));
   }
 });

@@ -85,7 +85,7 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
     io.print(`settings: unknown key ${field}`);
     return { exit: false };
   }
-  io.print(`settings: open the TUI form (/qdrant settings) to edit; or use /qdrant settings <key> <value>`);
+  io.print(`settings: usage — /qdrant-settings <key> <value> (keys: mode, embeddingBaseURL, embeddingModel, expectedDimension, scoreThreshold, maxResults)`);
   return { exit: false };
 }
 
@@ -119,12 +119,12 @@ export async function clearHandler(io: HandlerIO): Promise<HandlerResult> {
 
 export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {
   io.print([
-    "/qdrant status   — connection health + active mode + collection status",
-    "/qdrant settings — open settings form, or /qdrant settings <key> <value>",
-    "/qdrant remember <text> — save durable knowledge now",
-    "/qdrant search <query>  — semantic search of durable knowledge",
-    "/qdrant clear   — reset the current project's collection",
-    "/qdrant help    — this list",
+    "/qdrant-status            — connection health + active mode + collection status",
+    "/qdrant-settings <key> <value> — persist a config field (e.g. scoreThreshold 0.2)",
+    "/qdrant-remember <text>   — save durable knowledge now",
+    "/qdrant-search <query>    — semantic search of durable knowledge",
+    "/qdrant-clear             — reset the current project's collection",
+    "/qdrant-help              — this list",
   ].join("\n"));
   return { exit: false };
 }
