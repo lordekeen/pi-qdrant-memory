@@ -244,7 +244,10 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
 //   - on(event, handler) — handler receives (event, ctx); subscriptions are
 //     tracked by the extension runtime and released on teardown (pi has no
 //     unsubscribe return value)
-//   - sendMessage({ customType, content, display, details }, { triggerTurn })
+//   - appendEntry(customType, data) + registerEntryRenderer(customType, renderer)
+//     — slash-command output goes here: custom entries are rendered in the TUI
+//     transcript but DO NOT participate in LLM context (unlike sendMessage,
+//     whose `display` flag only gates TUI rendering).
 //   - ctx.ui.setStatus(key, text) / ctx.ui.notify(text, level) on the context
 //
 // Tool `parameters` are plain JSON Schema objects (structurally identical to what
@@ -255,7 +258,8 @@ interface PiSurface {
   registerTool(def: unknown): void;
   registerCommand(name: string, options: { description?: string; handler(args: string, ctx: unknown): void | Promise<void> }): void;
   on(event: string, handler: (payload: unknown, ctx: unknown) => void | Promise<void>): void;
-  sendMessage(message: unknown): void;
+  appendEntry(customType: string, data?: unknown): void;
+  registerEntryRenderer(customType: string, renderer: (entry: { customType?: string; data?: unknown }) => unknown): void;
 }
 
 const QDRANT_STATUS_KEY = "qdrant-memory";
@@ -273,14 +277,26 @@ export default async function factory(api: unknown): Promise<void> {
 
   let currentUi: { setStatus?: (key: string, text: string | undefined) => void; notify?: (text: string, level?: string) => void } | undefined;
 
+  // pi-tui's `Text` component, loaded lazily: pi's extension loader aliases
+  // `@earendil-works/pi-tui` to its bundled copy, but plain-node test runs never
+  // resolve it (they don't render entries). Until it resolves, the entry
+  // renderer returns undefined and pi skips the row — safe under every runtime.
+  let TextImpl: { new (text?: string): { render(width: number): string[] } } | undefined;
+  void import("@earendil-works/pi-tui")
+    .then((m) => { TextImpl = m.Text; })
+    .catch(() => { /* pi-tui unavailable (e.g. tests); entries stay unrendered */ });
+
+  // Command output channel: custom entries are persisted + rendered in the TUI
+  // transcript WITHOUT entering the LLM context (sendMessage's `display` flag
+  // only gates rendering, so it cannot give us human-visible + model-free output).
   const sendText = (text: string): void => {
-    pi.sendMessage({
-      customType: CUSTOM_TYPE,
-      content: text,
-      display: false, // render for the human without polluting the model's context
-      details: undefined,
-    });
+    pi.appendEntry(CUSTOM_TYPE, text);
   };
+
+  pi.registerEntryRenderer(CUSTOM_TYPE, (entry) => {
+    const data = typeof entry?.data === "string" ? entry.data : String((entry as { data?: unknown })?.data ?? "");
+    return TextImpl ? new TextImpl(data) : undefined;
+  });
 
   // Assigned by makeRuntime below; writeConfig may run later (after a settings
   // write) and needs to reload the assembled runtime onto the new config.

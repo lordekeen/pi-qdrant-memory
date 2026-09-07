@@ -15,14 +15,16 @@ function fakePi() {
   const tools: unknown[] = [];
   const commands = new Map<string, FakePiCommand>();
   const events: Array<{ event: string; handler: (p: unknown, ctx: unknown) => void | Promise<void> }> = [];
+  const entryRenderers = new Map<string, unknown>();
   const messages: string[] = [];
   const pi = {
     registerTool(d: unknown) { tools.push(d); },
     registerCommand(name: string, opts: FakePiCommand) { commands.set(name, opts); },
     on(event: string, handler: (p: unknown, ctx: unknown) => void | Promise<void>) { events.push({ event, handler }); },
-    sendMessage(m: unknown) { messages.push(String((m as { content?: unknown }).content ?? m)); },
+    appendEntry(_customType: string, data?: unknown) { messages.push(String(data ?? "")); },
+    registerEntryRenderer(customType: string, renderer: unknown) { entryRenderers.set(customType, renderer); },
   };
-  return { pi, tools, commands, events, messages };
+  return { pi, tools, commands, events, entryRenderers, messages };
 }
 
 test("factory registers tools, /qdrant commands, and lifecycle hooks", async () => {
@@ -30,7 +32,7 @@ test("factory registers tools, /qdrant commands, and lifecycle hooks", async () 
   mkdirSync(join(dir, "pi-qdrant-memory"), { recursive: true });
   const prev = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = dir;
-  const { pi, tools, commands, events } = fakePi();
+  const { pi, tools, commands, events, entryRenderers } = fakePi();
   try {
     await factory(pi);
 
@@ -38,6 +40,10 @@ test("factory registers tools, /qdrant commands, and lifecycle hooks", async () 
     assert.equal(tools.length, 2);
     const toolNames = (tools as Array<{ name: string }>).map((t) => t.name).sort();
     assert.deepEqual(toolNames, ["memory_search", "remember"]);
+
+    // Command output is an entry renderer + appendEntry channel (human-visible,
+    // never in the LLM context).
+    assert.ok(entryRenderers.has("qdrant-memory"), "expected an entry renderer for qdrant-memory");
 
     // One real pi command per unique single-token name (pi resolves
     // "/qdrant-status" as the command "qdrant-status" — no subcommand parsing).
