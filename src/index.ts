@@ -12,7 +12,7 @@ import { projectIdFrom } from "./project.ts";
 import { statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler, depsToIO } from "./handlers.ts";
 import type { HandlerIO, SettingsUI } from "./handlers.ts";
 import { runSettingsForm } from "./handlers.ts";
-import { errorEntry } from "./out.ts";
+import { errorEntry, memoryHeaderText } from "./out.ts";
 import { loadRendererModules, renderEntryComponent } from "./entry-render.ts";
 import type { RendererOptions, RendererTheme } from "./entry-render.ts";
 import type { MemoryType, RuntimeDeps } from "./types.ts";
@@ -193,8 +193,9 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
       } catch { /* keep the factory-time anchor */ }
     }
     // Footer statusline — icon-led label like ketch's "🌐 ketch: active", then
-    // the mode + project collection as the state.
-    api.setStatus(`🧠 Memory: ${mode} (${rt.projectId})`);
+    // the mode + project collection as the state. Same header text the
+    // /qdrant-status and /qdrant-help entries carry (DESIGN.md footer-status).
+    api.setStatus(memoryHeaderText({ mode, collection: rt.projectId }));
     if (mode === "mode1") await ingestPending();
     // Mode 2 safety-net auto snapshot (spec §3.3) is intentionally NOT wired here:
     // an early-session snapshot needs mid-session content distillation access that

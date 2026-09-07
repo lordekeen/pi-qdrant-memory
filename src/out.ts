@@ -14,7 +14,8 @@ import { sourcePointer } from "./render.ts";
 export interface MessageEntry { kind: "message"; text: string; }
 export interface ErrorEntry { kind: "error"; text: string; }
 export interface HelpRow { cmd: string; desc: string; }
-export interface HelpEntry { kind: "help"; rows: HelpRow[]; }
+export interface MemoryHeader { mode: string; collection: string; }
+export interface HelpEntry { kind: "help"; header: MemoryHeader; rows: HelpRow[]; }
 
 export type StatusState = "ok" | "warn" | "err";
 export interface StatusHealth {
@@ -44,7 +45,17 @@ export type OutEntry = MessageEntry | ErrorEntry | HelpEntry | StatusEntry | Sea
 
 export function message(text: string): MessageEntry { return { kind: "message", text }; }
 export function errorEntry(text: string): ErrorEntry { return { kind: "error", text }; }
-export function helpEntry(rows: HelpRow[]): HelpEntry { return { kind: "help", rows }; }
+
+/**
+ * The header line shared with the footer statusline (DESIGN.md footer-status):
+ * `🧠 Memory: <mode> (<collection>)`. It heads `/qdrant-status` and
+ * `/qdrant-help` entries so every such block is branded like the statusbar.
+ */
+export function memoryHeaderText(h: MemoryHeader): string {
+  return `🧠 Memory: ${h.mode} (${h.collection})`;
+}
+
+export function helpEntry(rows: HelpRow[], header: MemoryHeader): HelpEntry { return { kind: "help", header, rows }; }
 export function statusEntry(health: StatusHealth): StatusEntry { return { kind: "status", health }; }
 export function searchEntry(hits: SearchHitView[]): SearchEntry { return { kind: "search", hits }; }
 
@@ -65,11 +76,7 @@ export type OutlineRole =
   | "default" | "bold" | "success" | "warning" | "error" | "accent" | "dim" | "muted";
 
 export interface Span { text: string; role?: OutlineRole; }
-export interface OutLine {
-  spans: Span[];
-  /** True when the line belongs inside the one status-card bg region. */
-  card?: boolean;
-}
+export interface OutLine { spans: Span[]; }
 
 const s = (text: string, role?: OutlineRole): Span => ({ text, role });
 
@@ -99,20 +106,21 @@ function previewText(text: string): string {
 
 export interface OutlineOptions { expanded?: boolean; }
 
-function statusCardLines(health: StatusHealth): OutLine[] {
+function statusLines(health: StatusHealth): OutLine[] {
   const out: OutLine[] = [];
-  out.push({ card: true, spans: [s("memory: ", "bold"), s(health.mode)] });
+  // Header mirrors the footer statusline (DESIGN.md footer-status) — mode and
+  // collection live here; there is no separate `memory:` label row.
+  out.push({ spans: [s(memoryHeaderText({ mode: health.mode, collection: health.detail.collection }))] });
   const q = health.qdrant;
   if (q.state === "ok") {
-    out.push({ card: true, spans: [s("qdrant: "), s(`${GLYPH.ok} `, STATE_ROLE.ok), s(`reachable · ${q.points} points`)] });
+    out.push({ spans: [s("qdrant: "), s(`${GLYPH.ok} `, STATE_ROLE.ok), s(`reachable · ${q.points} points`)] });
   } else if (q.state === "warn") {
-    out.push({ card: true, spans: [s("qdrant: "), s(`${GLYPH.warn} collection ${q.collection} does not exist yet`, STATE_ROLE.warn)] });
+    out.push({ spans: [s("qdrant: "), s(`${GLYPH.warn} collection ${q.collection} does not exist yet`, STATE_ROLE.warn)] });
   } else {
-    out.push({ card: true, spans: [s("qdrant: "), s(`${GLYPH.err} NOT reachable`, STATE_ROLE.err)] });
+    out.push({ spans: [s("qdrant: "), s(`${GLYPH.err} NOT reachable`, STATE_ROLE.err)] });
   }
   const e = health.embeddings;
   out.push({
-    card: true,
     spans: e.state === "ok"
       ? [s("embeddings: "), s(`${GLYPH.ok} `, STATE_ROLE.ok), s("reachable")]
       : [s("embeddings: "), s(`${GLYPH.err} NOT reachable`, STATE_ROLE.err)],
@@ -123,7 +131,6 @@ function statusCardLines(health: StatusHealth): OutLine[] {
 function statusDetailLines(d: StatusHealth["detail"]): OutLine[] {
   const dim = d.dimension;
   return [
-    { spans: [s("collection: "), s(d.collection)] },
     { spans: [s("qdrant url: "), s(d.qdrantUrl)] },
     { spans: [s("model: "), s(d.model)] },
     { spans: [s("dimension: "), s(String(dim)), s(" · threshold: "), s(String(d.threshold)), s(" · maxResults: "), s(String(d.maxResults))] },
@@ -176,12 +183,17 @@ export function renderOut(e: OutEntry, options: OutlineOptions = {}): OutLine[] 
       return e.text.split("\n").map((line) => ({ spans: [s(line)] }));
     case "error":
       return e.text.split("\n").map((line) => ({ spans: [s(line, "error")] }));
-    case "help":
-      return helpLines(e.rows);
-    case "status": {
-      const card = statusCardLines(e.health);
-      return options.expanded ? [...card, ...statusDetailLines(e.health.detail)] : card;
+    case "help": {
+      // Branded header (footer-style) then the command list (DESIGN.md).
+      const header: OutLine = { spans: [s(memoryHeaderText(e.header))] };
+      return [header, ...helpLines(e.rows)];
     }
+    case "status":
+      // One plain always-visible block, help-style — no collapse/expand, no
+      // card fill: header + subsystem rows then config detail in the same
+      // label column (DESIGN.md status). Rows show regardless of the host's
+      // expanded flag.
+      return [...statusLines(e.health), ...statusDetailLines(e.health.detail)];
     case "search":
       return options.expanded ? searchExpanded(e.hits) : searchCollapsed(e.hits);
   }

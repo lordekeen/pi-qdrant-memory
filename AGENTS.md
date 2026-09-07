@@ -71,7 +71,7 @@ when you change ingest/search/embedding paths and have both servers up.
 | `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic` — shared by tools and commands; take `ToolDeps` (no output channel). |
 | `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point), `autoSnapshot`. |
 | `src/render.ts` | Tool-path text blocks (`renderHits` + `sourcePointer`), LLM-facing — deliberately outside the entry UI. |
-| `src/entry-render.ts` | Lazy pi-tui renderer: maps an `OutEntry` (via `renderOut` roles) to `Text`/`Box` components + `keyHint`. `RendererOptions.TextCtor/BoxCtor` is the unit-test seam. |
+| `src/entry-render.ts` | Lazy pi-tui renderer: maps an `OutEntry` (via `renderOut` roles) to one multi-line `Text` + `keyHint` (only collapsed search summaries expand). No Box/card machinery — status renders unboxed like every entry. `RendererOptions.TextCtor` is the unit-test seam. |
 | `src/deps.ts` | `makeRuntime` (assembles cfg + clients + handlers IO), `applyConfig` (hot reload after settings writes). |
 | `src/types.ts` | Shared types: `Config`, `MemoryType`, `SourceKind`, `PointPayload`, `SearchHit`, `RuntimeDeps`, `ToolDeps`. |
 | `src/pi-tui.d.ts` | Ambient types for the lazy `@earendil-works/pi-tui` import. |

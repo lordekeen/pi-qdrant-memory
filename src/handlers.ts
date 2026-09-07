@@ -209,6 +209,9 @@ export async function clearHandler(io: HandlerIO): Promise<HandlerResult> {
 }
 
 export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {
+  // Brand the help block with the same header the footer statusline carries
+  // (DESIGN.md footer-status) so the active mode + collection are visible here too.
+  const mode = resolveMode(io.cfg, detectBlackhole(io.agentDir));
   io.emit(helpEntry([
     { cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
     { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field (e.g. scoreThreshold 0.2)" },
@@ -216,6 +219,6 @@ export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {
     { cmd: "/qdrant-search <query>", desc: "semantic search of durable knowledge" },
     { cmd: "/qdrant-clear", desc: "reset the current project's collection" },
     { cmd: "/qdrant-help", desc: "this list" },
-  ]));
+  ], { mode, collection: io.projectId }));
   return { exit: false };
 }

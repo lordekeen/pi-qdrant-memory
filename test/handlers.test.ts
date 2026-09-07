@@ -46,11 +46,12 @@ test("statusHandler prints mode and collection health", async () => {
   const all = d.printed.join("\n");
   assert.match(all, /mode2/i); // auto with no blackhole → mode2
   assert.match(all, /✓ reachable · 3 points/);
-  // Collection id + config detail live behind the expanded card.
-  const entry = d.emitted[0];
-  assert.equal(entry.kind, "status");
-  const expanded = entry.kind === "status" ? outText(entry, { expanded: true }) : "";
-  assert.match(expanded, /pi-mem-abc/);
+  // The entry heads with the footer-style header and shows the collection id
+  // inline — nothing is hidden behind an expand gesture anymore.
+  assert.match(all, /🧠 Memory: mode2 \(pi-mem-abc\)/);
+  assert.match(all, /qdrant url: http:\/\/localhost:6333/);
+  assert.equal(d.emitted.length, 1);
+  assert.equal(d.emitted[0].kind, "status");
 });
 
 test("settingsHandler persists field=value and prints confirmation", async () => {
@@ -194,7 +195,7 @@ test("statusHandler emits exactly one structured status entry", async () => {
   await statusHandler(d);
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "status");
-  assert.equal(d.printed.length, 1, "one card entry, not three rows");
+  assert.equal(d.printed.length, 1, "one entry, not three rows");
 });
 
 test("searchHandler emits a message entry when nothing matches", async () => {

@@ -41,17 +41,21 @@ test("error renders whole line with the error role", () => {
   assert.deepEqual(roles(lines[0]), ["error"]);
 });
 
-test("help renders bold title + aligned rows with dim descriptions", () => {
+test("help renders the memory header, then a bold title + aligned rows", () => {
+  const header = { mode: "mode1", collection: "pi-mem-abc" };
   const e = helpEntry([
     { cmd: "qdrant-status", desc: "health" },
     { cmd: "qdrant-settings", desc: "config" },
-  ]);
+  ], header);
   const lines = renderOut(e);
-  assert.equal(spanText(lines[0]), "commands");
-  assert.deepEqual(roles(lines[0]), ["bold"]);
+  // Footer-style header brands the block (DESIGN.md footer-status).
+  assert.equal(spanText(lines[0]), "🧠 Memory: mode1 (pi-mem-abc)");
+  assert.deepEqual(roles(lines[0]), ["default"]);
+  assert.equal(spanText(lines[1]), "commands");
+  assert.deepEqual(roles(lines[1]), ["bold"]);
   // command column aligned to the longest name + 2
-  assert.equal(spanText(lines[1]), "qdrant-status".padEnd("qdrant-settings".length + 2) + "health");
-  assert.deepEqual(roles(lines[1]), ["default", "dim"]);
+  assert.equal(spanText(lines[2]), "qdrant-status".padEnd("qdrant-settings".length + 2) + "health");
+  assert.deepEqual(roles(lines[2]), ["default", "dim"]);
 });
 
 test("help aligns usage commands past 26 chars without jamming the description", () => {
@@ -59,23 +63,25 @@ test("help aligns usage commands past 26 chars without jamming the description",
     { cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
     { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field (e.g. scoreThreshold 0.2)" },
   ];
-  const lines = renderOut(helpEntry(rows));
+  const lines = renderOut(helpEntry(rows, { mode: "mode2", collection: "pi-mem-abc" }));
   const width = Math.max(...rows.map((r) => r.cmd.length)) + 2; // 31 — an old 26-cap jammed here
-  assert.equal(spanText(lines[1]), "/qdrant-status".padEnd(width) + "connection health + active mode + collection status");
-  assert.equal(spanText(lines[2]), "/qdrant-settings <key> <value>".padEnd(width) + "persist a config field (e.g. scoreThreshold 0.2)");
-  assert.equal(spanText(lines[2]).indexOf("persist"), width);
+  assert.equal(spanText(lines[0]), "🧠 Memory: mode2 (pi-mem-abc)"); // header first
+  assert.equal(spanText(lines[2]), "/qdrant-status".padEnd(width) + "connection health + active mode + collection status");
+  assert.equal(spanText(lines[3]), "/qdrant-settings <key> <value>".padEnd(width) + "persist a config field (e.g. scoreThreshold 0.2)");
+  assert.equal(spanText(lines[3]).indexOf("persist"), width);
 });
 
-test("status collapsed is one card: bold mode + glyph rows", () => {
+test("status renders one plain always-visible block headed by the memory header", () => {
   const e = statusEntry(health);
   const lines = renderOut(e);
-  assert.equal(lines.length, 3);
-  assert.ok(lines.every((l) => l.card), "all collapsed rows are inside the card");
-  assert.equal(spanText(lines[0]), "memory: mode2");
-  assert.deepEqual(roles(lines[0]), ["bold", "default"]);
+  assert.equal(lines.length, 6); // header + qdrant + embeddings + 3 config rows
+  // Header mirrors the footer statusline; no separate `memory:` label row.
+  assert.equal(spanText(lines[0]), "🧠 Memory: mode2 (pi-mem-abc)");
+  assert.deepEqual(roles(lines[0]), ["default"]);
   assert.equal(spanText(lines[1]), "qdrant: ✓ reachable · 3 points");
   assert.deepEqual(roles(lines[1]), ["default", "success", "default"]);
   assert.equal(spanText(lines[2]), "embeddings: ✓ reachable");
+  assert.ok(lines.every((l) => !("card" in l)), "no card rows remain (unboxed text)");
 });
 
 test("status states: NOT reachable uses error role, missing collection warns", () => {
@@ -97,16 +103,18 @@ test("status states: NOT reachable uses error role, missing collection warns", (
   assert.deepEqual(roles(linesMissing[1]), ["default", "warning"]);
 });
 
-test("status expanded appends detail rows (no API keys)", () => {
-  const lines = renderOut(statusEntry(health), { expanded: true });
-  assert.equal(lines.length, 7); // 3 card rows + 4 detail rows
+test("status shows config detail in every render (no API keys), ignoring expanded", () => {
+  const e = statusEntry(health);
+  const lines = renderOut(e);
   const text = lines.map(spanText).join("\n");
-  assert.match(text, /collection: pi-mem-abc/);
+  assert.match(text, /🧠 Memory: mode2 \(pi-mem-abc\)/);
   assert.match(text, /qdrant url: http:\/\/localhost:6333/);
   assert.match(text, /dimension: 768 · threshold: 0.15 · maxResults: 10/);
   assert.doesNotMatch(text, /apiKey|api_key|key=/i);
-  // detail rows are not part of the bg card
-  assert.ok(lines.slice(3).every((l) => l.card !== true));
+  // Collection id lives in the header; the old separate `collection:` row is gone.
+  assert.doesNotMatch(text, /^collection: /m);
+  // No detail is hidden behind an expand gesture — expanded renders identically.
+  assert.deepEqual(renderOut(e, { expanded: true }), lines);
 });
 
 test("search collapsed is one line with a colored top-type tag + top-hit preview", () => {
