@@ -69,11 +69,18 @@ Only when you touched embedding/ingest/search paths **and** both servers are up:
 
 ```bash
 QDRANT_MEMORY_SMOKE=1 \
-  PI_QDRANT_URL=http://localhost:6333 \
-  PI_QDRANT_EMBEDDING_BASE_URL=http://localhost:8081/v1 \
-  PI_QDRANT_EMBEDDING_MODEL=nomic-embed-text-v1.5:Q8 \
+  QDRANT_MEMORY_URL=http://localhost:6333 \
+  QDRANT_MEMORY_EMBED_URL=http://localhost:8081/v1 \
+  QDRANT_MEMORY_EMBED_MODEL=nomic-embed-text-v1.5:Q8 \
+  QDRANT_MEMORY_EMBED_DIM=768 \
   npm run test:smoke
 ```
+
+(`npm run test:smoke` itself sets `QDRANT_MEMORY_SMOKE=1`.) The smoke test reads
+its **own** `QDRANT_MEMORY_*` env namespace to build throwaway clients — those
+are independent of the extension's runtime `PI_QDRANT_*` envs and must be set
+here to retarget the smoke run away from its file defaults (`:8080/v1`,
+`nomic-embed-text`). The values above match the dev machine's live stack.
 
 The smoke test remembers a phrase and searches it back with a paraphrased query.
 It cleans up after itself. All other tests must stay green **without** servers.
