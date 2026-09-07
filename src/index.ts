@@ -12,6 +12,9 @@ import { projectIdFrom } from "./project.ts";
 import { statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler, depsToIO } from "./handlers.ts";
 import type { HandlerIO, SettingsUI } from "./handlers.ts";
 import { runSettingsForm } from "./handlers.ts";
+import { errorEntry } from "./out.ts";
+import { loadRendererModules, renderEntryComponent } from "./entry-render.ts";
+import type { RendererOptions, RendererTheme } from "./entry-render.ts";
 import type { MemoryType, RuntimeDeps } from "./types.ts";
 
 /**
@@ -25,7 +28,6 @@ export interface WireApi {
   registerCommand(def: unknown): void;
   on(event: string, handler: (payload: unknown, ctx?: unknown) => void | Promise<void>): () => void;
   appendEntry(type: string, data: unknown): void;
-  sendMessage(text: string): void;
   setStatus(text: string): void;
   /** Interactive ctx.ui (select/input/confirm) when a command runs in the TUI. */
   requestUI?(): SettingsUI | undefined;
@@ -70,7 +72,9 @@ function buildIO(api: WireApi, rt: RuntimeDeps): HandlerIO {
   // so a session_start project-id refresh or a runtime config reload (applyConfig)
   // is immediately visible to slash-command handlers — never a stale copy.
   return depsToIO(rt, {
-    print: (t) => api.sendMessage(`/qdrant: ${t}`),
+    // Structured entries through the appendEntry seam — visible in the TUI,
+    // never in LLM context. No text prefix is added here (or anywhere).
+    emit: (e) => api.appendEntry(CUSTOM_TYPE, e),
   });
 }
 
@@ -267,7 +271,7 @@ interface PiSurface {
   registerCommand(name: string, options: { description?: string; handler(args: string, ctx: unknown): void | Promise<void> }): void;
   on(event: string, handler: (payload: unknown, ctx: unknown) => void | Promise<void>): void;
   appendEntry(customType: string, data?: unknown): void;
-  registerEntryRenderer(customType: string, renderer: (entry: { customType?: string; data?: unknown }) => unknown): void;
+  registerEntryRenderer(customType: string, renderer: (entry: { customType?: string; data?: unknown }, options?: unknown, theme?: unknown) => unknown): void;
 }
 
 const QDRANT_STATUS_KEY = "qdrant-memory";
@@ -291,26 +295,15 @@ export default async function factory(api: unknown): Promise<void> {
     confirm?: (title: string, message: string) => Promise<boolean>;
   } | undefined;
 
-  // pi-tui's `Text` component, loaded lazily: pi's extension loader aliases
-  // `@earendil-works/pi-tui` to its bundled copy, but plain-node test runs never
-  // resolve it (they don't render entries). Until it resolves, the entry
-  // renderer returns undefined and pi skips the row — safe under every runtime.
-  let TextImpl: { new (text?: string): { render(width: number): string[] } } | undefined;
-  void import("@earendil-works/pi-tui")
-    .then((m) => { TextImpl = m.Text; })
-    .catch(() => { /* pi-tui unavailable (e.g. tests); entries stay unrendered */ });
+  // pi-tui components + keyHint, loaded lazily: pi's extension loader aliases
+  // `@earendil-works/pi-tui` / `@earendil-works/pi-coding-agent` to its bundled
+  // copies, but plain-node test runs never resolve them (they don't render
+  // entries). Until they resolve, the renderer returns undefined and pi skips
+  // the row — safe under every runtime.
+  void loadRendererModules();
 
-  // Command output channel: custom entries are persisted + rendered in the TUI
-  // transcript WITHOUT entering the LLM context (sendMessage's `display` flag
-  // only gates rendering, so it cannot give us human-visible + model-free output).
-  const sendText = (text: string): void => {
-    pi.appendEntry(CUSTOM_TYPE, text);
-  };
-
-  pi.registerEntryRenderer(CUSTOM_TYPE, (entry) => {
-    const data = typeof entry?.data === "string" ? entry.data : String((entry as { data?: unknown })?.data ?? "");
-    return TextImpl ? new TextImpl(data) : undefined;
-  });
+  pi.registerEntryRenderer(CUSTOM_TYPE, (entry, options, theme) =>
+    renderEntryComponent(entry?.data, options as RendererOptions | undefined, theme as RendererTheme | undefined));
 
   // Assigned by makeRuntime below; writeConfig may run later (after a settings
   // write) and needs to reload the assembled runtime onto the new config.
@@ -324,7 +317,9 @@ export default async function factory(api: unknown): Promise<void> {
       // re-reading the canonical file and swapping cfg + embed/qdrant clients.
       if (rt) applyConfig(rt, loadConfig(agentDir, env));
     },
-    print: sendText,
+    // Text sink for non-wire paths (handlers emit structured entries via the
+    // wireApi adapter's appendEntry; this is the plain fallback).
+    print: (text) => pi.appendEntry(CUSTOM_TYPE, { kind: "message", text }),
   };
 
   rt = await makeRuntime(agentDir, process.cwd(), env, io);
@@ -346,9 +341,9 @@ export default async function factory(api: unknown): Promise<void> {
           try {
             await d.execute?.(args);
           } catch (err) {
-            // Surface handler failures as a visible message instead of relying on
+            // Surface handler failures as an error entry instead of relying on
             // pi's (easily missed) extension-error channel.
-            sendText(`error: ${err instanceof Error ? err.message : String(err)}`);
+            pi.appendEntry(CUSTOM_TYPE, errorEntry(`error: ${err instanceof Error ? err.message : String(err)}`));
           }
         },
       });
@@ -362,8 +357,7 @@ export default async function factory(api: unknown): Promise<void> {
       });
       return () => {}; // pi tracks and releases event-bus subscriptions on teardown
     },
-    appendEntry: (type, data) => { /* appendEntry is not needed by the current wiring */ void type; void data; },
-    sendMessage: sendText,
+    appendEntry: (_type, data) => { pi.appendEntry(CUSTOM_TYPE, data); },
     setStatus: (text) => {
       try { currentUi?.setStatus?.(QDRANT_STATUS_KEY, text); } catch { /* status is best-effort */ }
     },

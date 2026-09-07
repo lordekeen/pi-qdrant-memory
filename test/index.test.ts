@@ -5,9 +5,9 @@ import type { WireApi } from "../src/index.ts";
 import type { RuntimeDeps } from "../src/types.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
 
-function fakeApi(): WireApi & { tools: unknown[]; commands: unknown[]; events: Record<string, unknown[]>; entries: unknown[]; messages: string[]; statuses: string[] } {
+function fakeApi(): WireApi & { tools: unknown[]; commands: unknown[]; events: Record<string, unknown[]>; entries: unknown[]; statuses: string[] } {
   const api = {
-    tools: [], commands: [], events: {} as Record<string, unknown[]>, entries: [], messages: [], statuses: [],
+    tools: [], commands: [], events: {} as Record<string, unknown[]>, entries: [], statuses: [],
     registerTool(d: unknown) { (api.tools as unknown[]).push(d); },
     registerCommand(d: unknown) { (api.commands as unknown[]).push(d); },
     on(ev: string, h: (p: unknown) => void | Promise<void>) {
@@ -17,7 +17,6 @@ function fakeApi(): WireApi & { tools: unknown[]; commands: unknown[]; events: R
       return () => { api.events[ev].splice(index, 1); };
     },
     appendEntry(_t: string, d: unknown) { (api.entries as unknown[]).push(d); },
-    sendMessage(t: string) { (api.messages as string[]).push(t); },
     setStatus(t: string) { (api.statuses as string[]).push(t); },
   };
   return api as WireApi & typeof api;

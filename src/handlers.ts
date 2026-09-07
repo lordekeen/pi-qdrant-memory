@@ -1,7 +1,8 @@
 import { resolveMode, detectBlackhole } from "./mode.ts";
 import { setConfigField } from "./config.ts";
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
-import { renderHits } from "./render.ts";
+import { errorEntry, helpEntry, message, outText, searchEntry, searchHitView, statusEntry } from "./out.ts";
+import type { OutEntry, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
 import type { Config, MemoryType, RuntimeDeps } from "./types.ts";
 
@@ -14,15 +15,21 @@ export interface HandlerIO {
   qdrant: QdrantLike;
   readConfig(): Config;
   writeConfig(c: Config): void;
-  print(text: string): void;
+  /** Emit one structured output entry (message/error/help/status/search). */
+  emit(e: OutEntry): void;
 }
 
-export interface DepsToIOOptions { print?: (text: string) => void; }
+/** RuntimeDeps.print is never used by tools-core; satisfy the type at tool call sites. */
+const silentPrint = (): void => {};
+
+export interface DepsToIOOptions { emit?: (e: OutEntry) => void; }
 
 /**
  * Adapt a `RuntimeDeps` to a `HandlerIO`. Fields are exposed as live getters over
  * `deps` (not copies) so a session_start project-id refresh or a runtime config
- * reload is immediately visible to slash-command handlers.
+ * reload is immediately visible to slash-command handlers. The default `emit`
+ * projects the entry to plain text through the runtime's text `print` sink, so
+ * non-entry runtimes (rpc/headless) keep working unchanged.
  */
 export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): HandlerIO {
   return {
@@ -34,7 +41,7 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
     get qdrant() { return deps.qdrant; },
     readConfig: deps.readConfig,
     writeConfig: deps.writeConfig,
-    print: options.print ?? deps.print,
+    emit: options.emit ?? ((e) => deps.print(outText(e))),
   };
 }
 
@@ -53,9 +60,26 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
   }
   let embedOk = true;
   try { await io.embed("probe"); } catch { embedOk = false; }
-  io.print(`mode: ${mode}`);
-  io.print(`qdrant: ${!qdrantOk ? "NOT reachable" : collectionMissing ? `reachable, collection ${io.projectId} does not exist yet` : `reachable, collection ${io.projectId} has ${count} points`}`);
-  io.print(`embeddings: ${embedOk ? `reachable (${io.cfg.embeddingModel} @ ${io.cfg.embeddingBaseURL})` : "NOT reachable"}`);
+
+  const qdrant: StatusHealth["qdrant"] = !qdrantOk
+    ? { state: "err" }
+    : collectionMissing
+      ? { state: "warn", collection: io.projectId }
+      : { state: "ok", collection: io.projectId, points: count };
+  const health: StatusHealth = {
+    mode,
+    qdrant,
+    embeddings: embedOk ? { state: "ok" } : { state: "err" },
+    detail: {
+      collection: io.projectId,
+      qdrantUrl: io.cfg.qdrantUrl,
+      model: `${io.cfg.embeddingModel} @ ${io.cfg.embeddingBaseURL}`,
+      dimension: io.cfg.expectedDimension,
+      threshold: io.cfg.scoreThreshold,
+      maxResults: io.cfg.maxResults,
+    },
+  };
+  io.emit(statusEntry(health));
   return { exit: false };
 }
 
@@ -63,12 +87,12 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
   const cfg = io.readConfig();
   if (field && value !== undefined) {
     const applied = setConfigField(cfg, field, value);
-    if (!applied.ok) { io.print(applied.error); return { exit: false }; }
+    if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return { exit: false }; }
     io.writeConfig(applied.next);
-    io.print(`settings: ${field} updated (reloaded at runtime)`);
+    io.emit(message(`settings: ${field} updated (reloaded at runtime)`));
     return { exit: false };
   }
-  io.print(`settings: usage — /qdrant-settings opens the interactive form; /qdrant-settings <key> <value> sets a field (keys: mode, embeddingBaseURL, embeddingModel, expectedDimension, scoreThreshold, maxResults, qdrantUrl, qdrantApiKey, embeddingApiKey)`);
+  io.emit(message(`settings: usage — /qdrant-settings opens the interactive form; /qdrant-settings <key> <value> sets a field (keys: mode, embeddingBaseURL, embeddingModel, expectedDimension, scoreThreshold, maxResults, qdrantUrl, qdrantApiKey, embeddingApiKey)`));
   return { exit: false };
 }
 
@@ -99,6 +123,15 @@ function displayValue(value: unknown): string {
 }
 
 /**
+ * Dynamic access by a `SettingField` key — the `SETTING_FIELDS` names are
+ * exactly the `Config` keys, whose values are string | number | null.
+ */
+function cfgField(cfg: Config, key: SettingField): string | number | null {
+  // SAFETY: SettingField ⊆ Config keys; no Config value is boolean/undefined.
+  return (cfg as unknown as Record<string, unknown>)[key] as string | number | null;
+}
+
+/**
  * Interactive settings form, driven through `ctx.ui` (select/input/confirm).
  * Esc or an empty input cancels the current step; the write only happens after
  * an explicit confirm. Validation is shared with the CLI via `setConfigField`.
@@ -107,7 +140,7 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   const cfg = io.readConfig();
   const optionToKey = new Map<string, SettingField>();
   const options = SETTING_FIELDS.map((k) => {
-    const label = `${k} = ${displayValue((cfg as unknown as Record<string, unknown>)[k])}`;
+    const label = `${k} = ${displayValue(cfgField(cfg, k))}`;
     optionToKey.set(label, k);
     return label;
   });
@@ -115,7 +148,7 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   if (!pick) return; // Esc cancels the whole form
   const key = optionToKey.get(pick);
   if (!key) return;
-  const cur = (cfg as unknown as Record<string, unknown>)[key];
+  const cur = cfgField(cfg, key);
 
   let raw: string | undefined;
   if (key === "mode") {
@@ -130,53 +163,58 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   if (value === undefined || value === "") return; // cancelled / cleared input
 
   const applied = setConfigField(cfg, key, value);
-  if (!applied.ok) { io.print(applied.error); return; }
-  const nextValue = (applied.next as unknown as Record<string, unknown>)[key];
+  if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return; }
+  const nextValue = cfgField(applied.next, key);
   const ok = await ui.confirm(
     `Save ${key}?`,
     `${key} = ${displayValue(nextValue)}  (was ${displayValue(cur)}; run /qdrant-settings again to edit another field)`,
   );
-  if (!ok) { io.print(`settings: ${key} unchanged (cancelled)`); return; }
+  if (!ok) { io.emit(message(`settings: ${key} unchanged (cancelled)`)); return; }
   io.writeConfig(applied.next);
-  io.print(`settings: ${key} updated (reloaded at runtime)`);
+  io.emit(message(`settings: ${key} updated (reloaded at runtime)`));
 }
 
 export async function rememberHandler(io: HandlerIO, text: string, type?: MemoryType): Promise<HandlerResult> {
   const res = await rememberLogic({
     cfg: io.cfg, agentDir: io.agentDir, cwd: io.cwd, projectId: io.projectId,
-    embed: io.embed, qdrant: io.qdrant, readConfig: io.readConfig, writeConfig: io.writeConfig, print: io.print,
+    embed: io.embed, qdrant: io.qdrant, readConfig: io.readConfig, writeConfig: io.writeConfig, print: silentPrint,
   }, text, type);
-  io.print(res.ok ? `remembered (${res.value.source_kind}): ${res.value.text}` : `remember failed: ${(res as { error: string }).error}`);
+  if (res.ok) io.emit(message(`remembered (${res.value.source_kind}): ${res.value.text}`));
+  else io.emit(errorEntry(`error: ${res.error}`));
   return { exit: false };
 }
 
 export async function searchHandler(io: HandlerIO, query: string, type?: MemoryType): Promise<HandlerResult> {
   const res = await memorySearchLogic({
     cfg: io.cfg, agentDir: io.agentDir, cwd: io.cwd, projectId: io.projectId,
-    embed: io.embed, qdrant: io.qdrant, readConfig: io.readConfig, writeConfig: io.writeConfig, print: io.print,
+    embed: io.embed, qdrant: io.qdrant, readConfig: io.readConfig, writeConfig: io.writeConfig, print: silentPrint,
   }, query, type);
-  io.print(res.ok ? renderHits(res.value) : `search failed: ${(res as { error: string }).error}`);
+  if (res.ok) {
+    io.emit(res.value.length === 0 ? message("No relevant memory found.") : searchEntry(res.value.map(searchHitView)));
+  } else {
+    io.emit(errorEntry(`error: ${res.error}`));
+  }
   return { exit: false };
 }
 
 export async function clearHandler(io: HandlerIO): Promise<HandlerResult> {
   try {
     await io.qdrant.clearCollection(io.projectId);
-    io.print(`cleared: collection ${io.projectId} reset`);
+    io.emit(message(`cleared: collection ${io.projectId} reset`));
   } catch (err) {
-    io.print(`clear failed: ${String(err)}`);
+    io.emit(errorEntry(`error: clear failed: ${String(err)}`));
   }
   return { exit: false };
 }
 
 export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {
-  io.print([
-    "/qdrant-status            — connection health + active mode + collection status",
-    "/qdrant-settings <key> <value> — persist a config field (e.g. scoreThreshold 0.2)",
-    "/qdrant-remember <text>   — save durable knowledge now",
-    "/qdrant-search <query>    — semantic search of durable knowledge",
-    "/qdrant-clear             — reset the current project's collection",
-    "/qdrant-help              — this list",
-  ].join("\n"));
+  io.emit(helpEntry([
+    { cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
+    { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field (e.g. scoreThreshold 0.2)" },
+    { cmd: "/qdrant-remember <text>", desc: "save durable knowledge now" },
+    { cmd: "/qdrant-search <query>", desc: "semantic search of durable knowledge" },
+    { cmd: "/qdrant-clear", desc: "reset the current project's collection" },
+    { cmd: "/qdrant-help", desc: "this list" },
+  ]));
   return { exit: false };
 }

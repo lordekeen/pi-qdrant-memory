@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler, runSettingsForm,
 } from "../src/handlers.ts";
+import { outText } from "../src/out.ts";
+import type { OutEntry } from "../src/out.ts";
 import type { HandlerIO, SettingsUI } from "../src/handlers.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
 import type { Config } from "../src/types.ts";
@@ -13,7 +15,8 @@ const cfg: Config = {
   embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10, mode: "auto",
 };
 
-function io(over: Partial<HandlerIO> = {}): HandlerIO & { printed: string[]; written: Config[] } {
+function io(over: Partial<HandlerIO> = {}): HandlerIO & { emitted: OutEntry[]; printed: string[]; written: Config[] } {
+  const emitted: OutEntry[] = [];
   const printed: string[] = [];
   const written: Config[] = [];
   const qdrant: QdrantLike = {
@@ -29,11 +32,12 @@ function io(over: Partial<HandlerIO> = {}): HandlerIO & { printed: string[]; wri
     qdrant,
     readConfig: () => cfg,
     writeConfig: (c) => written.push(c),
-    print: (t) => printed.push(t),
+    emit: (e) => { emitted.push(e); printed.push(outText(e)); },
+    emitted,
     printed,
     written,
     ...over,
-  } as HandlerIO & { printed: string[]; written: Config[] };
+  } as HandlerIO & { emitted: OutEntry[]; printed: string[]; written: Config[] };
 }
 
 test("statusHandler prints mode and collection health", async () => {
@@ -41,8 +45,12 @@ test("statusHandler prints mode and collection health", async () => {
   await statusHandler(d);
   const all = d.printed.join("\n");
   assert.match(all, /mode2/i); // auto with no blackhole → mode2
-  assert.match(all, /pi-mem-abc/);
-  assert.match(all, /3/);
+  assert.match(all, /✓ reachable · 3 points/);
+  // Collection id + config detail live behind the expanded card.
+  const entry = d.emitted[0];
+  assert.equal(entry.kind, "status");
+  const expanded = entry.kind === "status" ? outText(entry, { expanded: true }) : "";
+  assert.match(expanded, /pi-mem-abc/);
 });
 
 test("settingsHandler persists field=value and prints confirmation", async () => {
@@ -174,4 +182,49 @@ test("helpHandler prints the command list", async () => {
   for (const c of ["/qdrant-status", "/qdrant-settings", "/qdrant-remember", "/qdrant-search", "/qdrant-clear", "/qdrant-help"]) {
     assert.match(all, new RegExp(c.replace("/", "\\/")));
   }
+});
+
+test("statusHandler emits exactly one structured status entry", async () => {
+  const d = io();
+  await statusHandler(d);
+  assert.equal(d.emitted.length, 1);
+  assert.equal(d.emitted[0].kind, "status");
+  assert.equal(d.printed.length, 1, "one card entry, not three rows");
+});
+
+test("searchHandler emits a message entry when nothing matches", async () => {
+  const d = io(); // default fake qdrant.search returns []
+  await searchHandler(d, "anything");
+  assert.equal(d.emitted.length, 1);
+  assert.equal(d.emitted[0].kind, "message");
+  assert.match(d.printed.join("\n"), /No relevant memory/);
+});
+
+test("searchHandler emits an error entry when the search fails", async () => {
+  const qdrantErr: QdrantLike = {
+    async ensureCollection() { return "exists"; }, async upsert() {},
+    async search() { throw new Error("connection refused"); },
+    async count() { return 0; }, async clearCollection() {},
+  };
+  const d = io({ qdrant: qdrantErr });
+  await searchHandler(d, "query");
+  assert.equal(d.emitted[0].kind, "error");
+  assert.match(d.printed.join("\n"), /error: memory_search failed: .*connection refused/);
+});
+
+test("rememberHandler emits an error entry when embedding fails", async () => {
+  const d = io({ embed: async () => { throw new Error("embedder down"); } });
+  await rememberHandler(d, "use REST");
+  assert.equal(d.emitted[0].kind, "error");
+  assert.match(d.printed.join("\n"), /error: remember failed: .*embedder down/);
+});
+
+test("emitted output never carries a /qdrant: text prefix", async () => {
+  const d = io();
+  await statusHandler(d);
+  await clearHandler(d);
+  await rememberHandler(d, "use REST", "decision");
+  await helpHandler(d);
+  const all = d.printed.join("\n");
+  assert.doesNotMatch(all, /\/qdrant: /);
 });

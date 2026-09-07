@@ -4,6 +4,8 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import factory from "../src/index.ts";
+import { outText } from "../src/out.ts";
+import type { OutEntry } from "../src/out.ts";
 
 interface FakePiCommand {
   description?: string;
@@ -21,7 +23,10 @@ function fakePi() {
     registerTool(d: unknown) { tools.push(d); },
     registerCommand(name: string, opts: FakePiCommand) { commands.set(name, opts); },
     on(event: string, handler: (p: unknown, ctx: unknown) => void | Promise<void>) { events.push({ event, handler }); },
-    appendEntry(_customType: string, data?: unknown) { messages.push(String(data ?? "")); },
+    appendEntry(_customType: string, data?: unknown) {
+      const entry = data as OutEntry | undefined;
+      messages.push(entry && typeof entry === "object" && typeof entry.kind === "string" ? outText(entry) : String(data ?? ""));
+    },
     registerEntryRenderer(customType: string, renderer: unknown) { entryRenderers.set(customType, renderer); },
   };
   return { pi, tools, commands, events, entryRenderers, messages };
@@ -71,7 +76,7 @@ test("factory: qdrant-help prints the command list; bad settings key is rejected
   try {
     await factory(pi);
 
-    // "/qdrant-help" → helpHandler output routed through sendMessage (no network).
+    // "/qdrant-help" → helpHandler output routed through appendEntry (no network).
     await commands.get("qdrant-help")!.handler("", {});
     assert.ok(messages.join("\n").includes("/qdrant-status"), "help output missing command list");
 
