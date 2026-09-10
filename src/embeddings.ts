@@ -65,4 +65,53 @@ export class EmbeddingClient {
     }
     return embedding;
   }
+
+  /** Batch embedding for the code-memory sync (spec §5/D9): one request per
+   * batch of summaries, order-preserving. Empty input is a no-op — never a
+   * wasted request. */
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    if (!texts.length) return [];
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
+    let res: Response;
+    try {
+      res = await this.fetchFn(this.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: this.model, input: texts }),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      throw new EmbeddingError(`Embedding server unreachable at ${this.url}: ${String(err)}`);
+    }
+    if (!res.ok) {
+      throw new EmbeddingError(`Embedding request failed at ${this.url}: HTTP ${res.status}`);
+    }
+    const json = (await res.json()) as { data?: Array<{ index?: number; embedding?: number[] }> };
+    const data = json.data ?? [];
+    if (data.length !== texts.length) {
+      throw new EmbeddingError(
+        `Embedding batch response has ${String(data.length)} items for ${String(texts.length)} inputs from ${this.url}`);
+    }
+    // OpenAI-compatible servers return items with an explicit `index`; trust it
+    // when present, fall back to array order (some local servers omit it).
+    const out: number[][] = new Array(texts.length);
+    for (const item of data) {
+      const idx = typeof item.index === "number" && item.index >= 0 && item.index < texts.length
+        ? item.index
+        : out.findIndex((v) => v === undefined);
+      if (!item.embedding) {
+        throw new EmbeddingError(`Embedding response missing data[${String(idx)}].embedding from ${this.url}`);
+      }
+      if (item.embedding.length !== this.expectedDimension) {
+        throw new EmbeddingError(
+          `Embedding dimension ${String(item.embedding.length)} does not match expected ${String(this.expectedDimension)} for model ${this.model}`);
+      }
+      out[idx] = item.embedding;
+    }
+    if (out.some((v) => v === undefined)) {
+      throw new EmbeddingError(`Embedding batch response has gaps from ${this.url}`);
+    }
+    return out;
+  }
 }
