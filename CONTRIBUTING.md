@@ -79,7 +79,7 @@ QDRANT_MEMORY_SMOKE=1 \
 its **own** `QDRANT_MEMORY_*` env namespace to build throwaway clients — those
 are independent of the extension's runtime `PI_QDRANT_*` envs and must be set
 here to retarget the smoke run away from its file defaults (`:8080/v1`,
-`nomic-embed-text`). The values above match the dev machine's live stack.
+`nomic-embed-text`).
 
 The smoke test remembers a phrase and searches it back with a paraphrased query.
 It cleans up after itself. All other tests must stay green **without** servers.
