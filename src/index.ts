@@ -8,11 +8,13 @@ import { renderHits } from "./render.ts";
 import { readPendingArtifacts } from "./blackhole.ts";
 import { artifactToIngestItem, ingestItems } from "./ingest.ts";
 import { captureAtCompaction } from "./capture.ts";
-import { projectIdFrom } from "./project.ts";
+import { projectIdFrom, findGitRoot } from "./project.ts";
+import { syncCodeKnowledge } from "./code-sync.ts";
 import { statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler, depsToIO } from "./handlers.ts";
 import type { HandlerIO, SettingsUI } from "./handlers.ts";
 import { runSettingsForm } from "./handlers.ts";
-import { errorEntry, memoryHeaderText } from "./out.ts";
+import { errorEntry, memoryHeaderText, message, codeMemorySyncMessage } from "./out.ts";
+import type { CodeMemoryHealth } from "./out.ts";
 import { QdrantError } from "./qdrant.ts";
 import { loadRendererModules, renderEntryComponent } from "./entry-render.ts";
 import type { RendererOptions, RendererTheme } from "./entry-render.ts";
@@ -68,7 +70,7 @@ function ctxSessionId(ctx: unknown): string | undefined {
   }
 }
 
-function buildIO(api: WireApi, rt: RuntimeDeps): HandlerIO {
+function buildIO(api: WireApi, rt: RuntimeDeps, codeMemory?: CodeMemoryHealth): HandlerIO {
   // Live view over `rt`: handlers read cfg/projectId/embed/qdrant through getters,
   // so a session_start project-id refresh or a runtime config reload (applyConfig)
   // is immediately visible to slash-command handlers — never a stale copy.
@@ -76,6 +78,7 @@ function buildIO(api: WireApi, rt: RuntimeDeps): HandlerIO {
     // Structured entries through the appendEntry seam — visible in the TUI,
     // never in LLM context. No text prefix is added here (or anywhere).
     emit: (e) => api.appendEntry(CUSTOM_TYPE, e),
+    codeMemory,
   });
 }
 
@@ -88,7 +91,32 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
   // /qdrant-settings applies to the hooks at the next session; the footer and
   // every command re-resolve the mode live (see currentMode).
   const registrationMode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
-  const io = buildIO(api, rt);
+  // Same session-fixation rule for code memory: the code_memory tool and the
+  // /qdrant-index-code command are registered here iff enabled; a mid-session
+  // flip is covered by the settings reload notice (spec §12).
+  const codeMemoryOn = rt.cfg.codeKnowledge === "on";
+  const codeMemoryState: { state: "off" | "syncing" | "synced"; files?: number; symbols?: number } = {
+    state: codeMemoryOn ? "syncing" : "off",
+  };
+  const io = buildIO(api, rt, codeMemoryState);
+
+  /** Repo root for the code sync, re-resolved per call — the session cwd
+   * anchor can change at session_start (see there). */
+  const codeRepoRoot = async (): Promise<string> => (await findGitRoot(rt.cwd)) ?? rt.cwd;
+
+  const runCodeSync = async (): Promise<void> => {
+    const r = await syncCodeKnowledge({
+      embedBatch: rt.embedBatch ?? (async (texts) => Promise.all(texts.map((t) => rt.embed(t)))),
+      qdrant: rt.qdrant,
+      projectId: rt.projectId,
+      expectedDimension: rt.cfg.expectedDimension,
+      repoRoot: await codeRepoRoot(),
+    });
+    codeMemoryState.state = "synced";
+    codeMemoryState.files = r.files;
+    codeMemoryState.symbols = r.symbols;
+    void refreshStatus(); // footer count now includes code points
+  };
 
   // Footer statusline state: total points stored in the project collection.
   // 0 when the collection does not exist yet; undefined (header without the
@@ -167,6 +195,38 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     },
   });
 
+  // Opt-in structural code search (spec §11): present only when enabled at
+  // registration time — the agent discovers the feature by the tool existing
+  // at all. No tool description mentions codegraph (spec D3).
+  if (codeMemoryOn) {
+    api.registerTool({
+      name: "code_memory",
+      label: "code_memory",
+      description:
+        "Search indexed code structure summaries (exported functions, classes, types, modules) " +
+        "for this project semantically. Use for 'how/where does X work' questions before " +
+        "falling back to grep or file reads; open the returned file:line pointers for full context.",
+      promptSnippet: "code_memory(query, limit?) — semantic search of indexed code structure summaries.",
+      promptGuidelines: [
+        "For 'how/where does X work' questions, query code_memory first; it retrieves indexed summaries of this project's top-level symbols and modules.",
+        "Results carry file:line pointers — open the file for full context when a summary is promising.",
+        "code_memory covers structure, not rationale — pair it with memory_search for design decisions.",
+      ],
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Natural-language description of the code knowledge needed." },
+          limit: { type: "number", description: "Override result count (capped by config maxResults)." },
+        },
+        required: ["query"],
+      },
+      execute: async (_toolCallId: string, params: { query: string; limit?: number }) => {
+        const res = await memorySearchLogic(rt, params.query, "code", params.limit);
+        return res.ok ? OK(renderHits(res.value)) : ERR(`code_memory failed: ${res.error}`);
+      },
+    });
+  }
+
   // ── /qdrant command family ─────────────────────────────────────────────────
   // One pi command per unique single-token name: pi resolves "/qdrant-status" as
   // the command "qdrant-status" with everything after the first space as its raw
@@ -195,6 +255,26 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     { name: "qdrant-clear", description: "Reset the current project's collection", execute: async () => { await clearHandler(io); void refreshStatus(); } },
     { name: "qdrant-help", description: "List /qdrant commands", execute: async () => { await helpHandler(io); } },
   ];
+  if (codeMemoryOn) {
+    commands.push({
+      name: "qdrant-index-code",
+      description: "Re-index code summaries now",
+      execute: async () => {
+        // Live-config guard: after a mid-session flip-off this command lingers
+        // until reload — answer honestly instead of silently indexing.
+        if (rt.cfg.codeKnowledge !== "on") {
+          io.emit(message("code memory is disabled (codeKnowledge: off)"));
+          return;
+        }
+        await runCodeSync();
+        io.emit(message(codeMemorySyncMessage({
+          files: codeMemoryState.files ?? 0,
+          symbols: codeMemoryState.symbols ?? 0,
+          deleted: 0,
+        })));
+      },
+    });
+  }
   for (const c of commands) api.registerCommand({ name: c.name, description: c.description, execute: c.execute });
 
   // ── Lifecycle handlers ─────────────────────────────────────────────────────
@@ -230,6 +310,10 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     api.setStatus(memoryHeaderText({ mode, collection: rt.projectId }));
     if (mode === "mode1") await ingestPending();
     void refreshStatus(); // repaint with the count once known, best-effort
+    if (codeMemoryOn) {
+      // Fire-and-forget code sync (spec §10): never blocks session start.
+      void runCodeSync();
+    }
     // Mode 2 safety-net auto snapshot (spec §3.3) is intentionally NOT wired here:
     // an early-session snapshot needs mid-session content distillation access that
     // this extension does not yet have. Mode 2 relies on the session_compact

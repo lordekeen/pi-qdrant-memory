@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   message, errorEntry, helpEntry, statusEntry, searchEntry, searchHitView,
-  renderOut, outText, typeRole, memoryHeaderText,
+  renderOut, outText, typeRole, memoryHeaderText, codeMemoryReloadNotice, codeMemorySyncMessage,
 } from "../src/out.ts";
 import type { OutEntry, OutLine, Span } from "../src/out.ts";
 import type { PointPayload, SearchHit } from "../src/types.ts";
@@ -203,4 +203,45 @@ test("memoryHeaderText renders the count-bearing footer variant when points are 
   assert.equal(
     memoryHeaderText({ mode: "mode2", collection: "pi-mem-abc", points: 0 }),
     "🧠 Memory (0): mode2 (pi-mem-abc)");
+});
+
+test("typeRole maps code to the muted slot", () => {
+  assert.equal(typeRole("code"), "muted");
+});
+
+test("status lines render code-memory rows in all three states", () => {
+  const base = { mode: "mode2", embeddings: { state: "ok" as const }, detail: {
+    collection: "pi-mem-abc", qdrantUrl: "http://x", model: "m", dimension: 768,
+    threshold: 0.18, maxResults: 10,
+  } };
+  const off = renderOut(statusEntry({ ...base, qdrant: { state: "err" }, codeMemory: { state: "off" } }));
+  assert.match(outText(statusEntry({ ...base, qdrant: { state: "err" }, codeMemory: { state: "off" } })), /code memory: off/);
+  const syncing = renderOut(statusEntry({ ...base, qdrant: { state: "err" }, codeMemory: { state: "syncing" } }));
+  assert.match(outText(statusEntry({ ...base, qdrant: { state: "err" }, codeMemory: { state: "syncing" } })), /on \(syncing…\)/);
+  void off; void syncing;
+  const synced = outText(statusEntry({ ...base, qdrant: { state: "err" }, codeMemory: { state: "synced", files: 4, symbols: 21 } }));
+  assert.match(synced, /code memory: ✓ 4 files · 21 symbols/);
+});
+test("codeMemoryReloadNotice is direction-aware", () => {
+  assert.match(codeMemoryReloadNotice("on"), /registers on reload/);
+  assert.match(codeMemoryReloadNotice("off"), /unregisters on reload/);
+  assert.equal(codeMemorySyncMessage({ files: 2, symbols: 9, deleted: 1 }),
+    "code memory: 2 files · 9 symbols indexed (1 points replaced)");
+});
+
+test("typeRole maps code to the muted slot", () => {
+  assert.equal(typeRole("code"), "muted");
+});
+
+test("status lines render code-memory rows in all three states", () => {
+  const base = { mode: "mode2", embeddings: { state: "ok" as const }, detail: {
+    collection: "pi-mem-abc", qdrantUrl: "http://x", model: "m", dimension: 768,
+    threshold: 0.18, maxResults: 10,
+  } };
+  const off = outText(statusEntry({ ...base, qdrant: { state: "err" }, codeMemory: { state: "off" } }));
+  assert.match(off, /code memory: off/);
+  const syncing = outText(statusEntry({ ...base, qdrant: { state: "err" }, codeMemory: { state: "syncing" } }));
+  assert.match(syncing, /on \(syncing…\)/);
+  const synced = outText(statusEntry({ ...base, qdrant: { state: "err" }, codeMemory: { state: "synced", files: 4, symbols: 21 } }));
+  assert.match(synced, /code memory: ✓ 4 files · 21 symbols/);
 });

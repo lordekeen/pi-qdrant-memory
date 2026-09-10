@@ -10,6 +10,7 @@ export interface MakeRuntimeIO {
   writeConfig(c: Config): void;
   print(text: string): void;
   embed?: (t: string) => Promise<number[]>;
+  embedBatch?: (texts: string[]) => Promise<number[][]>;
   qdrant?: QdrantLike;
 }
 
@@ -31,6 +32,7 @@ export async function makeRuntime(
     cwd,
     projectId,
     embed: embedder,
+    embedBatch: io.embedBatch ?? ((texts: string[]) => embeddingClient.embedBatch(texts)),
     qdrant,
     readConfig: io.readConfig,
     writeConfig: io.writeConfig,
@@ -48,5 +50,8 @@ export function applyConfig(rt: RuntimeDeps, cfg: Config): void {
   const embeddingClient = new EmbeddingClient(
     cfg.embeddingBaseURL, cfg.embeddingModel, cfg.embeddingApiKey, cfg.expectedDimension);
   rt.embed = (text: string) => embeddingClient.embed(text);
+  // Rebind the batch variant too, or a hot config reload would leave it
+  // submitting to the previous (stale) embedding client.
+  rt.embedBatch = (texts: string[]) => embeddingClient.embedBatch(texts);
   rt.qdrant = new QdrantClient(cfg.qdrantUrl, cfg.qdrantApiKey);
 }

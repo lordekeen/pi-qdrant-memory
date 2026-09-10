@@ -25,6 +25,9 @@ export interface StatusHealth {
     | { state: "warn"; collection: string }
     | { state: "err" };
   embeddings: { state: "ok" } | { state: "err" };
+  /** Present only while the code-memory feature is wired (registration-time
+   * codeKnowledge = on); omitted entirely when off. */
+  codeMemory?: CodeMemoryHealth;
   detail: {
     collection: string;
     qdrantUrl: string;
@@ -34,6 +37,7 @@ export interface StatusHealth {
     maxResults: number;
   };
 }
+export interface CodeMemoryHealth { state: "off" | "syncing" | "synced"; files?: number; symbols?: number; }
 export interface StatusEntry { kind: "status"; health: StatusHealth; }
 
 export interface SearchHitView { type: MemoryType; score: number; pointer: string; text: string; }
@@ -101,6 +105,21 @@ const STATE_ROLE: Record<StatusState, OutlineRole> = { ok: "success", warn: "war
 /** Zero-hit search copy — one plain non-expandable line (DESIGN.md search-results). */
 export const EMPTY_SEARCH_TEXT = "No relevant memory found.";
 
+/** Mid-session codeKnowledge flip notice (spec §12) — direction-aware because
+ * the reload consequence differs: the tool registers on on-flips and
+ * unregisters on off-flips. Indexing itself never needs a reload
+ * (/qdrant-index-code). */
+export function codeMemoryReloadNotice(next: "off" | "on"): string {
+  return next === "on"
+    ? "code memory: takes effect at the next session start — the code_memory tool registers on reload. Run /qdrant-index-code to index the current session's code right away."
+    : "code memory: turns off at the next session start — the code_memory tool unregisters on reload.";
+}
+
+/** /qdrant-index-code result line (spec §10.1). */
+export function codeMemorySyncMessage(r: { files: number; symbols: number; deleted: number }): string {
+  return `code memory: ${String(r.files)} files · ${String(r.symbols)} symbols indexed (${String(r.deleted)} points replaced)`;
+}
+
 const PREVIEW_MAX = 200;
 /** The one width this extension ever chooses (DESIGN.md Layout + search-results). */
 function previewText(text: string): string {
@@ -130,6 +149,19 @@ function statusLines(health: StatusHealth): OutLine[] {
       ? [s("embeddings: "), s(`${GLYPH.ok} `, STATE_ROLE.ok), s("reachable")]
       : [s("embeddings: "), s(`${GLYPH.err} NOT reachable`, STATE_ROLE.err)],
   });
+  const cm = health.codeMemory;
+  if (cm) {
+    if (cm.state === "off") {
+      out.push({ spans: [s("code memory: "), s("off", "muted")] });
+    } else if (cm.state === "syncing") {
+      out.push({ spans: [s("code memory: "), s("on (syncing…)", "dim")] });
+    } else {
+      const counts = cm.files !== undefined && cm.symbols !== undefined
+        ? `${String(cm.files)} files · ${String(cm.symbols)} symbols`
+        : "indexed";
+      out.push({ spans: [s("code memory: "), s(`${GLYPH.ok} `, STATE_ROLE.ok), s(counts)] });
+    }
+  }
   return out;
 }
 

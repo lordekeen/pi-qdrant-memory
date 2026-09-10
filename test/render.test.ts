@@ -22,3 +22,11 @@ test("renderHits tolerates a hit whose payload lacks text", () => {
   assert.match(out, /0\.50/);
   assert.doesNotThrow(() => renderHits([{ id: "x", score: 0.5, payload }]));
 });
+
+test("sourcePointer prefers file_path:start_line for code payloads", () => {
+  const hits = [{ id: "x", score: 0.9, payload: {
+    type: "code", text: "function f — src/a.ts:2-4 — f()", project_id: "p", ts: 1,
+    source_kind: "code_summary", file_path: "src/a.ts", start_line: 2, end_line: 4,
+  } as PointPayload }];
+  assert.match(renderHits(hits), /\(src\/a\.ts:2\)/);
+});

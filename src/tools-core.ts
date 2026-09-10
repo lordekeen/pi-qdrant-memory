@@ -53,7 +53,9 @@ export async function memorySearchLogic(
       projectId: deps.projectId,
       type,
       limit: capped,
-      threshold: deps.cfg.scoreThreshold,
+      // Code summaries need a higher similarity bar than conversation
+      // memories (spec D7) — the two surfaces use their own thresholds.
+      threshold: type === "code" ? deps.cfg.codeScoreThreshold : deps.cfg.scoreThreshold,
     });
     return { ok: true, value: hits };
   } catch (err) {

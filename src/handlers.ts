@@ -1,8 +1,8 @@
 import { resolveMode, detectBlackhole } from "./mode.ts";
 import { setConfigField } from "./config.ts";
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
-import { errorEntry, helpEntry, message, outText, searchEntry, searchHitView, statusEntry, EMPTY_SEARCH_TEXT } from "./out.ts";
-import type { OutEntry, StatusHealth } from "./out.ts";
+import { errorEntry, helpEntry, message, outText, searchEntry, searchHitView, statusEntry, EMPTY_SEARCH_TEXT, codeMemoryReloadNotice } from "./out.ts";
+import type { CodeMemoryHealth, HelpRow, OutEntry, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
 import { QdrantError } from "./qdrant.ts";
 import type { Config, MemoryType, RuntimeDeps } from "./types.ts";
@@ -18,9 +18,11 @@ export interface HandlerIO {
   writeConfig(c: Config): void;
   /** Emit one structured output entry (message/error/help/status/search). */
   emit(e: OutEntry): void;
+  /** Live code-memory sync state; present only when the feature is wired. */
+  codeMemory?: CodeMemoryHealth;
 }
 
-export interface DepsToIOOptions { emit?: (e: OutEntry) => void; }
+export interface DepsToIOOptions { emit?: (e: OutEntry) => void; codeMemory?: CodeMemoryHealth; }
 
 /**
  * Adapt a `RuntimeDeps` to a `HandlerIO`. Fields are exposed as live getters over
@@ -40,6 +42,7 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
     readConfig: deps.readConfig,
     writeConfig: deps.writeConfig,
     emit: options.emit ?? ((e) => deps.print(outText(e))),
+    codeMemory: options.codeMemory,
   };
 }
 
@@ -69,6 +72,7 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
     mode,
     qdrant,
     embeddings: embedOk ? { state: "ok" } : { state: "err" },
+    ...(io.codeMemory ? { codeMemory: io.codeMemory } : {}),
     detail: {
       collection: io.projectId,
       qdrantUrl: io.cfg.qdrantUrl,
@@ -89,6 +93,9 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
     if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return { exit: false }; }
     io.writeConfig(applied.next);
     io.emit(message(`settings: ${field} updated (reloaded at runtime)`));
+    // Mid-session codeKnowledge flips cannot re-register tools — tell the user
+    // what needs a reload and what does not (spec §12).
+    if (field === "codeKnowledge") io.emit(message(codeMemoryReloadNotice(applied.next.codeKnowledge)));
     return { exit: false };
   }
   io.emit(message(`settings: usage — /qdrant-settings opens the interactive form; /qdrant-settings <key> <value> sets a field (keys: mode, codeKnowledge, embeddingBaseURL, embeddingModel, expectedDimension, scoreThreshold, codeScoreThreshold, maxResults, qdrantUrl, qdrantApiKey, embeddingApiKey)`));
@@ -175,6 +182,8 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   if (!ok) { io.emit(message(`settings: ${key} unchanged (cancelled)`)); return; }
   io.writeConfig(applied.next);
   io.emit(message(`settings: ${key} updated (reloaded at runtime)`));
+  // Same mid-session flip notice as the CLI path (spec §12).
+  if (key === "codeKnowledge") io.emit(message(codeMemoryReloadNotice(applied.next.codeKnowledge)));
 }
 
 export async function rememberHandler(io: HandlerIO, text: string, type?: MemoryType): Promise<HandlerResult> {
@@ -218,13 +227,17 @@ export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {
   // Brand the help block with the same header the footer statusline carries
   // (DESIGN.md footer-status) so the active mode + collection are visible here too.
   const mode = resolveMode(io.cfg, detectBlackhole(io.agentDir));
-  io.emit(helpEntry([
+  const rows: HelpRow[] = [
     { cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
     { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field (e.g. scoreThreshold 0.2)" },
     { cmd: "/qdrant-remember <text>", desc: "save durable knowledge now" },
     { cmd: "/qdrant-search <query>", desc: "semantic search of durable knowledge" },
     { cmd: "/qdrant-clear", desc: "reset the current project's collection" },
     { cmd: "/qdrant-help", desc: "this list" },
-  ], { mode, collection: io.projectId }));
+  ];
+  if (io.cfg.codeKnowledge === "on") {
+    rows.splice(5, 0, { cmd: "/qdrant-index-code", desc: "re-index code summaries now" });
+  }
+  io.emit(helpEntry(rows, { mode, collection: io.projectId }));
   return { exit: false };
 }

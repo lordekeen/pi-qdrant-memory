@@ -287,3 +287,60 @@ test("settings usage message lists the code-memory fields", async () => {
   assert.match(all, /codeKnowledge/);
   assert.match(all, /codeScoreThreshold/);
 });
+
+test("CLI codeKnowledge write emits the reload notice; other fields do not", async () => {
+  const d = io();
+  await settingsHandler(d, "codeKnowledge", "on");
+  let all = d.printed.join("\n");
+  assert.match(all, /takes effect at the next session start/);
+  assert.match(all, /code_memory tool registers on reload/);
+
+  const off = io();
+  await settingsHandler(off, "codeKnowledge", "off");
+  all = off.printed.join("\n");
+  assert.match(all, /unregisters on reload/);
+
+  const other = io();
+  await settingsHandler(other, "scoreThreshold", "0.2");
+  assert.doesNotMatch(other.printed.join("\n"), /next session start/);
+});
+
+test("form codeKnowledge write emits the reload notice", async () => {
+  const d = io();
+  let selects = 0;
+  const ui: SettingsUI = {
+    async select(_title, options) {
+      selects++;
+      return selects === 1
+        ? options.find((o) => o.startsWith("codeKnowledge ="))
+        : options.find((o) => o === "on");
+    },
+    async input() { throw new Error("not used"); },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.match(d.printed.join("\n"), /takes effect at the next session start/);
+});
+
+test("statusHandler includes the code-memory row when the feature is wired", async () => {
+  const d = io({ codeMemory: { state: "synced", files: 4, symbols: 21 } });
+  await statusHandler(d);
+  const all = d.printed.join("\n");
+  assert.match(all, /code memory: ✓ 4 files · 21 symbols/);
+});
+
+test("statusHandler omits the code-memory row when not wired", async () => {
+  const d = io();
+  await statusHandler(d);
+  assert.doesNotMatch(d.printed.join("\n"), /code memory/);
+});
+
+test("help lists /qdrant-index-code only when codeKnowledge is on", async () => {
+  const on = io({ cfg: { ...cfg, codeKnowledge: "on" } });
+  await helpHandler(on);
+  assert.match(on.printed.join("\n"), /qdrant-index-code/);
+
+  const off = io();
+  await helpHandler(off);
+  assert.doesNotMatch(off.printed.join("\n"), /qdrant-index-code/);
+});

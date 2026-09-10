@@ -48,6 +48,9 @@ export interface RuntimeDeps {
   cwd: string;
   projectId: string;
   embed: (text: string) => Promise<number[]>;
+  /** Batched variant for the code-memory sync; falls back to per-text embed
+   * when the runtime was assembled without a batching client (tests). */
+  embedBatch?: (texts: string[]) => Promise<number[][]>;
   qdrant: QdrantLike;
   readConfig(): Config;
   writeConfig(c: Config): void;

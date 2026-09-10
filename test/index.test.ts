@@ -128,3 +128,53 @@ test("statusline reports 0 memories when the collection does not exist yet", asy
     assert.match(last, /🧠 Memory \(0\): mode2 \(pi-mem-abc\)/);
   } finally { cleanup(); }
 });
+
+const onRt: RuntimeDeps = { ...rt, cfg: { ...rt.cfg, codeKnowledge: "on" } };
+
+test("code_memory tool and /qdrant-index-code register only when codeKnowledge is on", () => {
+  const on = fakeApi();
+  const off = fakeApi();
+  const onCleanup = wireApi(on, onRt);
+  const offCleanup = wireApi(off, rt);
+  try {
+    const onTools = (on.tools as Array<{ name: string }>).map((t) => t.name);
+    const offTools = (off.tools as Array<{ name: string }>).map((t) => t.name);
+    assert.ok(onTools.includes("code_memory"), "expected code_memory when on");
+    assert.ok(!offTools.includes("code_memory"), "no code_memory when off");
+    const onCmds = (on.commands as Array<{ name: string }>).map((c) => c.name);
+    const offCmds = (off.commands as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(onCmds.includes("qdrant-index-code"));
+    assert.ok(!offCmds.includes("qdrant-index-code"));
+  } finally { onCleanup(); offCleanup(); }
+});
+
+test("code_memory executes a code-typed search", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, onRt);
+  try {
+    const tool = (api.tools as Array<{ name: string; execute: (id: string, p: { query: string }) => Promise<{ content: Array<{ text: string }> }> }>)
+      .find((t) => t.name === "code_memory")!;
+    const res = await tool.execute("t1", { query: "how does X work" });
+    assert.match(res.content[0]!.text, /No relevant memory found/);
+  } finally { cleanup(); }
+});
+
+test("session_start runs the code sync and repaints the footer after it", async () => {
+  const counted: QdrantLike = {
+    ...qdrant,
+    async count() { return 5; },
+    async codeIndexSnapshot() { return new Map(); },
+  };
+  const localRt: RuntimeDeps = { ...onRt, qdrant: counted };
+  const api = fakeApi();
+  const cleanup = wireApi(api, localRt);
+  try {
+    const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+    await onStart({}, {});
+    await settle();
+    await settle();
+    const last = api.statuses.at(-1);
+    assert.ok(last);
+    assert.match(last, /🧠 Memory \(5\): mode2 \(pi-mem-abc\)/);
+  } finally { cleanup(); }
+});

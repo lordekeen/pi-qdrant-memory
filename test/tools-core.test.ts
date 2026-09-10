@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { rememberLogic, memorySearchLogic } from "../src/tools-core.ts";
 import { pointId } from "../src/ids.ts";
 import type { QdrantLike, QdrantPoint } from "../src/qdrant.ts";
-import type { PointPayload, RuntimeDeps, SearchHit } from "../src/types.ts";
+import type { MemoryType, PointPayload, RuntimeDeps, SearchHit } from "../src/types.ts";
 
 function deps(over: Partial<RuntimeDeps> = {}): RuntimeDeps & { q: { upserted: QdrantPoint[][] }; embeds: string[] } {
   const upserted: QdrantPoint[][] = [];
@@ -98,4 +98,33 @@ test("memorySearchLogic caps limit at maxResults", async () => {
   const d = deps({ qdrant: q });
   await memorySearchLogic(d, "q", undefined, 1000);
   assert.equal(sawLimit, 10); // cfg.maxResults
+});
+
+test("memory_search uses codeScoreThreshold for code queries, scoreThreshold otherwise", async () => {
+  const seen: Array<{ threshold: number; type?: MemoryType }> = [];
+  const d = deps({
+    cfg: {
+      qdrantUrl: "http://localhost:6333", qdrantApiKey: null,
+      embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text",
+      embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10,
+      mode: "auto", codeKnowledge: "on", codeScoreThreshold: 0.4,
+    },
+    qdrant: {
+      async ensureCollection() { return "exists" as const; },
+      async upsert() {},
+      async search(_n: string, _v: number[], opts: { threshold: number; type?: MemoryType }) {
+        seen.push({ threshold: opts.threshold, type: opts.type });
+        return [];
+      },
+      async count() { return 0; },
+      async clearCollection() {},
+      async deletePointsByFiles() {},
+      async codeIndexSnapshot() { return new Map<string, string>(); },
+    } as unknown as RuntimeDeps["qdrant"],
+  });
+  await memorySearchLogic(d, "why is auth like this");
+  await memorySearchLogic(d, "how does auth work", "code");
+  assert.equal(seen[0]!.threshold, 0.18);
+  assert.equal(seen[1]!.threshold, 0.4);
+  assert.equal(seen[1]!.type, "code");
 });
