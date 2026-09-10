@@ -23,29 +23,34 @@ const payload: PointPayload = {
   type: "decision", text: "use REST", project_id: "pi-mem-abc", ts: 1, source_kind: "remember_tool",
 };
 
-function addIndexRoutes(routes: Map<string, (u: string, i: RequestInit) => Response>, hits: string[] = []): void {
-  for (const field of ["source_kind", "file_path"]) {
-    routes.set(`PUT http://qdrant:6333/collections/pi-mem-abc/index/${field}`, (_u, _i) => {
-      hits.push(field);
-      return jsonRes({ result: { status: "ok" } });
-    });
-  }
+function addIndexRoutes(routes: Map<string, (u: string, i: RequestInit) => Response>, hits: Array<{ field: string; body: { field_name: string; field_schema: string } }> = []): void {
+  // Correct Qdrant API (live-verified on 1.19.1): PUT /collections/{name}/index
+  // with {field_name, field_schema} — the old path-style route 404s.
+  routes.set("PUT http://qdrant:6333/collections/pi-mem-abc/index", (_u, i) => {
+    const body = JSON.parse(String(i.body)) as { field_name: string; field_schema: string };
+    hits.push({ field: body.field_name, body });
+    return jsonRes({ result: { status: "ok" } });
+  });
 }
 
 test("ensureCollection creates on 404", async () => {
   const routes = new Map<string, (u: string, i: RequestInit) => Response>();
-  const indexed: string[] = [];
+  const indexed: Array<{ field: string; body: { field_name: string; field_schema: string } }> = [];
   routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () => jsonRes({ status: "error" }, 404));
   routes.set("PUT http://qdrant:6333/collections/pi-mem-abc", () => jsonRes({ result: true }));
   addIndexRoutes(routes, indexed);
   const client = makeClient(routes);
   assert.equal(await client.ensureCollection("pi-mem-abc", 768), "created");
-  assert.deepEqual(indexed.sort(), ["file_path", "source_kind"]);
+  const fields = indexed.map((h) => h.field).sort();
+  assert.deepEqual(fields, ["file_path", "source_kind"]);
+  for (const h of indexed) {
+    assert.deepEqual(h.body, { field_name: h.field, field_schema: "keyword" });
+  }
 });
 
 test("ensureCollection recreates on dimension mismatch", async () => {
   const routes = new Map<string, (u: string, i: RequestInit) => Response>();
-  const indexed: string[] = [];
+  const indexed: Array<{ field: string; body: { field_name: string; field_schema: string } }> = [];
   routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () =>
     jsonRes({ result: { config: { params: { vectors: { size: 384 } } } } }));
   routes.set("DELETE http://qdrant:6333/collections/pi-mem-abc", () => jsonRes({ result: true }));

@@ -37,7 +37,7 @@ export interface StatusHealth {
     maxResults: number;
   };
 }
-export interface CodeMemoryHealth { state: "off" | "syncing" | "synced"; files?: number; symbols?: number; }
+export interface CodeMemoryHealth { state: "off" | "syncing" | "synced" | "error"; files?: number; symbols?: number; error?: string; }
 export interface StatusEntry { kind: "status"; health: StatusHealth; }
 
 export interface SearchHitView { type: MemoryType; score: number; pointer: string; text: string; }
@@ -155,6 +155,9 @@ function statusLines(health: StatusHealth): OutLine[] {
       out.push({ spans: [s("code memory: "), s("off", "muted")] });
     } else if (cm.state === "syncing") {
       out.push({ spans: [s("code memory: "), s("on (syncing…)", "dim")] });
+    } else if (cm.state === "error") {
+      // A failed sync must not render as success (review finding 8).
+      out.push({ spans: [s("code memory: "), s(`${GLYPH.err} sync failed`, STATE_ROLE.err)] });
     } else {
       const counts = cm.files !== undefined && cm.symbols !== undefined
         ? `${String(cm.files)} files · ${String(cm.symbols)} symbols`

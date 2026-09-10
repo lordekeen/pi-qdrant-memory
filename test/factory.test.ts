@@ -53,7 +53,9 @@ test("factory registers tools, /qdrant commands, and lifecycle hooks", async () 
     // One real pi command per unique single-token name (pi resolves
     // "/qdrant-status" as the command "qdrant-status" — no subcommand parsing).
     const cmdNames = [...commands.keys()].sort();
-    assert.deepEqual(cmdNames, ["qdrant-clear", "qdrant-help", "qdrant-remember", "qdrant-search", "qdrant-settings", "qdrant-status"]);
+    // qdrant-index-code is registered unconditionally (live-config guard inside;
+    // spec §12's "index right away" promise) — it answers "disabled" when off.
+    assert.deepEqual(cmdNames, ["qdrant-clear", "qdrant-help", "qdrant-index-code", "qdrant-remember", "qdrant-search", "qdrant-settings", "qdrant-status"]);
 
     // No pi-blackhole config in the temp agent dir → mode2 → lifecycle hooks.
     const registered = events.map((e) => e.event);

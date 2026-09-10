@@ -136,11 +136,19 @@ export class QdrantClient implements QdrantLike {
   /** Payload keyword indexes accelerate the filtered deletes and scroll used by
    * code-memory sync (Zoo-Code's pathSegments-index lesson). Idempotent on the
    * Qdrant side; failures are logged and never fatal — search and upsert work
-   * unindexed, just slower. */
+   * unindexed, just slower.
+   *
+   * Request shape verified against live Qdrant 1.19.1: `PUT /collections/{name}/index`
+   * with `{field_name, field_schema}`. The previously-shipped path-style route
+   * (`/index/{field}`) returns 404 on current Qdrant and never created anything
+   * (review finding 2 — a plan-level bug faithfully implemented). */
   private async createPayloadIndexes(enc: string, name: string): Promise<void> {
     for (const field of ["source_kind", "file_path"]) {
       try {
-        await this.request("PUT", `/collections/${enc}/index/${field}`, { field: { type: "keyword" } });
+        await this.request("PUT", `/collections/${enc}/index`, {
+          field_name: field,
+          field_schema: "keyword",
+        });
       } catch (err) {
         console.error(`pi-qdrant-memory: payload index ${field} on ${name} failed (non-fatal): ${String(err)}`);
       }
@@ -158,9 +166,10 @@ export class QdrantClient implements QdrantLike {
     const mustNot: unknown[] = [];
     if (opts.type) {
       must.push({ key: "type", match: { value: opts.type } });
-    } else {
-      // Code-summary points belong to the code_memory surface — never leak into
-      // untyped conversational search (spec §13 / D8).
+    }
+    if (opts.type !== "code") {
+      // Code-summary points belong to the code_memory surface — every non-code
+      // query (typed or untyped) excludes them (spec §13 / D8).
       mustNot.push({ key: "type", match: { value: "code" } });
     }
     // The query API takes the vector under `query` (score_threshold is rejected for

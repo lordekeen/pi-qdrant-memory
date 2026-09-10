@@ -64,8 +64,6 @@ Env overrides at load, precedence defaults → file → env:
 ## Commands
 
 `/qdrant-status` — connection health + active mode + collection point count.
-`/qdrant-settings <key> <value>` — persist a config field (`mode`, `embeddingBaseURL`, `embeddingModel`,
-`expectedDimension`, `scoreThreshold`, `maxResults`). Bare `/qdrant-settings` prints usage.
 `/qdrant-settings <key> <value>` — persist a config field (`mode`, `codeKnowledge`, `embeddingBaseURL`, `embeddingModel`,
 `expectedDimension`, `scoreThreshold`, `codeScoreThreshold`, `maxResults`). Bare `/qdrant-settings` prints usage.
 `/qdrant-remember <text>` — manual durable save.
@@ -102,7 +100,7 @@ indexes **structural summaries** of top-level definitions — exported functions
 Python defs, per-file anchors — as `code` points in the same collection. Zero dependencies: the
 extractor is built in; no external indexer is used.
 
-- **Freshness:** payloads carry `file_path` + `file_sha256`; unchanged files are skipped,
+- **Freshness:** payloads carry `file_path` + `file_sha`; unchanged files are skipped,
   changed files are deleted-and-replaced, vanished files are cleaned up. `/qdrant-index-code`
   forces a resync.
 - **Retrieval:** the `code_memory` tool (registered only while enabled) searches code summaries
@@ -128,7 +126,7 @@ capture and `/qdrant-remember`.
 One Qdrant collection per project, named `pi-mem-<16 hex of sha256(git root)>`; single unnamed vector,
 Cosine, `on_disk`, HNSW. Points carry `{ type, text, project_id, session_id?, source_entry_id?, ts,
 source_kind }` plus code-provenance fields on code points (`file_path`, `file_sha`, `symbol`,
-`start_line`, `end_line`); keyword payload indexes on `type`, `project_id`, `source_kind`, `file_path`.
+`start_line`, `end_line`); keyword payload indexes on `source_kind` and `file_path`.
 Deterministic point ids (`sha256(normalized text | source_kind | context)`) make every write idempotent.
 
 ## Development

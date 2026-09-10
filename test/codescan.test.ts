@@ -184,3 +184,87 @@ test("summaries are deterministic and carry provenance (spec §6.3/§6.4)", () =
     assert.equal(fileSummaryFor({ ...file, nodes: [] }), undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("endLine does not bleed past brace-less and single-line declarations", () => {
+  const root = fixture();
+  try {
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "a.ts"), [
+      "export interface Shape {",
+      "  area(): number;",
+      "}",
+      "",
+      "export type Pair = [number, number];",
+      "",
+      "export enum Color { Red }",
+      "",
+      "export const twice = (n: number) => n * 2;",
+      "",
+      "export function tail() {",
+      "  if (true) {",
+      "    while (false) {",
+      "      const nested = 1; // nested bare braces must not end the function",
+      "    }",
+      "  }",
+      "}",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
+    assert.equal(byName.get("Shape")!.endLine, 3);
+    assert.equal(byName.get("Pair")!.endLine, 5); // was 16 (bled to next decl)
+    assert.equal(byName.get("Color")!.endLine, 7);
+    assert.equal(byName.get("twice")!.endLine, 9);
+    // Nested bare `}` must not terminate the function early
+    const tail = byName.get("tail")!;
+    assert.equal(tail.endLine, 17);
+    // Generic type alias is matched
+    assert.ok(byName.has("Pair"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("doc capture handles multi-line JSDoc and empty python docstrings", () => {
+  const root = fixture();
+  try {
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "a.ts"), [
+      "/**",
+      " * Adds numbers.",
+      " * Second line.",
+      " */",
+      "export function add(a: number): number {",
+      "  return a;",
+      "}",
+    ].join("\n"));
+    writeFileSync(join(root, "empty.py"), [
+      "def f():",
+      '    """"""',
+      "    return 1",
+      "",
+      "def g():",
+      "    return 2",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    const ts = files.find((f) => f.filePath === "src/a.ts")!;
+    assert.equal(ts.nodes[0]!.doc, "Adds numbers. Second line.");
+    const py = files.find((f) => f.filePath === "empty.py")!;
+    const byName = new Map(py.nodes.map((n) => [n.name, n]));
+    assert.equal(byName.get("f")!.doc, "");
+    assert.equal(byName.get("g")!.endLine, 6);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("tab-indented files are not misread as top-level", () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, "tabs.ts"), [
+      "export function outer() {",
+      "\tfunction helper() {",
+      "\t\treturn 1;",
+      "\t}",
+      "}",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    assert.equal(files[0]!.nodes.length, 1);
+    assert.equal(files[0]!.nodes[0]!.name, "outer");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -146,7 +146,10 @@ test("sync never throws: qdrant failures are logged and yield an empty result", 
       async ensureCollection() { throw new Error("collection boom"); },
     };
     const res = await syncCodeKnowledge(deps(root, broken as unknown as SyncDeps["qdrant"]));
-    assert.deepEqual(res, { files: 0, symbols: 0, skipped: 0, deleted: 0 });
+    // Failure is reported, not success-shaped zeros (review finding 7).
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /collection boom/);
+    assert.equal(res.files, 0);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -171,5 +174,70 @@ test("ids are deterministic across identical syncs (idempotent upsert)", async (
     await syncCodeKnowledge(deps(root, q3));
     const idsSecond = rec3.upserts[0]!.map((p) => p.id);
     assert.deepEqual(idsSecond, idsFirst);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a failed embed batch keeps the previous index intact (embed before invalidate)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-sync-"));
+  try {
+    const oldContent = "export function alpha() {}\n";
+    writeFile(root, "src/a.ts", oldContent);
+    const { rec, qdrant } = fakeQdrant();
+    // Simulate the previously indexed (now stale) state.
+    rec.snapshot.set("src/a.ts", "old-sha");
+    // All embed batches fail → nothing may be deleted or upserted.
+    const d: SyncDeps = {
+      ...deps(root, qdrant),
+      embedBatch: async () => { throw new Error("embed server down"); },
+    };
+    const res = await syncCodeKnowledge(d);
+    assert.equal(rec.deleted.length, 0, "old points must survive an embed failure");
+    assert.equal(rec.upserts.length, 0);
+    assert.equal(res.ok, true); // sync itself converged without throwing
+    assert.equal(res.symbols, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("vanished files are deleted even when nothing embeds", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-sync-"));
+  try {
+    const { rec, qdrant } = fakeQdrant();
+    rec.snapshot.set("src/gone.ts", "old-sha");
+    const d: SyncDeps = {
+      ...deps(root, qdrant),
+      embedBatch: async () => { throw new Error("embed server down"); },
+    };
+    await syncCodeKnowledge(d);
+    assert.deepEqual(rec.deleted, [["src/gone.ts"]]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("delete failures are non-fatal and reported in counts", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-sync-"));
+  try {
+    writeFile(root, "src/a.ts", "export function alpha() {}\n");
+    const { qdrant } = fakeQdrant();
+    (qdrant as { deletePointsByFiles: (n: string, paths: string[]) => Promise<void> }).deletePointsByFiles =
+      async (_n: string, _paths: string[]) => { throw new Error("delete boom"); };
+    const res = await syncCodeKnowledge(deps(root, qdrant));
+    assert.equal(res.ok, true);
+    assert.equal(res.symbols, 2); // embed+upsert still succeeded
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("zero-definition files do not churn as changed on every sync", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-sync-"));
+  try {
+    writeFile(root, "src/docs.ts", "just prose, no definitions\n");
+    const { rec, qdrant } = fakeQdrant();
+    // First pass: no nodes, not in snapshot → no work.
+    const first = await syncCodeKnowledge(deps(root, qdrant));
+    assert.equal(first.files, 0);
+    assert.equal(rec.deleted.length, 0);
+    // Second pass with a stale snapshot entry: file changed to no defs → delete.
+    rec.snapshot.set("src/docs.ts", "old-sha");
+    const second = await syncCodeKnowledge(deps(root, qdrant));
+    assert.deepEqual(rec.deleted.at(-1), ["src/docs.ts"]);
+    void second;
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

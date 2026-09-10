@@ -93,3 +93,14 @@ test("embedBatch rejects mismatched item count, gaps, and dimension drift", asyn
   const http = makeBatchClient(() => ({ ok: false, status: 500, json: async () => ({}) } as Response));
   await assert.rejects(() => http.client.embedBatch(["a"]), EmbeddingError);
 });
+
+test("embedBatch rejects duplicate indexes via the gap check", async () => {
+  // Two inputs, both claiming index 0 → position 1 stays undefined; the gap
+  // guard must fire (reviewer P1-1: previously untested).
+  const { client } = makeBatchClient(() =>
+    okJson({ data: [
+      { index: 0, embedding: [1, 1, 1] },
+      { index: 0, embedding: [2, 2, 2] },
+    ] }));
+  await assert.rejects(() => client.embedBatch(["a", "b"]), EmbeddingError);
+});

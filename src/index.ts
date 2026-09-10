@@ -10,6 +10,7 @@ import { artifactToIngestItem, ingestItems } from "./ingest.ts";
 import { captureAtCompaction } from "./capture.ts";
 import { projectIdFrom, findGitRoot } from "./project.ts";
 import { syncCodeKnowledge } from "./code-sync.ts";
+import type { SyncResult } from "./code-sync.ts";
 import { statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler, depsToIO } from "./handlers.ts";
 import type { HandlerIO, SettingsUI } from "./handlers.ts";
 import { runSettingsForm } from "./handlers.ts";
@@ -91,11 +92,14 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
   // /qdrant-settings applies to the hooks at the next session; the footer and
   // every command re-resolve the mode live (see currentMode).
   const registrationMode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
-  // Same session-fixation rule for code memory: the code_memory tool and the
-  // /qdrant-index-code command are registered here iff enabled; a mid-session
-  // flip is covered by the settings reload notice (spec §12).
+  // Same session-fixation rule for code memory: the code_memory tool is
+  // registered here iff enabled; a mid-session flip is covered by the settings
+  // reload notice (spec §12). The /qdrant-index-code command is registered
+  // unconditionally with a live-config guard — that is what makes §12's
+  // "index right away" promise keepable right after an off→on flip (the TOOL
+  // still waits for the reload, satisfying G5).
   const codeMemoryOn = rt.cfg.codeKnowledge === "on";
-  const codeMemoryState: { state: "off" | "syncing" | "synced"; files?: number; symbols?: number } = {
+  const codeMemoryState: { state: "off" | "syncing" | "synced" | "error"; files?: number; symbols?: number } = {
     state: codeMemoryOn ? "syncing" : "off",
   };
   const io = buildIO(api, rt, codeMemoryState);
@@ -104,7 +108,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
    * anchor can change at session_start (see there). */
   const codeRepoRoot = async (): Promise<string> => (await findGitRoot(rt.cwd)) ?? rt.cwd;
 
-  const runCodeSync = async (): Promise<void> => {
+  const runCodeSync = async (): Promise<SyncResult> => {
     const r = await syncCodeKnowledge({
       embedBatch: rt.embedBatch ?? (async (texts) => Promise.all(texts.map((t) => rt.embed(t)))),
       qdrant: rt.qdrant,
@@ -112,10 +116,11 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
       expectedDimension: rt.cfg.expectedDimension,
       repoRoot: await codeRepoRoot(),
     });
-    codeMemoryState.state = "synced";
+    codeMemoryState.state = r.ok ? "synced" : "error";
     codeMemoryState.files = r.files;
     codeMemoryState.symbols = r.symbols;
     void refreshStatus(); // footer count now includes code points
+    return r;
   };
 
   // Footer statusline state: total points stored in the project collection.
@@ -254,27 +259,30 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     { name: "qdrant-search", description: "Semantic search: /qdrant-search <query>", execute: async (args) => { await searchHandler(io, args.trim()); } },
     { name: "qdrant-clear", description: "Reset the current project's collection", execute: async () => { await clearHandler(io); void refreshStatus(); } },
     { name: "qdrant-help", description: "List /qdrant commands", execute: async () => { await helpHandler(io); } },
-  ];
-  if (codeMemoryOn) {
-    commands.push({
+    {
       name: "qdrant-index-code",
       description: "Re-index code summaries now",
       execute: async () => {
-        // Live-config guard: after a mid-session flip-off this command lingers
-        // until reload — answer honestly instead of silently indexing.
+        // Live-config guard: after a mid-session flip-off this answers honestly
+        // instead of silently indexing; the code_memory TOOL still requires the
+        // session reload (spec §10.1/§12).
         if (rt.cfg.codeKnowledge !== "on") {
           io.emit(message("code memory is disabled (codeKnowledge: off)"));
           return;
         }
-        await runCodeSync();
+        const r = await runCodeSync();
+        if (!r.ok) {
+          io.emit(errorEntry(`code memory: sync failed — ${r.error ?? "unknown error"}`));
+          return;
+        }
         io.emit(message(codeMemorySyncMessage({
-          files: codeMemoryState.files ?? 0,
-          symbols: codeMemoryState.symbols ?? 0,
-          deleted: 0,
+          files: r.files,
+          symbols: r.symbols,
+          deleted: r.deleted,
         })));
       },
-    });
-  }
+    },
+  ];
   for (const c of commands) api.registerCommand({ name: c.name, description: c.description, execute: c.execute });
 
   // ── Lifecycle handlers ─────────────────────────────────────────────────────

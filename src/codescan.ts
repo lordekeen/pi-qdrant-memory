@@ -6,7 +6,7 @@
  * material, not navigation data.
  */
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 /** Hard limits (spec §6.1) — protect the embed budget and the event loop. */
@@ -77,8 +77,9 @@ interface LineMatch {
 
 /** Match one source line as a top-level definition for the language. */
 function matchLine(language: "tsjs" | "python" | "fallback", line: string): LineMatch | undefined {
-  const trimmedStart = line.length - line.trimStart().length;
-  const indent = line.match(/^ */)?.[0].length ?? trimmedStart;
+  // Leading whitespace incl. tabs — space-only counting made tab-indented
+  // files look top-level (debugger finding 4).
+  const indent = line.match(/^[\t ]*/)?.[0].length ?? 0;
   const t = line.trim();
 
   if (language === "tsjs") {
@@ -88,9 +89,15 @@ function matchLine(language: "tsjs" | "python" | "fallback", line: string): Line
     if (m) return { kind: "class", name: m[4], indent };
     m = /^(export\s+)?interface\s+([A-Za-z_$][\w$]*)/.exec(t);
     if (m) return { kind: "interface", name: m[2], indent };
-    m = /^(export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=/.exec(t);
+    // Optional <…> before `=` — generic aliases (`type Pair<T> = …`) otherwise
+    // go unmatched (debugger finding 10).
+    m = /^(export\s+)?type\s+([A-Za-z_$][\w$]*)(<[^=]*>)?\s*=/.exec(t);
     if (m) return { kind: "type", name: m[2], indent };
-    m = /^(export\s+)?(const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(async\s*)?\(/.exec(t);
+    // Arrow functions only: require `=>` after the paren group, else
+    // `const ratio = (a + b) / 2;` is a false positive (debugger finding 11).
+    m = /^(export\s+)?(const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(async\s*)?\([^)]*\)\s*(:[^=]+)?=>/.exec(t);
+    if (m) return { kind: "function", name: m[3], indent };
+    m = /^(export\s+)?(const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(async\s*)?[A-Za-z_$][\w$]*\s*=>/.exec(t);
     if (m) return { kind: "function", name: m[3], indent };
     m = /^(export\s+)?enum\s+([A-Za-z_$][\w$]*)/.exec(t);
     if (m) return { kind: "enum", name: m[2], indent };
@@ -108,6 +115,10 @@ function matchLine(language: "tsjs" | "python" | "fallback", line: string): Line
   // fallback
   let m = /^(export\s+)?(pub\s+)?(async\s+)?(fn|func|function)\s+\(?\s*([A-Za-z_][\w.]*)/.exec(t);
   if (m) return { kind: "function", name: m[5], indent };
+  // Go receiver methods: `func (r *Repo) Find(...)` — the generic matcher above
+  // would name the receiver `r` (debugger finding 12).
+  m = /^(export\s+)?(pub\s+)?func\s+\([^)]*\)\s*([A-Za-z_]\w*)/.exec(t);
+  if (m) return { kind: "function", name: m[3], indent };
   // Go idiom: `type Name struct {` / `type Name interface {` — must win over the
   // plain `type` alias matcher below.
   m = /^(export\s+)?(pub\s+)?type\s+([A-Za-z_]\w*)\s+(struct|interface)/.exec(t);
@@ -143,9 +154,14 @@ function docAbove(lines: string[], defLine: number, language: "tsjs" | "python" 
     while (j < lines.length && lines[j]?.trim() === "") j++;
     const t = lines[j]?.trim() ?? "";
     if (t.startsWith('"""')) {
+      // Empty docstring (`""""""`) is a complete statement, not an opener —
+      // otherwise the forward scan swallows the rest of the file (debugger
+      // finding 3). Forward scan is capped regardless.
+      if (t === '""""""') return "";
       if (t.length > 6 && t.endsWith('"""')) return collapse(t.slice(3, -3)).slice(0, MAX_DOC_CHARS);
       const block: string[] = [t.slice(3)];
-      for (let k = j + 1; k < lines.length; k++) {
+      const stop = Math.min(lines.length, j + MAX_NODE_LINES);
+      for (let k = j + 1; k < stop; k++) {
         const l = lines[k]?.trim() ?? "";
         if (l.endsWith('"""')) { if (l.length > 3) block.push(l.slice(0, -3)); break; }
         block.push(l);
@@ -164,7 +180,10 @@ function docAbove(lines: string[], defLine: number, language: "tsjs" | "python" 
     } else {
       for (;;) {
         const t = lines[i]?.trim() ?? "";
-        const stripped = t.startsWith("/**") ? t.slice(3)
+        // A bare closing line must be stripped before the star-prefix branch,
+        // else it renders as a stray `/` in the doc (debugger finding 3).
+        const stripped = t === "*/" ? ""
+          : t.startsWith("/**") ? t.slice(3)
           : t.startsWith("/*") ? t.slice(2)
           : t.startsWith("*") ? t.slice(1)
           : t;
@@ -183,9 +202,11 @@ function docAbove(lines: string[], defLine: number, language: "tsjs" | "python" 
   return collapse(collected.join(" ")).slice(0, MAX_DOC_CHARS);
 }
 
-/** End line: matching closing brace at def indent, or next indent ≤ def (python). */
+/** End line: closing brace at def indent (or EOF/200-line cap), or next
+ * indent ≤ def (python). Indent counts tabs+spaces (debugger finding 4). */
 function endLineFor(lines: string[], startIdx: number, defIndent: number, language: "tsjs" | "python" | "fallback"): number {
   const last = Math.min(lines.length, startIdx + 1 + MAX_NODE_LINES);
+  const indentOf = (t: string): number => t.match(/^[\t ]*/)?.[0].length ?? 0;
   if (language === "python") {
     // End = last body line (1-based) before the first non-blank line at or
     // below the def's indent. Blank/comment lines inside the body don't end it.
@@ -193,16 +214,18 @@ function endLineFor(lines: string[], startIdx: number, defIndent: number, langua
     for (let i = startIdx + 1; i < last; i++) {
       const t = lines[i];
       if (t.trim() === "" || t.trim().startsWith("#")) continue;
-      if ((t.match(/^ */)?.[0].length ?? 0) <= defIndent) break;
+      if (indentOf(t) <= defIndent) break;
       lastContent = i;
     }
     return lastContent + 1;
   }
+  // The closing brace must sit at the def's own indent — a nested bare `}`
+  // (closing an inner if/try) must not terminate the node (debugger finding 1:
+  // 73/161 nodes on this very repo had wrong ranges without the guard).
   for (let i = startIdx + 1; i < last; i++) {
     const t = lines[i];
     if (t.trim() === "") continue;
-    if ((t.match(/^ */)?.[0].length ?? 0) <= defIndent && (t.startsWith("}") || t.endsWith("}"))) return i + 1;
-    if (t.trim() === "}") return i + 1;
+    if (indentOf(t) <= defIndent && (t.startsWith("}") || t.endsWith("}"))) return i + 1;
   }
   return last;
 }
@@ -229,7 +252,7 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function listFilesRecursive(root: string, dir: string, maxFiles: number, out: string[], capped: { value: boolean }): void {
+function listFilesRecursive(dir: string, maxFiles: number, skipDirs: ReadonlySet<string>, out: string[], capped: { value: boolean }): void {
   if (out.length >= maxFiles) { capped.value = true; return; }
   let entries: string[];
   try {
@@ -242,13 +265,17 @@ function listFilesRecursive(root: string, dir: string, maxFiles: number, out: st
     const full = join(dir, entry);
     let st;
     try {
-      st = statSync(full);
+      // lstat: symlinked directories are skipped outright — following them
+      // loops on cycles and indexes files outside the root (debugger
+      // finding 5: 41 duplicate entries from one self-referential link).
+      st = lstatSync(full);
     } catch {
       continue; // vanished mid-scan
     }
+    if (st.isSymbolicLink()) continue;
     if (st.isDirectory()) {
-      if (SKIP_DIRS.has(entry) || entry.startsWith(".")) continue;
-      listFilesRecursive(root, full, maxFiles, out, capped);
+      if (skipDirs.has(entry) || entry.startsWith(".")) continue;
+      listFilesRecursive(full, maxFiles, skipDirs, out, capped);
     } else if (st.isFile()) {
       if (st.size > MAX_FILE_BYTES) continue;
       if (languageFor(entry) === undefined) continue;
@@ -267,20 +294,11 @@ export function scanRepo(repoRoot: string, options: SkipOptions = {}): ScanResul
   const maxFiles = options.maxFiles ?? MAX_FILES;
   const paths: string[] = [];
   const capped = { value: false };
-  const skips = options.extraSkips ? new Set([...SKIP_DIRS, ...options.extraSkips]) : SKIP_DIRS;
-  const saved = SKIP_DIRS; // listFilesRecursive uses the module set; extend via wrapper below
-  void saved;
-  if (options.extraSkips) {
-    for (const s of options.extraSkips) SKIP_DIRS.add(s);
-  }
-  try {
-    listFilesRecursive(repoRoot, repoRoot, maxFiles, paths, capped);
-  } finally {
-    if (options.extraSkips) {
-      for (const s of options.extraSkips) SKIP_DIRS.delete(s);
-    }
-  }
-  void skips;
+  // Merged per-call skip set — the module-level SKIP_DIRS is never mutated,
+  // so concurrent scans cannot leak skips into each other (debugger
+  // finding 13).
+  const skipDirs = options.extraSkips ? new Set([...SKIP_DIRS, ...options.extraSkips]) : SKIP_DIRS;
+  listFilesRecursive(repoRoot, maxFiles, skipDirs, paths, capped);
 
   const files: ScannedFile[] = [];
   for (const abs of paths) {
@@ -298,7 +316,12 @@ export function scanRepo(repoRoot: string, options: SkipOptions = {}): ScanResul
     for (let i = 0; i < lines.length; i++) {
       const m = matchLine(language, lines[i]!);
       if (!m || m.indent !== 0) continue;
-      const end = endLineFor(lines, i, m.indent, language);
+      const defLine = lines[i]!;
+      // Brace-less declarations (`type Pair = …;`, `const twice = …;`) and
+      // single-line defs (`enum Color { Red }`) end on their own line — the
+      // forward scan would otherwise bleed to the next brace-like line.
+      const singleLine = language !== "python" && (!defLine.includes("{") || defLine.includes("}"));
+      const end = singleLine ? i + 1 : endLineFor(lines, i, m.indent, language);
       nodes.push({
         kind: m.kind,
         name: m.name,
@@ -317,6 +340,6 @@ export function scanRepo(repoRoot: string, options: SkipOptions = {}): ScanResul
 
 function isExported(defLine: string, language: "tsjs" | "python" | "fallback"): boolean {
   if (language === "tsjs") return /(^|\s)export(\s|$)/.test(defLine.trim());
-  if (language === "python") return !/^(def|class)\s+_/.test(defLine.trim());
+  if (language === "python") return !/^(async\s+)?(def|class)\s+_/.test(defLine.trim());
   return /(^|\s)(export|pub)(\s|$)/.test(defLine.trim());
 }

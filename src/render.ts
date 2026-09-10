@@ -11,9 +11,13 @@ export function truncatePreview(text: string, max: number = PREVIEW_MAX): string
 }
 
 /** Source pointer for a hit's payload — single source shared by tool text + entry outlines.
- * Code-summary points point at the source file:line (spec §13). */
+ * Code-summary node points point at the source file:line (spec §13); the file
+ * pointer is only used when a line exists — file-level points (no line) fall
+ * through to the existing rules (review finding 14). */
 export function sourcePointer(payload: PointPayload): string {
-  if (payload.file_path) return `${payload.file_path}:${String(payload.start_line ?? 1)}`;
+  if (payload.file_path && payload.start_line !== undefined) {
+    return `${payload.file_path}:${String(payload.start_line)}`;
+  }
   if (payload.source_entry_id) return `source_entry_id=${payload.source_entry_id}`;
   if (payload.session_id) return `session_id=${payload.session_id}`;
   return "no source pointer";

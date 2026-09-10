@@ -1,4 +1,7 @@
 import test from "node:test";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { wireApi } from "../src/index.ts";
 import type { WireApi } from "../src/index.ts";
@@ -131,7 +134,7 @@ test("statusline reports 0 memories when the collection does not exist yet", asy
 
 const onRt: RuntimeDeps = { ...rt, cfg: { ...rt.cfg, codeKnowledge: "on" } };
 
-test("code_memory tool and /qdrant-index-code register only when codeKnowledge is on", () => {
+test("code_memory tool gates on codeKnowledge; /qdrant-index-code is always present", () => {
   const on = fakeApi();
   const off = fakeApi();
   const onCleanup = wireApi(on, onRt);
@@ -141,11 +144,49 @@ test("code_memory tool and /qdrant-index-code register only when codeKnowledge i
     const offTools = (off.tools as Array<{ name: string }>).map((t) => t.name);
     assert.ok(onTools.includes("code_memory"), "expected code_memory when on");
     assert.ok(!offTools.includes("code_memory"), "no code_memory when off");
+    // The command registers unconditionally (live-config guard inside) so the
+    // §12 "index right away" notice is keepable right after an off→on flip.
     const onCmds = (on.commands as Array<{ name: string }>).map((c) => c.name);
     const offCmds = (off.commands as Array<{ name: string }>).map((c) => c.name);
     assert.ok(onCmds.includes("qdrant-index-code"));
-    assert.ok(!offCmds.includes("qdrant-index-code"));
+    assert.ok(offCmds.includes("qdrant-index-code"));
   } finally { onCleanup(); offCleanup(); }
+});
+
+test("/qdrant-index-code emits the count message on success and an error entry on failure", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-cmd-"));
+  try {
+    writeFileSync(join(root, "a.ts"), "export function alpha() {}\n");
+    const localRt: RuntimeDeps = { ...onRt, cwd: root, embedBatch: async (t: string[]) => t.map(() => new Array(768).fill(0.1)) };
+    const api = fakeApi();
+    const cleanup = wireApi(api, localRt);
+    try {
+      const cmd = (api.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>)
+        .find((c) => c.name === "qdrant-index-code")!;
+      await cmd.execute("");
+      const texts = (api.entries as Array<{ text?: string }>).map((e) => e.text ?? "");
+      assert.ok(texts.some((t) => /^code memory: 1 files · 2 symbols indexed \(1 points replaced\)$/.test(t)), JSON.stringify(texts));
+
+      // Failure path: sync reports ok:false → error entry (spec §10.1).
+      const brokenRt: RuntimeDeps = {
+        ...onRt, cwd: root, qdrant: {
+          ...qdrant,
+          async ensureCollection() { throw new Error("collection boom"); },
+        },
+      };
+      const api2 = fakeApi();
+      const cleanup2 = wireApi(api2, brokenRt);
+      try {
+        const cmd2 = (api2.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>)
+          .find((c) => c.name === "qdrant-index-code")!;
+        await cmd2.execute("");
+        const texts2 = (api2.entries as Array<{ kind?: string; text?: string }>).map((e) => ({ kind: e.kind, text: e.text ?? "" }));
+        const errEntry = texts2.find((t) => t.text.includes("code memory: sync failed"));
+        assert.ok(errEntry, JSON.stringify(texts2));
+        assert.equal(errEntry!.kind, "error");
+      } finally { cleanup2(); }
+    } finally { cleanup(); }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("code_memory executes a code-typed search", async () => {
