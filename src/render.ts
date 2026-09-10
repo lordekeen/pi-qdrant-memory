@@ -1,5 +1,15 @@
 import type { PointPayload, SearchHit } from "./types.ts";
 
+/** Shared preview truncation width (DESIGN.md Layout: the one width this
+ * extension ever chooses). Single source for the tool-path renderer and the
+ * entry-outlinemodel. */
+export const PREVIEW_MAX = 200;
+
+/** Truncate to a collapsed preview, appending `…` only when truncated. */
+export function truncatePreview(text: string, max: number = PREVIEW_MAX): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 /** Source pointer for a hit's payload — single source shared by tool text + entry outlines. */
 export function sourcePointer(payload: PointPayload): string {
   if (payload.source_entry_id) return `source_entry_id=${payload.source_entry_id}`;
@@ -14,9 +24,7 @@ export function renderHits(hits: SearchHit[]): string {
     // let one malformed payload turn a valid search into a thrown error.
     const text = typeof h.payload.text === "string" ? h.payload.text : "";
     const source = sourcePointer(h.payload);
-    const preview = text.length > 200
-      ? text.slice(0, 200) + "…"
-      : text;
+    const preview = truncatePreview(text);
     return `[${h.payload.type}] score=${h.score.toFixed(2)} (${source})\n${preview}`;
   });
   return lines.join("\n\n");

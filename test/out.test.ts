@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   message, errorEntry, helpEntry, statusEntry, searchEntry, searchHitView,
-  renderOut, outText, typeRole,
+  renderOut, outText, typeRole, memoryHeaderText,
 } from "../src/out.ts";
 import type { OutEntry, OutLine, Span } from "../src/out.ts";
 import type { PointPayload, SearchHit } from "../src/types.ts";
@@ -54,7 +54,7 @@ test("help renders the memory header, then a bold title + aligned rows", () => {
   assert.equal(spanText(lines[1]), "commands");
   assert.deepEqual(roles(lines[1]), ["bold"]);
   // command column aligned to the longest name + 2
-  assert.equal(spanText(lines[2]), "qdrant-status".padEnd("qdrant-settings".length + 2) + "health");
+  assert.equal(spanText(lines[2]), `${"qdrant-status".padEnd("qdrant-settings".length + 2)}health`);
   assert.deepEqual(roles(lines[2]), ["default", "dim"]);
 });
 
@@ -66,8 +66,8 @@ test("help aligns usage commands past 26 chars without jamming the description",
   const lines = renderOut(helpEntry(rows, { mode: "mode2", collection: "pi-mem-abc" }));
   const width = Math.max(...rows.map((r) => r.cmd.length)) + 2; // 31 — an old 26-cap jammed here
   assert.equal(spanText(lines[0]), "🧠 Memory: mode2 (pi-mem-abc)"); // header first
-  assert.equal(spanText(lines[2]), "/qdrant-status".padEnd(width) + "connection health + active mode + collection status");
-  assert.equal(spanText(lines[3]), "/qdrant-settings <key> <value>".padEnd(width) + "persist a config field (e.g. scoreThreshold 0.2)");
+  assert.equal(spanText(lines[2]), `${"/qdrant-status".padEnd(width)}connection health + active mode + collection status`);
+  assert.equal(spanText(lines[3]), `${"/qdrant-settings <key> <value>".padEnd(width)}persist a config field (e.g. scoreThreshold 0.2)`);
   assert.equal(spanText(lines[3]).indexOf("persist"), width);
 });
 
@@ -194,4 +194,13 @@ test("typeRole maps every memory type to a semantic slot", () => {
 test("message splitting on newlines keeps error wording in error kind only", () => {
   const e: OutEntry = message("settings: scoreThreshold updated (reloaded at runtime)");
   assert.equal(outText(e), "settings: scoreThreshold updated (reloaded at runtime)");
+});
+
+test("memoryHeaderText renders the count-bearing footer variant when points are known", () => {
+  assert.equal(
+    memoryHeaderText({ mode: "mode2", collection: "pi-mem-abc", points: 42 }),
+    "🧠 Memory (42): mode2 (pi-mem-abc)");
+  assert.equal(
+    memoryHeaderText({ mode: "mode2", collection: "pi-mem-abc", points: 0 }),
+    "🧠 Memory (0): mode2 (pi-mem-abc)");
 });

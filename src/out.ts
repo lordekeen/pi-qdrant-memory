@@ -7,14 +7,14 @@
  * directly under plain node.
  */
 import type { MemoryType, PointPayload, SearchHit } from "./types.ts";
-import { sourcePointer } from "./render.ts";
+import { sourcePointer, truncatePreview } from "./render.ts";
 
 // ── Entry model ──────────────────────────────────────────────────────────────
 
 export interface MessageEntry { kind: "message"; text: string; }
 export interface ErrorEntry { kind: "error"; text: string; }
 export interface HelpRow { cmd: string; desc: string; }
-export interface MemoryHeader { mode: string; collection: string; }
+export interface MemoryHeader { mode: string; collection: string; /** Stored points in the project collection; footer-only, omitted on status/help entries. */ points?: number; }
 export interface HelpEntry { kind: "help"; header: MemoryHeader; rows: HelpRow[]; }
 
 export type StatusState = "ok" | "warn" | "err";
@@ -47,12 +47,16 @@ export function message(text: string): MessageEntry { return { kind: "message", 
 export function errorEntry(text: string): ErrorEntry { return { kind: "error", text }; }
 
 /**
- * The header line shared with the footer statusline (DESIGN.md footer-status):
- * `🧠 Memory: <mode> (<collection>)`. It heads `/qdrant-status` and
- * `/qdrant-help` entries so every such block is branded like the statusbar.
+ * The header line shared with the footer statusline (DESIGN.md footer-status).
+ * Footer variant (with `points`): `🧠 Memory (N): <mode> (<collection>)`.
+ * Entry variant (no `points`, used by /qdrant-status and /qdrant-help — the
+ * status block already reports the count on its own qdrant row):
+ * `🧠 Memory: <mode> (<collection>)`.
  */
 export function memoryHeaderText(h: MemoryHeader): string {
-  return `🧠 Memory: ${h.mode} (${h.collection})`;
+  return h.points === undefined
+    ? `🧠 Memory: ${h.mode} (${h.collection})`
+    : `🧠 Memory (${h.points}): ${h.mode} (${h.collection})`;
 }
 
 export function helpEntry(rows: HelpRow[], header: MemoryHeader): HelpEntry { return { kind: "help", header, rows }; }
@@ -99,7 +103,7 @@ export const EMPTY_SEARCH_TEXT = "No relevant memory found.";
 const PREVIEW_MAX = 200;
 /** The one width this extension ever chooses (DESIGN.md Layout + search-results). */
 function previewText(text: string): string {
-  return text.length > PREVIEW_MAX ? `${text.slice(0, PREVIEW_MAX)}…` : text;
+  return truncatePreview(text, PREVIEW_MAX);
 }
 
 // ── Outline rendering ────────────────────────────────────────────────────────

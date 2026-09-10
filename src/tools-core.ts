@@ -1,7 +1,6 @@
 import { ingestItems, ensureAndGet } from "./ingest.ts";
 import type { IngestDeps, IngestItem } from "./ingest.ts";
 import { pointId } from "./ids.ts";
-import type { QdrantPoint } from "./qdrant.ts";
 import type { MemoryType, PointPayload, SearchHit, ToolDeps } from "./types.ts";
 
 export type ToolResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -22,6 +21,10 @@ export async function rememberLogic(deps: ToolDeps, text: string, type?: MemoryT
   try {
     // G1: the collection may not exist yet on a fresh project (e.g. the first
     // `/qdrant remember` after install) — ensure it before writing.
+    // NOTE on idempotency: the canonical point id is (text, "remember_tool", "")
+    // — `type` is deliberately not part of it. Re-saving the same text with a
+    // different type UPSERTS over the earlier point rather than creating a
+    // second one; that is the intended idempotent-write contract (DESIGN.md).
     await deps.qdrant.ensureCollection(deps.projectId, deps.cfg.expectedDimension);
     const vector = await deps.embed(trimmed);
     const id = pointId(trimmed, "remember_tool", "");

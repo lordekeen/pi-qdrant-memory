@@ -33,8 +33,9 @@ The personality is **calm and precise with content-first chrome**. Output reads
 fast, and every visual device — color, a glyph, expand-on-demand — exists to buy
 at-a-glance scanning or to hide real detail, never as decoration. The extension
 draws no borders, frames, rules, layouts, or background panels of its own. The
-footer-style `🧠 Memory: <mode> (<collection>)` line — the same string the
-statusbar carries — heads the `/qdrant-status` and `/qdrant-help` blocks so
+footer-style `🧠 Memory:` header (count-bearing on the statusbar) — the same
+string the statusbar carries, minus its live point count — heads the
+`/qdrant-status` and `/qdrant-help` blocks so
 they read as branded panels. Output never echoes its own command path
 (`/qdrant-*`) as a text prefix: the invoking command line already sits above the
 block, and each entry carries its own structural labels. The branded element is
@@ -80,7 +81,8 @@ The extension produces three kinds of surface, all hosted by pi:
    (`appendEntry` + a registered entry renderer that switches on entry kind).
    Entries are visible in the TUI transcript and absent from the LLM context.
 2. **Footer status** — a single statusline entry, format
-   `🧠 Memory: <mode> (<collection>)`, set once at session start; the host owns
+   `🧠 Memory ({points}): <mode> (<collection>)`, resolved at session start and
+   repainted after successful writes (see footer-status); the host owns
    footer teardown.
 3. **Settings form** — host dialogs, always walked in the fixed order
    **pick → edit → confirm**. One field per invocation; never more than three
@@ -99,7 +101,8 @@ collapse/expand:
   `remembered: `, `cleared: `, `settings: `, `error: `, `commands`) so a reader
   can scan vertically.
 - The `/qdrant-status` and `/qdrant-help` blocks open with the shared
-  `🧠 Memory: <mode> (<collection>)` header (the footer-status string).
+  `🧠 Memory: <mode> (<collection>)` header — the footer-status string without
+  its `({points})` segment.
 - Search results are expandable entries: a collapsed summary line, with the full
   verbatim text behind an Enter-to-expand gesture.
 - Do not add borders, box-drawing frames, horizontal rules, or background fills
@@ -120,14 +123,25 @@ glyphs, and flows; apply no styling beyond the slots named here.
 
 The statusline entry shown while a session is active.
 
-- Content: `🧠 Memory: {mode} ({collection})`.
+- Content: `🧠 Memory ({points}): {mode} ({collection})`.
+- `{points}` is the number of memories currently stored in the project
+  collection — total points, not a per-session delta. It is resolved from
+  Qdrant on `session_start` (after any mode1 catch-up ingest) and repainted
+  after every successful write (`memory_save`, `/qdrant-remember`, the mode2
+  compaction capture) and after `/qdrant-clear`. When the collection does not
+  exist yet the count is `0`; when Qdrant is unreachable the header drops the
+  `({points})` segment entirely — the statusline is best-effort and never
+  blocks a tool result, command, or lifecycle handler.
 - `mode` is the resolved runtime mode label: `mode1` (pi-blackhole present,
-  ingest its artifacts) or `mode2` (own compaction capture).
+  ingest its artifacts) or `mode2` (own compaction capture). Re-resolved live
+  on every repaint, so a `/qdrant-settings mode` change is reflected without a
+  restart (lifecycle hook wiring itself is fixed at session start).
 - `collection` is the project collection id (`pi-mem-<16 hex>`).
 - Set on `session_start`, never cleared mid-session by the extension — the host
   owns footer teardown. Best-effort — never throw if the footer is unavailable.
-- The exact same string is the header line of the `/qdrant-status` and
-  `/qdrant-help` entries (see status / commands below).
+- The entry headers of `/qdrant-status` and `/qdrant-help` use the same string
+  **without** the `({points})` segment (see status / commands below) — the
+  status block already reports the point count on its own qdrant row.
 
 ### status (`/qdrant-status`)
 
@@ -265,6 +279,11 @@ searches the same plain hit-block format as today. These strings feed the LLM
 (not the human TUI) and are deliberately **not** chrome-styled; they are out of
 scope of the entry UI above. The human-visible search formatting lives in the
 `search-results` entry, not in tool return text.
+
+Idempotent-write contract for `memory_save`: the stored point id is derived
+from the text (plus source kind and context), **not** from `type`. Re-saving
+the same text with a different type upserts over the earlier point instead of
+duplicating it.
 
 ## Do's and Don'ts
 

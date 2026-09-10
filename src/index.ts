@@ -13,6 +13,7 @@ import { statusHandler, settingsHandler, rememberHandler, searchHandler, clearHa
 import type { HandlerIO, SettingsUI } from "./handlers.ts";
 import { runSettingsForm } from "./handlers.ts";
 import { errorEntry, memoryHeaderText } from "./out.ts";
+import { QdrantError } from "./qdrant.ts";
 import { loadRendererModules, renderEntryComponent } from "./entry-render.ts";
 import type { RendererOptions, RendererTheme } from "./entry-render.ts";
 import type { MemoryType, RuntimeDeps } from "./types.ts";
@@ -82,8 +83,36 @@ function buildIO(api: WireApi, rt: RuntimeDeps): HandlerIO {
  * lifecycle handlers for the resolved mode. Returns a cleanup that unsubscribes
  * every registered handler. */
 export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
-  const mode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
+  // Registration-time mode: decides which lifecycle hooks are wired (mode1 →
+  // session_shutdown ingest; mode2 → compaction capture). A mode change via
+  // /qdrant-settings applies to the hooks at the next session; the footer and
+  // every command re-resolve the mode live (see currentMode).
+  const registrationMode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
   const io = buildIO(api, rt);
+
+  // Footer statusline state: total points stored in the project collection.
+  // 0 when the collection does not exist yet; undefined (header without the
+  // count) when Qdrant is unreachable — the statusline is best-effort and
+  // must never throw.
+  const collectionPoints = async (): Promise<number | undefined> => {
+    try {
+      return await rt.qdrant.count(rt.projectId);
+    } catch (err) {
+      return err instanceof QdrantError && err.status === 404 ? 0 : undefined;
+    }
+  };
+
+  /** Re-resolve mode + project collection live and repaint the footer
+   * statusline with the stored-memory count. Fire-and-forget at every call
+   * site: a slow or down Qdrant must never block a tool result, a command, or
+   * a lifecycle handler. */
+  const refreshStatus = async (): Promise<void> => {
+    const points = await collectionPoints();
+    const mode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
+    api.setStatus(memoryHeaderText(points === undefined
+      ? { mode, collection: rt.projectId }
+      : { mode, collection: rt.projectId, points }));
+  };
 
   // ── Agent tools ────────────────────────────────────────────────────────────
   api.registerTool({
@@ -107,6 +136,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     },
     execute: async (_toolCallId: string, params: { text: string; type?: "decision" | "fact" | "constraint" | "preference" }) => {
       const res = await rememberLogic(rt, params.text, params.type);
+      if (res.ok) void refreshStatus(); // footer count, best-effort
       return res.ok ? OK(`remembered (${res.value.source_kind}): ${res.value.text}`) : ERR(`remember failed: ${res.error}`);
     },
   });
@@ -160,9 +190,9 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
         await settingsHandler(io, field, value === "" ? undefined : value);
       },
     },
-    { name: "qdrant-remember", description: "Save durable knowledge now: /qdrant-remember <text>", execute: async (args) => { await rememberHandler(io, args.trim()); } },
+    { name: "qdrant-remember", description: "Save durable knowledge now: /qdrant-remember <text>", execute: async (args) => { await rememberHandler(io, args.trim()); void refreshStatus(); } },
     { name: "qdrant-search", description: "Semantic search: /qdrant-search <query>", execute: async (args) => { await searchHandler(io, args.trim()); } },
-    { name: "qdrant-clear", description: "Reset the current project's collection", execute: async () => { await clearHandler(io); } },
+    { name: "qdrant-clear", description: "Reset the current project's collection", execute: async () => { await clearHandler(io); void refreshStatus(); } },
     { name: "qdrant-help", description: "List /qdrant commands", execute: async () => { await helpHandler(io); } },
   ];
   for (const c of commands) api.registerCommand({ name: c.name, description: c.description, execute: c.execute });
@@ -193,10 +223,13 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
       } catch { /* keep the factory-time anchor */ }
     }
     // Footer statusline — icon-led label like ketch's "🌐 ketch: active", then
-    // the mode + project collection as the state. Same header text the
-    // /qdrant-status and /qdrant-help entries carry (DESIGN.md footer-status).
+    // the stored-memory count + mode + project collection as the state
+    // (DESIGN.md footer-status). Mode is re-resolved live so a /qdrant-settings
+    // mode change is reflected without a restart.
+    const mode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
     api.setStatus(memoryHeaderText({ mode, collection: rt.projectId }));
     if (mode === "mode1") await ingestPending();
+    void refreshStatus(); // repaint with the count once known, best-effort
     // Mode 2 safety-net auto snapshot (spec §3.3) is intentionally NOT wired here:
     // an early-session snapshot needs mid-session content distillation access that
     // this extension does not yet have. Mode 2 relies on the session_compact
@@ -214,7 +247,9 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     const promise = captureAtCompaction(
       { embed: rt.embed, qdrant: rt.qdrant, projectId: rt.projectId },
       rt.cfg.expectedDimension, summary, sessionId ?? "unknown-session", Date.now(),
-    ).catch((err) => console.error(`pi-qdrant-memory: compaction capture error (non-fatal): ${String(err)}`));
+    )
+      .then((r) => { if (r.ingested > 0) void refreshStatus(); })
+      .catch((err) => console.error(`pi-qdrant-memory: compaction capture error (non-fatal): ${String(err)}`));
     void promise;
   };
 
@@ -227,7 +262,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
 
   const handlers = new Map<string, (payload: unknown, ctx?: unknown) => void | Promise<void>>();
   handlers.set("session_start", sessionStart);
-  if (mode === "mode1") {
+  if (registrationMode === "mode1") {
     handlers.set("session_shutdown", ingestPending); // capture the current session's drops as it closes
   } else {
     handlers.set("session_before_compact", sessionBeforeCompact);

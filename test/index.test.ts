@@ -4,6 +4,13 @@ import { wireApi } from "../src/index.ts";
 import type { WireApi } from "../src/index.ts";
 import type { RuntimeDeps } from "../src/types.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
+import { QdrantError } from "../src/qdrant.ts";
+
+async function settle(): Promise<void> {
+  // refreshStatus is fire-and-forget; yield two ticks so its awaits resolve.
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+}
 
 function fakeApi(): WireApi & { tools: unknown[]; commands: unknown[]; events: Record<string, unknown[]>; entries: unknown[]; statuses: string[] } {
   const api = {
@@ -68,4 +75,54 @@ test("cleanup removes handlers", () => {
   const cleanup = wireApi(api, rt);
   cleanup();
   assert.equal(api.events["session_before_compact"].length, 0);
+});
+
+test("session_start repaints the footer with the stored-memory count", async () => {
+  const counted: QdrantLike = { ...qdrant, async count() { return 7; } };
+  const localRt: RuntimeDeps = { ...rt, qdrant: counted };
+  const api = fakeApi();
+  const cleanup = wireApi(api, localRt);
+  try {
+    const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+    await onStart({}, {});
+    await settle();
+    const last = api.statuses.at(-1);
+    assert.ok(last);
+    assert.match(last, /🧠 Memory \(7\): mode2 \(pi-mem-abc\)/);
+  } finally { cleanup(); }
+});
+
+test("statusline falls back to a count-less header when Qdrant is unreachable", async () => {
+  const down: QdrantLike = { ...qdrant, async count() { throw new QdrantError("unreachable"); } };
+  const localRt: RuntimeDeps = { ...rt, qdrant: down };
+  const api = fakeApi();
+  const cleanup = wireApi(api, localRt);
+  try {
+    const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+    await onStart({}, {});
+    await settle();
+    const last = api.statuses.at(-1);
+    assert.ok(last);
+    // No count in the header, but the mode + collection state stays visible.
+    assert.doesNotMatch(last, /Memory \(\d+\)/);
+    assert.match(last, /🧠 Memory: mode2 \(pi-mem-abc\)/);
+  } finally { cleanup(); }
+});
+
+test("statusline reports 0 memories when the collection does not exist yet", async () => {
+  const fresh: QdrantLike = {
+    ...qdrant,
+    async count() { throw new QdrantError("HTTP 404", 404); },
+  };
+  const localRt: RuntimeDeps = { ...rt, qdrant: fresh };
+  const api = fakeApi();
+  const cleanup = wireApi(api, localRt);
+  try {
+    const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+    await onStart({}, {});
+    await settle();
+    const last = api.statuses.at(-1);
+    assert.ok(last);
+    assert.match(last, /🧠 Memory \(0\): mode2 \(pi-mem-abc\)/);
+  } finally { cleanup(); }
 });

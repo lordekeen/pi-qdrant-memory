@@ -46,8 +46,8 @@ hand. If absent, the defaults below apply (zero-config run).
 | `embeddingBaseURL` | `http://localhost:8080/v1` | OpenAI-compatible `/embeddings` endpoint |
 | `embeddingModel` | `nomic-embed-text` | Embedding model id |
 | `embeddingApiKey` | `null` | Optional key for hosted embedding APIs |
-| `expectedDimension` | `768` | Embedding dimension; dimension drift recreates the collection |
-| `scoreThreshold` | `0.18` | Search score threshold (per-model; nomic ≈ 0.15–0.2) |
+| `expectedDimension` | `768` | Embedding dimension (positive integer); dimension drift recreates the collection |
+| `scoreThreshold` | `0.18` | Search score threshold, 0–1 (per-model; nomic ≈ 0.15–0.2) |
 | `maxResults` | `10` | Default `memory_search` limit |
 | `mode` | `auto` | `auto` detect \| `blackhole` force Mode 1 \| `own` force Mode 2 |
 
@@ -64,6 +64,16 @@ Env overrides at load, precedence defaults → file → env:
 `/qdrant-remember <text>` — manual durable save.
 `/qdrant-search <query>` — manual semantic search.
 `/qdrant-clear` — reset the current project's collection.
+
+The config file stores API keys and is written with owner-only permissions
+(`0600`).
+
+## Statusline
+
+While a session is active the extension shows a footer status entry:
+`🧠 Memory (N): <mode> (<collection>)` — `N` is the number of memories stored
+in the project collection, refreshed at session start and after every
+successful save/clear. When Qdrant is unreachable the count is omitted.
 `/qdrant-help` — this list.
 
 ## Agent tools
