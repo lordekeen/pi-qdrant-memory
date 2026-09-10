@@ -14,11 +14,11 @@ map) and [DESIGN.md](./DESIGN.md) (UI/interaction contract) before changing code
   `typescript` and `@types/node` as dev dependencies.
 - For **live testing** you need:
   - a running **Qdrant** server (default `http://localhost:6333`, REST), and
-  - an **OpenAI-compatible `/embeddings`** endpoint. The repo defaults to a local
-    llama.cpp OpenAI-format server; on the dev machine that is
-    `http://localhost:8081/v1` with model `nomic-embed-text-v1.5:Q8` (768-dim).
-    Any compatible endpoint works — set `embeddingBaseURL` / `embeddingModel` /
-    `embeddingApiKey` / `expectedDimension` accordingly.
+  - an **OpenAI-compatible `/embeddings`** endpoint. The repo defaults to a
+    local llama.cpp OpenAI-format server serving `nomic-embed-text` (768-dim)
+    at `http://localhost:8080/v1`; any compatible endpoint works — set
+    `embeddingBaseURL` / `embeddingModel` / `embeddingApiKey` /
+    `expectedDimension` accordingly.
 
 The **unit tests need none of that** — they inject fakes. Only the opt-in smoke
 test talks to real services.
