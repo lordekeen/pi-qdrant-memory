@@ -1,8 +1,9 @@
 import type { QdrantLike } from "./qdrant.ts";
 
-export type MemoryType = "decision" | "fact" | "constraint" | "preference" | "session_summary";
-export type SourceKind = "blackhole_observation" | "blackhole_reflection" | "remember_tool" | "own_capture";
+export type MemoryType = "decision" | "fact" | "constraint" | "preference" | "session_summary" | "code";
+export type SourceKind = "blackhole_observation" | "blackhole_reflection" | "remember_tool" | "own_capture" | "code_summary";
 export type ConfigMode = "auto" | "blackhole" | "own";
+export type CodeKnowledgeMode = "off" | "on";
 
 export interface Config {
   qdrantUrl: string;
@@ -14,6 +15,8 @@ export interface Config {
   scoreThreshold: number;
   maxResults: number;
   mode: ConfigMode;
+  codeKnowledge: CodeKnowledgeMode;
+  codeScoreThreshold: number;
 }
 
 export interface PointPayload {
@@ -24,6 +27,13 @@ export interface PointPayload {
   source_entry_id?: string;
   ts: number;
   source_kind: SourceKind;
+  /** Code-summary points only (source_kind "code_summary"): provenance for
+   * delete-by-file invalidation and rich source pointers. */
+  file_path?: string;
+  file_sha?: string;
+  symbol?: string;
+  start_line?: number;
+  end_line?: number;
 }
 
 export interface SearchHit {

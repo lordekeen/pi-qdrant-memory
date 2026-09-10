@@ -90,6 +90,7 @@ const TYPE_ROLE: Record<MemoryType, OutlineRole> = {
   constraint: "warning",
   preference: "dim",
   session_summary: "muted",
+  code: "muted",
 };
 
 export function typeRole(type: MemoryType): OutlineRole { return TYPE_ROLE[type]; }

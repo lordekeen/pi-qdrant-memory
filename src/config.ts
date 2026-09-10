@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Config, ConfigMode } from "./types.ts";
+import type { CodeKnowledgeMode, Config, ConfigMode } from "./types.ts";
 
 export const DEFAULTS: Config = {
   qdrantUrl: "http://localhost:6333",
@@ -12,6 +12,8 @@ export const DEFAULTS: Config = {
   scoreThreshold: 0.18,
   maxResults: 10,
   mode: "auto",
+  codeKnowledge: "off",
+  codeScoreThreshold: 0.4,
 };
 
 export function configPath(agentDir: string): string {
@@ -36,6 +38,10 @@ export function isConfigMode(v: string | undefined): v is ConfigMode {
   return v === "auto" || v === "blackhole" || v === "own";
 }
 
+export function isConfigKnowledge(v: string | undefined): v is CodeKnowledgeMode {
+  return v === "off" || v === "on";
+}
+
 /**
  * Apply a validated `field = value` write to a config copy. Shared by the CLI
  * (`/qdrant-settings <key> <value>`) and the interactive form so both accept and
@@ -55,14 +61,17 @@ export function setConfigField(
   if (field === "mode") {
     if (!isConfigMode(value)) return { ok: false, error: "settings: mode must be one of auto | blackhole | own" };
     next[field] = value;
+  } else if (field === "codeKnowledge") {
+    if (!isConfigKnowledge(value)) return { ok: false, error: "settings: codeKnowledge must be one of off | on" };
+    next[field] = value;
   } else if (typeof cur === "number") {
     const n = Number(value);
     if (!Number.isFinite(n)) return { ok: false, error: `settings: ${field} expects a number` };
     if ((field === "expectedDimension" || field === "maxResults") && !(Number.isInteger(n) && n > 0)) {
       return { ok: false, error: `settings: ${field} expects a positive integer` };
     }
-    if (field === "scoreThreshold" && !(n >= 0 && n <= 1)) {
-      return { ok: false, error: "settings: scoreThreshold expects a number between 0 and 1" };
+    if ((field === "scoreThreshold" || field === "codeScoreThreshold") && !(n >= 0 && n <= 1)) {
+      return { ok: false, error: `settings: ${field} expects a number between 0 and 1` };
     }
     next[field] = n;
   } else {
@@ -103,6 +112,11 @@ export function loadConfig(agentDir: string, env: NodeJS.ProcessEnv = process.en
   const mode: ConfigMode = isConfigMode(env.PI_QDRANT_MODE)
     ? (env.PI_QDRANT_MODE as ConfigMode)
     : isConfigMode(fromFile.mode) ? (fromFile.mode as ConfigMode) : DEFAULTS.mode;
+  const codeKnowledge: CodeKnowledgeMode = isConfigKnowledge(env.PI_QDRANT_CODE_KNOWLEDGE)
+    ? (env.PI_QDRANT_CODE_KNOWLEDGE as CodeKnowledgeMode)
+    : isConfigKnowledge(fromFile.codeKnowledge)
+      ? (fromFile.codeKnowledge as CodeKnowledgeMode)
+      : DEFAULTS.codeKnowledge;
   return {
     qdrantUrl: env.PI_QDRANT_URL ?? fromFile.qdrantUrl ?? DEFAULTS.qdrantUrl,
     qdrantApiKey: env.PI_QDRANT_API_KEY ?? fromFile.qdrantApiKey ?? DEFAULTS.qdrantApiKey,
@@ -113,5 +127,7 @@ export function loadConfig(agentDir: string, env: NodeJS.ProcessEnv = process.en
     scoreThreshold: numEnv(env.PI_QDRANT_SCORE_THRESHOLD, fromFile.scoreThreshold, DEFAULTS.scoreThreshold),
     maxResults: numEnv(env.PI_QDRANT_MAX_RESULTS, fromFile.maxResults, DEFAULTS.maxResults),
     mode,
+    codeKnowledge,
+    codeScoreThreshold: numEnv(env.PI_QDRANT_CODE_SCORE_THRESHOLD, fromFile.codeScoreThreshold, DEFAULTS.codeScoreThreshold),
   };
 }

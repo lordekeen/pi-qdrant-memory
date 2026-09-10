@@ -13,6 +13,8 @@ test("node type-stripping runs TS and type-only imports work", () => {
     scoreThreshold: 0.18,
     maxResults: 10,
     mode: "auto",
+    codeKnowledge: "off",
+    codeScoreThreshold: 0.4,
   };
   assert.equal(cfg.expectedDimension, 768);
 });

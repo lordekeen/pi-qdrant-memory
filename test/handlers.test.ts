@@ -14,6 +14,7 @@ const cfg: Config = {
   qdrantUrl: "http://localhost:6333", qdrantApiKey: null,
   embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text",
   embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10, mode: "auto",
+  codeKnowledge: "off", codeScoreThreshold: 0.4,
 };
 
 function io(over: Partial<HandlerIO> = {}): HandlerIO & { emitted: OutEntry[]; printed: string[]; written: Config[] } {
@@ -238,4 +239,45 @@ test("emitted output never carries a /qdrant: text prefix", async () => {
   await helpHandler(d);
   const all = d.printed.join("\n");
   assert.doesNotMatch(all, /\/qdrant: /);
+});
+
+test("runSettingsForm codeKnowledge field uses a nested select", async () => {
+  const d = io();
+  let selects = 0;
+  const ui: SettingsUI = {
+    async select(_title, options) {
+      selects++;
+      // First call: the field list. Second call: the nested off/on select.
+      return selects === 1
+        ? options.find((o) => o.startsWith("codeKnowledge ="))
+        : options.find((o) => o === "on");
+    },
+    async input() { throw new Error("codeKnowledge must select, not free-text"); },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(selects, 2);
+  assert.equal(d.written.length, 1);
+  assert.equal(d.written[0].codeKnowledge, "on");
+  assert.match(d.printed.join("\n"), /codeKnowledge updated/);
+});
+
+test("runSettingsForm covers codeScoreThreshold with 0-1 validation", async () => {
+  const d = io();
+  const ui: SettingsUI = {
+    async select(_title, options) { return options.find((o) => o.startsWith("codeScoreThreshold =")); },
+    async input() { return "1.5"; },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(d.written.length, 0);
+  assert.match(d.printed.join("\n"), /between 0 and 1/);
+});
+
+test("settings usage message lists the code-memory fields", async () => {
+  const d = io();
+  await settingsHandler(d);
+  const all = d.printed.join("\n");
+  assert.match(all, /codeKnowledge/);
+  assert.match(all, /codeScoreThreshold/);
 });

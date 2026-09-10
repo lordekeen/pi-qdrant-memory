@@ -11,6 +11,8 @@ const base: Config = {
   embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text",
   embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10,
   mode: "auto",
+  codeKnowledge: "off",
+  codeScoreThreshold: 0.4,
 };
 
 test("blackholeConfigPath nests under pi-blackhole", () => {

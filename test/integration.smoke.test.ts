@@ -23,7 +23,7 @@ test("end-to-end remember then search against real servers", o, async () => {
     cfg: {
       qdrantUrl: QDRANT_URL, qdrantApiKey: null,
       embeddingBaseURL: EMBED_URL, embeddingModel: EMBED_MODEL,
-      embeddingApiKey: null, expectedDimension: EMBED_DIM, scoreThreshold: 0.15, maxResults: 5, mode: "own",
+      embeddingApiKey: null, expectedDimension: EMBED_DIM, scoreThreshold: 0.15, maxResults: 5, mode: "own", codeKnowledge: "off", codeScoreThreshold: 0.4,
     },
     agentDir: "/tmp/agent", cwd: "/repo", projectId,
     embed: (t) => embedder.embed(t),

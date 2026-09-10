@@ -102,3 +102,30 @@ test("setConfigField enforces numeric ranges and integrality", () => {
   assert.equal(setConfigField(cfg, "maxResults", "3.5").ok, false);
   assert.equal(setConfigField(cfg, "maxResults", "3").ok, true);
 });
+
+test("codeKnowledge and codeScoreThreshold: defaults, env, and validation", () => {
+  const dir = tempAgentDir();
+  try {
+    const cfg = loadConfig(dir, {});
+    assert.equal(cfg.codeKnowledge, "off");
+    assert.equal(cfg.codeScoreThreshold, 0.4);
+
+    const env = loadConfig(dir, { PI_QDRANT_CODE_KNOWLEDGE: "on", PI_QDRANT_CODE_SCORE_THRESHOLD: "0.55" });
+    assert.equal(env.codeKnowledge, "on");
+    assert.equal(env.codeScoreThreshold, 0.55);
+
+    const file = loadConfig(dir, {});
+    assert.equal(file.codeKnowledge, "off"); // env absent → default, not file bleed
+
+    const base: Config = { ...DEFAULTS };
+    assert.equal(setConfigField(base, "codeKnowledge", "maybe").ok, false);
+    const on = setConfigField(base, "codeKnowledge", "on");
+    assert.equal(on.ok, true);
+    if (on.ok) assert.equal(on.next.codeKnowledge, "on");
+    assert.equal(setConfigField(base, "codeScoreThreshold", "-0.1").ok, false);
+    assert.equal(setConfigField(base, "codeScoreThreshold", "1.5").ok, false);
+    const thr = setConfigField(base, "codeScoreThreshold", "0.3");
+    assert.equal(thr.ok, true);
+    if (thr.ok) assert.equal(thr.next.codeScoreThreshold, 0.3);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

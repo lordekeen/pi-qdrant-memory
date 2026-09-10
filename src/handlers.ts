@@ -91,7 +91,7 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
     io.emit(message(`settings: ${field} updated (reloaded at runtime)`));
     return { exit: false };
   }
-  io.emit(message(`settings: usage — /qdrant-settings opens the interactive form; /qdrant-settings <key> <value> sets a field (keys: mode, embeddingBaseURL, embeddingModel, expectedDimension, scoreThreshold, maxResults, qdrantUrl, qdrantApiKey, embeddingApiKey)`));
+  io.emit(message(`settings: usage — /qdrant-settings opens the interactive form; /qdrant-settings <key> <value> sets a field (keys: mode, codeKnowledge, embeddingBaseURL, embeddingModel, expectedDimension, scoreThreshold, codeScoreThreshold, maxResults, qdrantUrl, qdrantApiKey, embeddingApiKey)`));
   return { exit: false };
 }
 
@@ -105,10 +105,12 @@ export interface SettingsUI {
 /** Editable fields in a stable order, all config keys minus nothing. */
 const SETTING_FIELDS = [
   "mode",
+  "codeKnowledge",
   "embeddingBaseURL",
   "embeddingModel",
   "expectedDimension",
   "scoreThreshold",
+  "codeScoreThreshold",
   "maxResults",
   "qdrantUrl",
   "qdrantApiKey",
@@ -152,6 +154,8 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   let raw: string | undefined;
   if (key === "mode") {
     raw = await ui.select(`mode — currently ${displayValue(cur)}`, ["auto", "blackhole", "own"]);
+  } else if (key === "codeKnowledge") {
+    raw = await ui.select(`codeKnowledge — currently ${displayValue(cur)}`, ["off", "on"]);
   } else if (typeof cur === "number") {
     const positive = key === "expectedDimension" || key === "maxResults";
     raw = await ui.input(`${key} (${positive ? "positive " : ""}number)`, String(cur));
