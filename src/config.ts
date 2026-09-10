@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config, ConfigMode } from "./types.ts";
 
@@ -18,11 +18,18 @@ export function configPath(agentDir: string): string {
   return join(agentDir, "pi-qdrant-memory", "pi-qdrant-memory-config.json");
 }
 
-/** Persist a full config back to the canonical JSON file (mkdir -p). */
+/** Persist a full config back to the canonical JSON file (mkdir -p).
+ *
+ * The file stores API keys, so it is created with owner-only permissions
+ * (0o600). `writeFileSync`'s `mode` only applies at creation; an existing,
+ * more-open file keeps its mode — chmod is forced so a previously created
+ * world-readable file is tightened on the next save.
+ */
 export function writeConfigFile(agentDir: string, cfg: Config): void {
   const file = configPath(agentDir);
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+  writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  try { chmodSync(file, 0o600); } catch { /* best-effort: creation mode already set */ }
 }
 
 export function isConfigMode(v: string | undefined): v is ConfigMode {
@@ -40,7 +47,10 @@ export function setConfigField(
   value: string,
 ): { ok: true; next: Config } | { ok: false; error: string } {
   if (!(field in cfg)) return { ok: false, error: `settings: unknown key ${field}` };
+  // SAFETY: `field in cfg` was just verified, so the key exists on Config and its
+  // value is string | number | null — the Record projection cannot read out of bounds.
   const cur = (cfg as unknown as Record<string, unknown>)[field];
+  // SAFETY: same key-verified invariant as above; the copy keeps Config's value types.
   const next = { ...cfg } as unknown as Record<string, unknown>;
   if (field === "mode") {
     if (!isConfigMode(value)) return { ok: false, error: "settings: mode must be one of auto | blackhole | own" };
@@ -48,13 +58,26 @@ export function setConfigField(
   } else if (typeof cur === "number") {
     const n = Number(value);
     if (!Number.isFinite(n)) return { ok: false, error: `settings: ${field} expects a number` };
-    if ((field === "expectedDimension" || field === "maxResults") && !(n > 0)) {
-      return { ok: false, error: `settings: ${field} expects a positive number` };
+    if ((field === "expectedDimension" || field === "maxResults") && !(Number.isInteger(n) && n > 0)) {
+      return { ok: false, error: `settings: ${field} expects a positive integer` };
+    }
+    if (field === "scoreThreshold" && !(n >= 0 && n <= 1)) {
+      return { ok: false, error: "settings: scoreThreshold expects a number between 0 and 1" };
     }
     next[field] = n;
   } else {
+    // Only the two API-key fields are nullable; a URL/model field set to the
+    // literal "null" would silently revert to the default on the next load
+    // while the form still displays null — reject it instead.
+    const nullable = field === "qdrantApiKey" || field === "embeddingApiKey";
+    if (value === "null" && !nullable) {
+      return { ok: false, error: `settings: ${field} cannot be null` };
+    }
     next[field] = value === "null" ? null : value;
   }
+  // SAFETY: every field was validated above (mode via isConfigMode, numbers via
+  // the numeric branch, strings via the nullable branch) and matches Config's
+  // declared type for that key.
   return { ok: true, next: next as unknown as Config };
 }
 

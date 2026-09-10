@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DEFAULTS, configPath, loadConfig } from "../src/config.ts";
+import { DEFAULTS, configPath, loadConfig, setConfigField } from "../src/config.ts";
+import type { Config } from "../src/types.ts";
 
 function tempAgentDir(): string {
   return mkdtempSync(join(tmpdir(), "pi-qm-cfg-"));
@@ -78,4 +79,26 @@ test("numeric file values are coerced and corrupt values fall back to defaults",
     assert.equal(cfg.scoreThreshold, DEFAULTS.scoreThreshold);
     assert.equal(cfg.maxResults, 25);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("setConfigField rejects null for non-nullable string fields", () => {
+  const cfg: Config = { ...DEFAULTS };
+  const applied = setConfigField(cfg, "qdrantUrl", "null");
+  assert.equal(applied.ok, false);
+  if (!applied.ok) assert.match(applied.error, /cannot be null/);
+  const key = setConfigField(cfg, "qdrantApiKey", "null");
+  assert.equal(key.ok, true); // the API-key fields are the nullable ones
+  const model = setConfigField(cfg, "embeddingModel", "null");
+  assert.equal(model.ok, false);
+});
+
+test("setConfigField enforces numeric ranges and integrality", () => {
+  const cfg: Config = { ...DEFAULTS };
+  assert.equal(setConfigField(cfg, "scoreThreshold", "-0.1").ok, false);
+  assert.equal(setConfigField(cfg, "scoreThreshold", "1.5").ok, false);
+  assert.equal(setConfigField(cfg, "scoreThreshold", "0.25").ok, true);
+  assert.equal(setConfigField(cfg, "expectedDimension", "768.5").ok, false);
+  assert.equal(setConfigField(cfg, "expectedDimension", "0").ok, false);
+  assert.equal(setConfigField(cfg, "maxResults", "3.5").ok, false);
+  assert.equal(setConfigField(cfg, "maxResults", "3").ok, true);
 });
