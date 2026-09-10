@@ -1,0 +1,34 @@
+# One-off / emergency publish of the current main state, gated on the full
+# verification suite. Normally publishing happens automatically via
+# release-please.yml when a GitHub release is created. Requires NPM_TOKEN.
+#
+# Security: actions pinned to full commit SHAs, least-privilege job
+# permissions, credential-less checkout, publish serialized via concurrency.
+name: manual-publish
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org/
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
