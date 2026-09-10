@@ -7,6 +7,7 @@ import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
 import type { HandlerIO, SettingsUI } from "../src/handlers.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
+import { QdrantError } from "../src/qdrant.ts";
 import type { Config } from "../src/types.ts";
 
 const cfg: Config = {
@@ -76,7 +77,7 @@ test("statusHandler distinguishes a missing collection from an unreachable serve
   const qdrant404: QdrantLike = {
     async ensureCollection() { return "created"; }, async upsert() {},
     async search() { return []; },
-    async count() { throw new Error("Qdrant request POST ... failed: HTTP 404"); },
+    async count() { throw new QdrantError("Qdrant request POST ... failed: HTTP 404", 404); },
     async clearCollection() {},
   };
   const d = io({ qdrant: qdrant404 });

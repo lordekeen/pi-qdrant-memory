@@ -1,7 +1,34 @@
 import type { MemoryType, PointPayload, SearchHit } from "./types.ts";
 
+/** Default per-request timeout (ms) — a hanging Qdrant must never stall a
+ * session_start ingest or a slash command indefinitely. */
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+/** Strip any userinfo credentials from a URL before it lands in an error
+ * message that will be echoed to the TUI. */
+function redactUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.username || u.password) {
+      u.username = "***";
+      u.password = "***";
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 export class QdrantError extends Error {
-  constructor(message: string) { super(message); this.name = "QdrantError"; }
+  /** HTTP status when the failure was a non-OK response; undefined on network
+   * errors. Callers branch on this (e.g. 404 = collection missing) instead of
+   * regex-matching the message text. */
+  readonly status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "QdrantError";
+    this.status = status;
+  }
 }
 
 export interface QdrantPoint { id: string; vector: number[]; payload: PointPayload; }
@@ -27,11 +54,13 @@ export class QdrantClient implements QdrantLike {
   private readonly base: string;
   private readonly apiKey: string | null;
   private readonly fetchFn: FetchLike;
+  private readonly timeoutMs: number;
 
-  constructor(baseURL: string, apiKey: string | null, fetchFn: FetchLike = globalThis.fetch as FetchLike) {
+  constructor(baseURL: string, apiKey: string | null, fetchFn: FetchLike = globalThis.fetch as FetchLike, timeoutMs: number = DEFAULT_TIMEOUT_MS) {
     this.base = baseURL.replace(/\/+$/, "");
     this.apiKey = apiKey;
     this.fetchFn = fetchFn;
+    this.timeoutMs = timeoutMs;
   }
 
   /**
@@ -50,13 +79,15 @@ export class QdrantClient implements QdrantLike {
       res = await this.fetchFn(url, {
         method, headers,
         body: body === undefined ? undefined : JSON.stringify(body),
+        // Bounded request: a hanging server must not stall session startup.
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      throw new QdrantError(`Qdrant unreachable at ${this.base}: ${String(err)}`);
+      throw new QdrantError(`Qdrant unreachable at ${redactUrl(this.base)}: ${String(err)}`);
     }
     if (!res.ok) {
       if (opts.notFound && res.status === 404) return null;
-      throw new QdrantError(`Qdrant request ${method} ${url} failed: HTTP ${res.status}`);
+      throw new QdrantError(`Qdrant request ${method} ${redactUrl(url)} failed: HTTP ${res.status}`, res.status);
     }
     return res.json();
   }
@@ -81,6 +112,11 @@ export class QdrantClient implements QdrantLike {
     // Defensive: named-vector configs have no top-level `size` — treat as a mismatch.
     const size = typeof vectors?.size === "number" ? vectors.size : undefined;
     if (size !== dim) {
+      // Loud, deliberate data-loss guard: a dimension mismatch means the stored
+      // vectors are incompatible with the configured embedding model — deleting
+      // the collection wipes every memory for this project. Never silent.
+      console.error(
+        `pi-qdrant-memory: WARNING recreating collection ${name} — vector size ${String(size)} does not match expected ${String(dim)}; all stored memories for this project are deleted`);
       await this.request("DELETE", `/collections/${enc}`);
       await this.createCollection(enc, dim);
       return "recreated";

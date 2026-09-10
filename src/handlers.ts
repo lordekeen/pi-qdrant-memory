@@ -4,6 +4,7 @@ import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
 import { errorEntry, helpEntry, message, outText, searchEntry, searchHitView, statusEntry, EMPTY_SEARCH_TEXT } from "./out.ts";
 import type { OutEntry, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
+import { QdrantError } from "./qdrant.ts";
 import type { Config, MemoryType, RuntimeDeps } from "./types.ts";
 
 export interface HandlerIO {
@@ -52,8 +53,9 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
   try { count = await io.qdrant.count(io.projectId); } catch (err) {
     qdrantOk = false;
     // Qdrant is reachable but the project collection does not exist yet
-    // (fresh project or after /qdrant clear) — distinguish from a down server.
-    if (/HTTP 404/.test(String(err))) { qdrantOk = true; collectionMissing = true; }
+    // (fresh project or after /qdrant clear) — distinguish from a down server
+    // via the error's HTTP status, never by matching message text.
+    if (err instanceof QdrantError && err.status === 404) { qdrantOk = true; collectionMissing = true; }
   }
   let embedOk = true;
   try { await io.embed("probe"); } catch { embedOk = false; }

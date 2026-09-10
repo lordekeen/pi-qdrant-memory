@@ -1,5 +1,10 @@
 type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+/** Default per-request timeout (ms) — embedding long text on a slow local
+ * server can legitimately take seconds, so this is more generous than the
+ * Qdrant client's, but still bounded. */
+const DEFAULT_TIMEOUT_MS = 30_000;
+
 export class EmbeddingError extends Error {
   constructor(message: string) { super(message); this.name = "EmbeddingError"; }
 }
@@ -13,6 +18,7 @@ export class EmbeddingClient {
   private readonly apiKey: string | null;
   private readonly expectedDimension: number;
   private readonly fetchFn: FetchLike;
+  private readonly timeoutMs: number;
 
   constructor(
     baseURL: string,
@@ -20,12 +26,14 @@ export class EmbeddingClient {
     apiKey: string | null,
     expectedDimension: number,
     fetchFn: FetchLike = globalThis.fetch as FetchLike,
+    timeoutMs: number = DEFAULT_TIMEOUT_MS,
   ) {
     this.url = baseURL.replace(/\/+$/, "") + "/embeddings";
     this.model = model;
     this.apiKey = apiKey;
     this.expectedDimension = expectedDimension;
     this.fetchFn = fetchFn;
+    this.timeoutMs = timeoutMs;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -37,6 +45,8 @@ export class EmbeddingClient {
         method: "POST",
         headers,
         body: JSON.stringify({ model: this.model, input: [text] }),
+        // Bounded request: a hanging embedding server must not stall a session.
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
       throw new EmbeddingError(`Embedding server unreachable at ${this.url}: ${String(err)}`);
