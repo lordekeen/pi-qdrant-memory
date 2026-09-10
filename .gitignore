@@ -11,3 +11,4 @@ node_modules/
 # Local-only design docs (specs + implementation plans)
 docs/specs/
 docs/research/
+docs/handoffs/
