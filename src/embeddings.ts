@@ -95,7 +95,7 @@ export class EmbeddingClient {
     }
     // OpenAI-compatible servers return items with an explicit `index`; trust it
     // when present, fall back to array order (some local servers omit it).
-    const out: number[][] = new Array(texts.length);
+    const out: number[][] = Array.from({ length: texts.length });
     for (const item of data) {
       const idx = typeof item.index === "number" && item.index >= 0 && item.index < texts.length
         ? item.index

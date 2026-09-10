@@ -25,7 +25,7 @@ const payload: PointPayload = {
 
 function addIndexRoutes(routes: Map<string, (u: string, i: RequestInit) => Response>, hits: string[] = []): void {
   for (const field of ["source_kind", "file_path"]) {
-    routes.set(`PUT http://qdrant:6333/collections/pi-mem-abc/index/${field}`, (_u, i) => {
+    routes.set(`PUT http://qdrant:6333/collections/pi-mem-abc/index/${field}`, (_u, _i) => {
       hits.push(field);
       return jsonRes({ result: { status: "ok" } });
     });
@@ -148,7 +148,7 @@ test("deletePointsByFiles chunks above 50 paths and survives errors", async () =
   let calls = 0;
   let failed = 0;
   const routes = new Map<string, (u: string, i: RequestInit) => Response>();
-  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points/delete", (_u, i) => {
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points/delete", (_u, _i) => {
     calls++;
     if (calls === 1) { failed++; return jsonRes({ err: 1 }, 500); }
     return jsonRes({ result: { status: "completed" } });

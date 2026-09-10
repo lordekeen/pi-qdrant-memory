@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { blackholeConfigPath, detectBlackhole, isBlackholeOperational, resolveMode, agentDirFromEnv } from "../src/mode.ts";
+import { blackholeConfigPath, detectBlackhole, resolveMode, agentDirFromEnv } from "../src/mode.ts";
 import type { Config } from "../src/types.ts";
 
 const base: Config = {
