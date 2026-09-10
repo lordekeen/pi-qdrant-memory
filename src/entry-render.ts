@@ -45,6 +45,12 @@ interface TextCtor {
 let Text: TextCtor | undefined;
 let keyHint: ((id: string, fallback: string) => string) | undefined;
 
+/** Whether the lazy pi-tui Text component has resolved — test seam so suites
+ * run identically with and without peer-installed pi packages. */
+export function textComponentResolved(): boolean {
+  return Text !== undefined;
+}
+
 let loading: Promise<void> | undefined;
 /** Kick off the guarded dynamic imports; safe to call repeatedly. */
 export function loadRendererModules(): Promise<void> {

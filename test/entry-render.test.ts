@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { message, errorEntry, helpEntry, statusEntry, searchEntry, searchHitView } from "../src/out.ts";
 import type { StatusHealth } from "../src/out.ts";
 import type { PointPayload, SearchHit } from "../src/types.ts";
-import { renderEntryComponent } from "../src/entry-render.ts";
+import { renderEntryComponent, loadRendererModules, textComponentResolved } from "../src/entry-render.ts";
 import type { RendererOptions } from "../src/entry-render.ts";
 
 const health: StatusHealth = {
@@ -131,8 +131,15 @@ test("zero-hit search and message entries get no expand hint", () => {
   assert.ok(!msg.render(60).some((l) => l.includes("enter to expand")));
 });
 
-test("returns undefined when no Text ctor is available (pi-tui not resolved)", () => {
-  assert.equal(renderEntryComponent(message("x"), {}, new WrapTheme()), undefined);
+test("returns undefined when no Text ctor is available (pi-tui not resolved)", async () => {
+  await loadRendererModules();
+  // Deterministic in both environments: when pi-tui is NOT resolvable (plain
+  // node without peers) the no-ctor render must bail with undefined; when it
+  // IS resolvable (npm auto-installs peerDependencies in CI) the real Text
+  // must render. Theme-missing and malformed entries always bail.
+  const noCtor = renderEntryComponent(message("x"), {}, new WrapTheme());
+  if (textComponentResolved()) assert.ok(noCtor, "expected a component from the real Text");
+  else assert.equal(noCtor, undefined);
   assert.equal(renderEntryComponent(message("x"), seam, undefined), undefined);
   assert.equal(renderEntryComponent({ bogus: true }, seam, new WrapTheme()), undefined);
 });
