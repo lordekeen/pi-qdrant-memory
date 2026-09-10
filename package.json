@@ -5,8 +5,14 @@
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "pi", "memory", "qdrant", "embeddings", "semantic-search"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lordekeen/pi-qdrant-memory.git"
+  },
+  "homepage": "https://github.com/lordekeen/pi-qdrant-memory#readme",
+  "bugs": "https://github.com/lordekeen/pi-qdrant-memory/issues",
   "engines": { "node": ">=22.19" },
-  "files": ["src/", "README.md", "DESIGN.md", "LICENSE"],
+  "files": ["src/", "README.md", "DESIGN.md", "CHANGELOG.md", "LICENSE"],
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
