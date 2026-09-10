@@ -13,6 +13,8 @@ function fakeQdrant(): QdrantLike & { upserted: QdrantPoint[][] } {
     async search() { return []; },
     async count() { return 0; },
     async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
   };
 }
 

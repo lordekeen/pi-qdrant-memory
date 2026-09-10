@@ -27,6 +27,8 @@ function io(over: Partial<HandlerIO> = {}): HandlerIO & { emitted: OutEntry[]; p
     async search() { return []; },
     async count() { return 3; },
     async clearCollection() { written.push(cfg); },
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
   };
   return {
     cfg, agentDir: "/tmp/agent", cwd: "/repo", projectId: "pi-mem-abc",
@@ -80,6 +82,8 @@ test("statusHandler distinguishes a missing collection from an unreachable serve
     async search() { return []; },
     async count() { throw new QdrantError("Qdrant request POST ... failed: HTTP 404", 404); },
     async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
   };
   const d = io({ qdrant: qdrant404 });
   await statusHandler(d);
@@ -213,6 +217,8 @@ test("searchHandler emits an error entry when the search fails", async () => {
     async ensureCollection() { return "exists"; }, async upsert() {},
     async search() { throw new Error("connection refused"); },
     async count() { return 0; }, async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
   };
   const d = io({ qdrant: qdrantErr });
   await searchHandler(d, "query");

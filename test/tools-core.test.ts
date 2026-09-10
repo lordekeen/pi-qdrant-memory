@@ -15,6 +15,8 @@ function deps(over: Partial<RuntimeDeps> = {}): RuntimeDeps & { q: { upserted: Q
     async search(): Promise<SearchHit[]> { return []; },
     async count() { return 0; },
     async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
   };
   return {
     cfg: {
@@ -71,6 +73,8 @@ test("memorySearchLogic embeds query and searches with type filter and capped li
     async search(_n, _v, opts) { searched.push({ type: opts.type, limit: opts.limit, threshold: opts.threshold }); return [{ id: "a", score: 0.5, payload }]; },
     async count() { return 0; },
     async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
   };
   const d = deps({ qdrant: q });
   const res = await memorySearchLogic(d, "what did we decide about transport", "decision", 3);
@@ -88,6 +92,8 @@ test("memorySearchLogic caps limit at maxResults", async () => {
     async search(_n, _v, opts) { sawLimit = opts.limit; return []; },
     async count() { return 0; },
     async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
   };
   const d = deps({ qdrant: q });
   await memorySearchLogic(d, "q", undefined, 1000);

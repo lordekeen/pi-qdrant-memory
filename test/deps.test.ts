@@ -17,7 +17,7 @@ test("makeRuntime resolves mode2 and project id when no blackhole", async () => 
       print: () => {},
       qdrant: {
         async ensureCollection() { return "exists"; },
-        async upsert() {}, async search() { return []; }, async count() { return 0; }, async clearCollection() {},
+        async upsert() {}, async search() { return []; }, async count() { return 0; }, async clearCollection() {}, async deletePointsByFiles() {}, async codeIndexSnapshot() { return new Map(); },
       },
     });
     assert.ok(rt.projectId.startsWith("pi-mem-"));

@@ -32,6 +32,8 @@ function fakeApi(): WireApi & { tools: unknown[]; commands: unknown[]; events: R
 const qdrant: QdrantLike = {
   async ensureCollection() { return "exists"; }, async upsert() {},
   async search() { return []; }, async count() { return 0; }, async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
 };
 
 const rt: RuntimeDeps = {

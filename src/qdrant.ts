@@ -41,6 +41,10 @@ export interface QdrantLike {
   }): Promise<SearchHit[]>;
   count(name: string): Promise<number>;
   clearCollection(name: string): Promise<void>;
+  /** Delete all code-summary points for the given file paths (non-fatal). */
+  deletePointsByFiles(name: string, filePaths: string[]): Promise<void>;
+  /** Previously indexed code files: file_path → file_sha. */
+  codeIndexSnapshot(name: string): Promise<Map<string, string>>;
 }
 
 type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -103,25 +107,44 @@ export class QdrantClient implements QdrantLike {
     const enc = encodeURIComponent(name);
     const getRes = await this.request("GET", `/collections/${enc}`, undefined, { notFound: true });
     const notExists = getRes === null || (getRes as { status?: string } | null)?.status === "error";
+    let outcome: "created" | "exists" | "recreated";
     if (notExists) {
       await this.createCollection(enc, dim);
-      return "created";
+      outcome = "created";
+    } else {
+      const vectors = (getRes as { result: { config: { params: { vectors: { size?: number } } } } })
+        .result.config.params.vectors;
+      // Defensive: named-vector configs have no top-level `size` — treat as a mismatch.
+      const size = typeof vectors?.size === "number" ? vectors.size : undefined;
+      if (size !== dim) {
+        // Loud, deliberate data-loss guard: a dimension mismatch means the stored
+        // vectors are incompatible with the configured embedding model — deleting
+        // the collection wipes every memory for this project. Never silent.
+        console.error(
+          `pi-qdrant-memory: WARNING recreating collection ${name} — vector size ${String(size)} does not match expected ${String(dim)}; all stored memories for this project are deleted`);
+        await this.request("DELETE", `/collections/${enc}`);
+        await this.createCollection(enc, dim);
+        outcome = "recreated";
+      } else {
+        outcome = "exists";
+      }
     }
-    const vectors = (getRes as { result: { config: { params: { vectors: { size?: number } } } } })
-      .result.config.params.vectors;
-    // Defensive: named-vector configs have no top-level `size` — treat as a mismatch.
-    const size = typeof vectors?.size === "number" ? vectors.size : undefined;
-    if (size !== dim) {
-      // Loud, deliberate data-loss guard: a dimension mismatch means the stored
-      // vectors are incompatible with the configured embedding model — deleting
-      // the collection wipes every memory for this project. Never silent.
-      console.error(
-        `pi-qdrant-memory: WARNING recreating collection ${name} — vector size ${String(size)} does not match expected ${String(dim)}; all stored memories for this project are deleted`);
-      await this.request("DELETE", `/collections/${enc}`);
-      await this.createCollection(enc, dim);
-      return "recreated";
+    await this.createPayloadIndexes(enc, name);
+    return outcome;
+  }
+
+  /** Payload keyword indexes accelerate the filtered deletes and scroll used by
+   * code-memory sync (Zoo-Code's pathSegments-index lesson). Idempotent on the
+   * Qdrant side; failures are logged and never fatal — search and upsert work
+   * unindexed, just slower. */
+  private async createPayloadIndexes(enc: string, name: string): Promise<void> {
+    for (const field of ["source_kind", "file_path"]) {
+      try {
+        await this.request("PUT", `/collections/${enc}/index/${field}`, { field: { type: "keyword" } });
+      } catch (err) {
+        console.error(`pi-qdrant-memory: payload index ${field} on ${name} failed (non-fatal): ${String(err)}`);
+      }
     }
-    return "exists";
   }
 
   async upsert(name: string, points: QdrantPoint[]): Promise<void> {
@@ -132,7 +155,14 @@ export class QdrantClient implements QdrantLike {
     projectId: string; type?: MemoryType; limit: number; threshold: number;
   }): Promise<SearchHit[]> {
     const must: unknown[] = [{ key: "project_id", match: { value: opts.projectId } }];
-    if (opts.type) must.push({ key: "type", match: { value: opts.type } });
+    const mustNot: unknown[] = [];
+    if (opts.type) {
+      must.push({ key: "type", match: { value: opts.type } });
+    } else {
+      // Code-summary points belong to the code_memory surface — never leak into
+      // untyped conversational search (spec §13 / D8).
+      mustNot.push({ key: "type", match: { value: "code" } });
+    }
     // The query API takes the vector under `query` (score_threshold is rejected for
     // a top-level `vector` in current Qdrant versions).
     const json = await this.request("POST", `/collections/${encodeURIComponent(name)}/points/query`, {
@@ -140,7 +170,7 @@ export class QdrantClient implements QdrantLike {
       limit: opts.limit,
       score_threshold: opts.threshold,
       with_payload: true,
-      filter: { must },
+      filter: { must, must_not: mustNot },
     }) as { result: { points: Array<{ id: string; score: number; payload: PointPayload }> } };
     return json.result.points.map((p) => ({ id: p.id, score: p.score, payload: p.payload }));
   }
@@ -152,5 +182,56 @@ export class QdrantClient implements QdrantLike {
 
   async clearCollection(name: string): Promise<void> {
     await this.request("DELETE", `/collections/${encodeURIComponent(name)}`);
+  }
+
+  /** Delete all code-summary points for the given file paths (spec §8.2).
+   * Deliberately non-fatal like Zoo-Code's deletes: a failed cleanup must never
+   * break a sync — the next sync retries. */
+  async deletePointsByFiles(name: string, filePaths: string[]): Promise<void> {
+    if (!filePaths.length) return;
+    const enc = encodeURIComponent(name);
+    for (let i = 0; i < filePaths.length; i += 50) {
+      const chunk = filePaths.slice(i, i + 50);
+      try {
+        await this.request("POST", `/collections/${enc}/points/delete`, {
+          filter: {
+            should: chunk.map((p) => ({ must: [{ key: "file_path", match: { value: p } }] })),
+          },
+        });
+      } catch (err) {
+        console.error(`pi-qdrant-memory: code point delete failed (non-fatal): ${String(err)}`);
+      }
+    }
+  }
+
+  /** Previously indexed code files: file_path → file_sha (spec §8.3). Malformed
+   * payloads (missing fields) are skipped defensively — the diff re-indexes them. */
+  async codeIndexSnapshot(name: string): Promise<Map<string, string>> {
+    const enc = encodeURIComponent(name);
+    const out = new Map<string, string>();
+    let offset: string | number | undefined;
+    for (;;) {
+      const body: Record<string, unknown> = {
+        filter: { must: [{ key: "source_kind", match: { value: "code_summary" } }] },
+        with_payload: ["file_path", "file_sha"],
+        limit: 256,
+      };
+      if (offset !== undefined) body.offset = offset;
+      const json = await this.request("POST", `/collections/${enc}/points/scroll`, body) as {
+        result: {
+          points: Array<{ payload?: { file_path?: unknown; file_sha?: unknown } | null }>;
+          next_page_offset?: string | number | null;
+        };
+      };
+      for (const p of json.result.points) {
+        const fp = p.payload?.file_path;
+        const sha = p.payload?.file_sha;
+        if (typeof fp === "string" && typeof sha === "string") out.set(fp, sha);
+      }
+      const next = json.result.next_page_offset;
+      if (next === null || next === undefined) break;
+      offset = next;
+    }
+    return out;
   }
 }
