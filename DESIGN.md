@@ -156,7 +156,7 @@ detail in one label column:
 qdrant: ✓ reachable · 47 points
 embeddings: ✓ reachable
 qdrant url: http://localhost:6333
-model: nomic-embed-text-v1.5 @ http://localhost:8081/v1
+model: nomic-embed-text @ http://localhost:8080/v1
 dimension: 768 · threshold: 0.15 · maxResults: 5
 ```
 

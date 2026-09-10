@@ -56,10 +56,9 @@ Notes for live testing:
 - Command output renders through pi **entries** (visible, not in the model
   context). If you don't see output, check that the entry renderer registered —
   output is *not* sent via `sendMessage`.
-- If your pi runs `pi-permission-system`, the new tools prompt for approval until
-  allowlisted. Local dev allowlist:
-  `"memory_search": "allow"`, `"memory_save": "allow"` in
-  `~/.pi/agent/extensions/pi-permission-system/config.json`.
+- If your pi setup routes tool approvals through a permission system, the new
+  tools will prompt for approval until allowlisted there (e.g. an
+  `"allow"` entry for `memory_search` / `memory_save` in its config).
 - Keep an eye on the footer: `🧠 Memory: mode1 (pi-mem-…)` means pi-blackhole was
   detected (Mode 1); `mode2` means own compaction capture.
 
@@ -70,8 +69,8 @@ Only when you touched embedding/ingest/search paths **and** both servers are up:
 ```bash
 QDRANT_MEMORY_SMOKE=1 \
   QDRANT_MEMORY_URL=http://localhost:6333 \
-  QDRANT_MEMORY_EMBED_URL=http://localhost:8081/v1 \
-  QDRANT_MEMORY_EMBED_MODEL=nomic-embed-text-v1.5:Q8 \
+  QDRANT_MEMORY_EMBED_URL=http://localhost:8080/v1 \
+  QDRANT_MEMORY_EMBED_MODEL=nomic-embed-text \
   QDRANT_MEMORY_EMBED_DIM=768 \
   npm run test:smoke
 ```

@@ -109,8 +109,8 @@ Config file: `~/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json`
 
 Unit tests never need servers: they inject fake `embed`/`QdrantLike` and a fake
 `WireApi`. Only the smoke test needs real Qdrant (default `:6333`) and an
-OpenAI-compatible embeddings endpoint (`:8081/v1`,
-`nomic-embed-text-v1.5:Q8`, 768-dim, on this machine).
+OpenAI-compatible embeddings endpoint (defaults `:8080/v1`, `nomic-embed-text`,
+768-dim — point `QDRANT_MEMORY_EMBED_*` at any equivalent server).
 
 ## Testing conventions
 
