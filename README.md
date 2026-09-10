@@ -7,7 +7,10 @@ capture (lexical recall); **this extension = semantic retrieval** over that dura
 
 - **`memory_save`** (agent tool) — persist a durable decision/constraint/preference.
 - **`memory_search`** (agent tool) — semantic search of prior durable knowledge.
-- **`/qdrant-*`** command set — `qdrant-status`, `qdrant-settings`, `qdrant-remember`, `qdrant-search`, `qdrant-clear`, `qdrant-help`.
+- **`code_memory`** (agent tool, opt-in) — semantic search of indexed code-structure summaries
+  (enabled via `codeKnowledge: "on"`; see [Code memory](#code-memory-opt-in)).
+- **`/qdrant-*`** command set — `qdrant-status`, `qdrant-settings`, `qdrant-remember`, `qdrant-search`, `qdrant-clear`, `qdrant-help`,
+  plus `qdrant-index-code` when code memory is on.
   Each is a unique single-token pi command (no subcommand parsing): `/qdrant-status`, `/qdrant-settings <key> <value>`, …
 - Mode-aware: with pi-blackhole installed it ingests blackhole's durable artifacts; without it, it captures
   pi's own compaction summary as a `session_summary`.
@@ -50,19 +53,24 @@ hand. If absent, the defaults below apply (zero-config run).
 | `scoreThreshold` | `0.18` | Search score threshold, 0–1 (per-model; nomic ≈ 0.15–0.2) |
 | `maxResults` | `10` | Default `memory_search` limit |
 | `mode` | `auto` | `auto` detect \| `blackhole` force Mode 1 \| `own` force Mode 2 |
+| `codeKnowledge` | `off` | `on` enables structural code summaries + the `code_memory` tool (next session) |
+| `codeScoreThreshold` | `0.4` | Score threshold for `code_memory` searches, 0–1 |
 
 Env overrides at load, precedence defaults → file → env:
 `PI_QDRANT_URL`, `PI_QDRANT_API_KEY`, `PI_QDRANT_EMBEDDING_BASE_URL`, `PI_QDRANT_EMBEDDING_MODEL`,
 `PI_QDRANT_EMBEDDING_API_KEY`, `PI_QDRANT_EXPECTED_DIMENSION`, `PI_QDRANT_SCORE_THRESHOLD`,
-`PI_QDRANT_MAX_RESULTS`, `PI_QDRANT_MODE`.
+`PI_QDRANT_MAX_RESULTS`, `PI_QDRANT_MODE`, `PI_QDRANT_CODE_KNOWLEDGE`, `PI_QDRANT_CODE_SCORE_THRESHOLD`.
 
 ## Commands
 
 `/qdrant-status` — connection health + active mode + collection point count.
 `/qdrant-settings <key> <value>` — persist a config field (`mode`, `embeddingBaseURL`, `embeddingModel`,
 `expectedDimension`, `scoreThreshold`, `maxResults`). Bare `/qdrant-settings` prints usage.
+`/qdrant-settings <key> <value>` — persist a config field (`mode`, `codeKnowledge`, `embeddingBaseURL`, `embeddingModel`,
+`expectedDimension`, `scoreThreshold`, `codeScoreThreshold`, `maxResults`). Bare `/qdrant-settings` prints usage.
 `/qdrant-remember <text>` — manual durable save.
 `/qdrant-search <query>` — manual semantic search.
+`/qdrant-index-code` — re-index code summaries now (only when `codeKnowledge: on`).
 `/qdrant-clear` — reset the current project's collection.
 
 The config file stores API keys and is written with owner-only permissions
@@ -80,11 +88,27 @@ successful save/clear. When Qdrant is unreachable the count is omitted.
 
 - `memory_save(text, type?)` — persist a durable decision/constraint/preference. Type defaults to `decision`.
 - `memory_search(query, type?, limit?)` — semantic search of prior durable knowledge (limit capped by `maxResults`).
+- `code_memory(query, limit?)` *(opt-in)* — semantic search of indexed code-structure summaries.
 
 The tools carry always-on prompt guidance (via `promptSnippet`/`promptGuidelines`): the model is nudged to call
 `memory_save` when a decision/constraint/preference settles (with concise, self-contained statements, without
 re-recording what auto-capture covers) and to call `memory_search` when resuming prior work or before re-deciding.
 No companion skill is needed for the core loop — the guidance ships with the tools.
+
+## Code memory (opt-in)
+
+With `codeKnowledge: "on"`, the extension scans the repo at `session_start` (fire-and-forget) and
+indexes **structural summaries** of top-level definitions — exported functions/classes/types,
+Python defs, per-file anchors — as `code` points in the same collection. Zero dependencies: the
+extractor is built in; no external indexer is used.
+
+- **Freshness:** payloads carry `file_path` + `file_sha256`; unchanged files are skipped,
+  changed files are deleted-and-replaced, vanished files are cleaned up. `/qdrant-index-code`
+  forces a resync.
+- **Retrieval:** the `code_memory` tool (registered only while enabled) searches code summaries
+  at `codeScoreThreshold`; `memory_search` never returns code hits.
+- **Mid-session flips** take effect at the next session start (the settings output reminds
+  you); only indexing can be run immediately via `/qdrant-index-code`.
 
 ## Modes
 
@@ -103,8 +127,9 @@ capture and `/qdrant-remember`.
 
 One Qdrant collection per project, named `pi-mem-<16 hex of sha256(git root)>`; single unnamed vector,
 Cosine, `on_disk`, HNSW. Points carry `{ type, text, project_id, session_id?, source_entry_id?, ts,
-source_kind }`; keyword payload indexes on `type` and `project_id`. Deterministic point ids
-(`sha256(normalized text | source_kind | context)`) make every write idempotent.
+source_kind }` plus code-provenance fields on code points (`file_path`, `file_sha`, `symbol`,
+`start_line`, `end_line`); keyword payload indexes on `type`, `project_id`, `source_kind`, `file_path`.
+Deterministic point ids (`sha256(normalized text | source_kind | context)`) make every write idempotent.
 
 ## Development
 

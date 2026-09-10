@@ -68,8 +68,10 @@ when you change ingest/search/embedding paths and have both servers up.
 | `src/ids.ts` | `normalizeText`, `contentHash`, `pointId` (deterministic ids). |
 | `src/blackhole.ts` | Read pi-blackhole pending artifacts (Mode 1) — `parseOmEntry`, `readPendingArtifacts`. |
 | `src/ingest.ts` | `ingestItems` batch upsert + `artifactToIngestItem`. |
-| `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic` — shared by tools and commands; take `ToolDeps` (no output channel). |
+| `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
 | `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point), `autoSnapshot`. |
+| `src/codescan.ts` | Standalone structural code extractor (opt-in, zero-dep): repo walk + per-language line matchers → deterministic per-symbol/per-file summaries. |
+| `src/code-sync.ts` | `syncCodeKnowledge` — scan → Qdrant snapshot (file_path→file_sha) → per-file diff → delete-by-file_path → batched embed/upsert. Never throws; Qdrant is the cache. |
 | `src/render.ts` | Tool-path text blocks (`renderHits` + `sourcePointer`), LLM-facing — deliberately outside the entry UI. |
 | `src/entry-render.ts` | Lazy pi-tui renderer: maps an `OutEntry` (via `renderOut` roles) to one multi-line `Text` + `keyHint` (only collapsed search summaries expand). No Box/card machinery — status renders unboxed like every entry. `RendererOptions.TextCtor` is the unit-test seam. |
 | `src/deps.ts` | `makeRuntime` (assembles cfg + clients + handlers IO), `applyConfig` (hot reload after settings writes). |
@@ -84,7 +86,10 @@ when you change ingest/search/embedding paths and have both servers up.
 - **Adding a tool**: define it in `wireApi` (`src/index.ts`) with plain
   JSON-Schema `parameters`, `promptSnippet`, and `promptGuidelines`; put the logic
   in `tools-core.ts` (typed against `ToolDeps` — never the full `RuntimeDeps`) so
-  tools and commands share it.
+  tools and commands share it. Feature-gated tools (`code_memory`, gated on
+  `cfg.codeKnowledge`) register conditionally and are session-fixed exactly like
+  lifecycle hooks — a mid-session settings flip takes effect on reload, and the
+  settings output says so.
 - **Adding a command**: add a single-token def to the `commands` array in
   `wireApi` (name `qdrant-<verb>`, `execute(args: string)`), implement the
   handler in `handlers.ts`, emit one structured entry through `io.emit(...)`

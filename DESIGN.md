@@ -155,10 +155,16 @@ detail in one label column:
 🧠 Memory: mode2 (pi-mem-abc)
 qdrant: ✓ reachable · 47 points
 embeddings: ✓ reachable
+code memory: ✓ 12 files · 89 symbols
 qdrant url: http://localhost:6333
 model: nomic-embed-text @ http://localhost:8080/v1
 dimension: 768 · threshold: 0.15 · maxResults: 5
 ```
+
+The `code memory:` row appears only while the feature is wired (registration-time
+`codeKnowledge: on`). Variants: `code memory: off` (muted slot),
+`code memory: on (syncing…)` (dim slot, before the first sync lands),
+`code memory: ✓ {files} files · {symbols} symbols` (success slot, after a sync).
 
 State variants on the subsystem rows — the glyph carries the class, the color
 refines it:
@@ -176,7 +182,9 @@ gesture.
 
 One entry, the same minimal block shape. Opens with the shared memory header,
 then a bold `commands` title and aligned rows — command in plain text,
-description dim, column aligned to the longest command + 2:
+description dim, column aligned to the longest command + 2. The row list is
+conditional: `/qdrant-index-code` appears (between `/qdrant-clear` and
+`/qdrant-help`) only while `codeKnowledge: on` was active at registration.
 
 ```
 🧠 Memory: mode1 (pi-mem-<hex>)
@@ -229,7 +237,13 @@ remembered: <verbatim text>
 cleared: collection pi-mem-… reset
 settings: scoreThreshold updated (reloaded at runtime)
 settings: scoreThreshold unchanged (cancelled)
+code memory: takes effect at the next session start — the code_memory tool registers on reload. Run /qdrant-index-code to index the current session's code right away.
 ```
+
+A `codeKnowledge` settings write additionally emits the direction-aware reload
+notice (spec §12): switching **on** ends `…the code_memory tool registers on
+reload. Run /qdrant-index-code to index the current session's code right away.`;
+switching **off** ends `…the code_memory tool unregisters on reload.`
 
 The `/qdrant-remember` confirmation is command voice: plain `remembered:`
 without echoing the stored point's internal source kind (the memory_save tool
@@ -273,12 +287,15 @@ visuals.
 
 ### agent-tool-results
 
-`memory_save` and `memory_search` return plain text to the model: `remembered
-(remember_tool): <text>` or `memory_search failed: <reason>` on errors, and for
-searches the same plain hit-block format as today. These strings feed the LLM
-(not the human TUI) and are deliberately **not** chrome-styled; they are out of
-scope of the entry UI above. The human-visible search formatting lives in the
-`search-results` entry, not in tool return text.
+`memory_save`, `memory_search`, and `code_memory` return plain text to the model:
+`remembered (remember_tool): <text>` or `<tool> failed: <reason>` on errors, and for
+searches the same plain hit-block format as today. Code-memory hits carry a
+`file:line` source pointer (`[code] 0.81 (src/render.ts:15)`) so the model can open
+the file; `code_memory` covers structure only — its guidelines pair it with
+`memory_search` for rationale. These strings feed the LLM (not the human TUI) and are
+deliberately **not** chrome-styled; they are out of scope of the entry UI above. The
+human-visible search formatting lives in the `search-results` entry, not in tool return
+text.
 
 Idempotent-write contract for `memory_save`: the stored point id is derived
 from the text (plus source kind and context), **not** from `type`. Re-saving
