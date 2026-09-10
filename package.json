@@ -4,7 +4,9 @@
   "description": "Semantic, cross-session retrieval over durable conversation knowledge for pi.dev, backed by Qdrant.",
   "type": "module",
   "license": "MIT",
+  "keywords": ["pi-package", "pi", "memory", "qdrant", "embeddings", "semantic-search"],
   "engines": { "node": ">=22.19" },
+  "files": ["src/", "README.md", "DESIGN.md", "LICENSE"],
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
@@ -13,6 +15,10 @@
   "devDependencies": {
     "typescript": "^5.8.0",
     "@types/node": "^22.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "pi": { "extensions": ["./src/index.ts"] }
 }
