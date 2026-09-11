@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULTS, configPath, loadConfig, readGlobalConfig, setConfigField } from "../src/config.ts";
@@ -148,4 +148,32 @@ test("readGlobalConfig never consults the project store (global-layer purity)", 
     assert.deepEqual(cfg, DEFAULTS);
     assert.equal(loadConfig(dir, {}).codeKnowledge, "off");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── Shipped template drift guard (plan §7.6 / D11) ───────────────────────────
+
+test("shipped template is a full Config deep-equal to DEFAULTS", () => {
+  const parsed = JSON.parse(
+    readFileSync(new URL("../pi-qdrant-memory-config.example.json", import.meta.url), "utf8"),
+  ) as Config;
+  assert.deepEqual(parsed, DEFAULTS);
+  assert.equal(parsed.codeKnowledge, "off");
+  assert.equal(typeof parsed.codeScoreThreshold, "number");
+});
+
+test("the shipped template is listed in package.json files", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { files: string[] };
+  assert.ok(pkg.files.includes("pi-qdrant-memory-config.example.json"));
+});
+
+test("no runtime path reads the shipped template", () => {
+  // The spec's fs-read counter is not implementable without an fs injection
+  // seam, so this source sweep is the honest equivalent: no src/ module may
+  // name the template, so it cannot be read at runtime — it is documentation.
+  const srcDir = new URL("../src/", import.meta.url);
+  for (const name of readdirSync(srcDir)) {
+    if (!name.endsWith(".ts")) continue;
+    const text = readFileSync(new URL(name, srcDir), "utf8");
+    assert.ok(!text.includes("config.example.json"), `${name} must not reference the shipped template`);
+  }
 });

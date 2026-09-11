@@ -26,7 +26,8 @@
     "README.md",
     "DESIGN.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "pi-qdrant-memory-config.example.json"
   ],
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",

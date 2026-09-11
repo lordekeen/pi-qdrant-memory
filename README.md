@@ -38,9 +38,22 @@ Runtime is in-process; no background resources are started by the factory (all l
 
 ## Config
 
-Single source of truth: `~/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json`
-(honors `PI_CODING_AGENT_DIR`). The file is canonical and portable — edit it via `/qdrant-settings`, not by
-hand. If absent, the defaults below apply (zero-config run).
+The global config file lives at
+`~/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json` (honors
+`PI_CODING_AGENT_DIR`). It holds all eleven keys and is the layer that applies where
+no project override exists. A copyable template of the shipped defaults ships at
+`pi-qdrant-memory-config.example.json` (repo root, listed in `package.json` `files`) —
+copy it onto the path above to materialize the file. The template equals the built-in
+`DEFAULTS` in `src/config.ts`, which remains the real layer-4 default: a missing global
+file is not an error, the built-in defaults apply (zero-config run).
+
+Storage layout — `~/.pi/agent/pi-qdrant-memory/` holds the global config file and a
+`projects/` directory with one `<projectId>.json` override per project (~100 B each).
+
+Precedence, per field, highest first:
+**env → project override → global file → `DEFAULTS`** (see [Project overrides](#project-overrides)).
+The nine keys below always live in the global file and are edited with `/qdrant-settings`;
+the two allowlisted keys' *defaults* are edited by hand using the template.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -56,24 +69,45 @@ hand. If absent, the defaults below apply (zero-config run).
 | `codeKnowledge` | `off` | `on` enables structural code summaries + the `code_memory` tool (next session) |
 | `codeScoreThreshold` | `0.55` | Score threshold for `code_memory` searches, 0–1 (per-model; see [Code memory](#code-memory-opt-in)) |
 
-Env overrides at load, precedence defaults → file → env:
+Env overrides (highest precedence, above the project and file layers):
 `PI_QDRANT_URL`, `PI_QDRANT_API_KEY`, `PI_QDRANT_EMBEDDING_BASE_URL`, `PI_QDRANT_EMBEDDING_MODEL`,
 `PI_QDRANT_EMBEDDING_API_KEY`, `PI_QDRANT_EXPECTED_DIMENSION`, `PI_QDRANT_SCORE_THRESHOLD`,
 `PI_QDRANT_MAX_RESULTS`, `PI_QDRANT_MODE`, `PI_QDRANT_CODE_KNOWLEDGE`, `PI_QDRANT_CODE_SCORE_THRESHOLD`.
 
+The global file stores API keys and is written with owner-only permissions (`0600`);
+a previously loosened file is tightened on the next save.
+
+## Project overrides
+
+Two config keys are **repo-shaped** and can be overridden per project:
+`codeKnowledge` (should this repo be indexed at all) and `codeScoreThreshold` (how strict
+code retrieval is *in this repo*). An override lives at
+`<agentDir>/pi-qdrant-memory/projects/<projectId>.json` — a partial config holding only
+those keys, keyed by the same `projectId` as the collection.
+
+- Env still wins: `PI_QDRANT_CODE_KNOWLEDGE` / `PI_QDRANT_CODE_SCORE_THRESHOLD` mask a
+  project override.
+- `/qdrant-settings codeKnowledge on` and `/qdrant-settings codeScoreThreshold 0.6` write
+  this project's store; `/qdrant-settings <key> default` clears the override.
+- A moved or renamed repo orphans its override exactly as it orphans its collection (both
+  are keyed by the git-root realpath hash).
+- `scoreThreshold` and `maxResults` are **not** project-overridable on purpose:
+  `scoreThreshold` is purely model-calibrated and has no repo-shaped half, and
+  `maxResults` is a user preference about result volume, not a repo property.
+
 ## Commands
 
 `/qdrant-status` — connection health + active mode + collection point count.
-`/qdrant-settings <key> <value>` — persist a config field (`mode`, `codeKnowledge`, `embeddingBaseURL`, `embeddingModel`,
-`expectedDimension`, `scoreThreshold`, `codeScoreThreshold`, `maxResults`). Bare `/qdrant-settings` prints usage.
+`/qdrant-settings <key> <value>` — persist a config field. `codeKnowledge` and `codeScoreThreshold`
+apply to this project (an override); every other key (`mode`, `embeddingBaseURL`, `embeddingModel`,
+`expectedDimension`, `scoreThreshold`, `maxResults`, …) writes the global config file.
+`<key> default` clears an allowlisted override; for the other keys `default` is an ordinary value.
+Bare `/qdrant-settings` prints usage.
 `/qdrant-remember <text>` — manual durable save.
 `/qdrant-search <query>` — manual semantic search.
 `/qdrant-index-code` — re-index code summaries now (only when `codeKnowledge: on`).
 `/qdrant-clear` — reset the current project's collection.
 `/qdrant-help` — this list.
-
-The config file stores API keys and is written with owner-only permissions
-(`0600`).
 
 ## Statusline
 

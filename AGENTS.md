@@ -61,7 +61,8 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, `/qdrant-*` commands, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). | |
 | `src/handlers.ts` | Slash-command handlers (status/settings/remember/search/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. |
 | `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested. |
-| `src/config.ts` | `DEFAULTS`, `loadConfig` (defaults → file → env precedence), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form). |
+| `src/config.ts` | `DEFAULTS`, `readGlobalConfig` (the global layer: defaults → file → env; `loadConfig` is its historical alias), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form). Knows nothing about projects. |
+| `src/project-settings.ts` | Per-project override store (allowlisted keys only): `PROJECT_OVERRIDABLE_FIELDS`, `loadProjectSettings` / `saveProjectSettings` / `clearProjectField`, and `readEffectiveConfig` (env → project → global → `DEFAULTS`). Lives here, not `config.ts`, to keep imports one-directional (`config.ts` ← `project-settings.ts`, no ESM cycle). |
 | `src/mode.ts` | Runtime mode resolution: `detectBlackhole`, `resolveMode` (mode1 = blackhole present; mode2 = own capture), `agentDirFromEnv`. |
 | `src/project.ts` | `projectIdFrom` — hashes the nearest git root realpath → `pi-mem-<16hex>`. |
 | `src/qdrant.ts` | `QdrantClient` (REST) + `QdrantLike` interface (test seam). |
@@ -75,7 +76,7 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | `src/code-sync.ts` | `syncCodeKnowledge` — scan → Qdrant snapshot (file_path→file_sha) → per-file diff → per whole-file batch: embed → delete-by-file_path → upsert. Batches are built from whole files so each file is replaced atomically and a failed embed never deletes. Never throws; Qdrant is the cache. |
 | `src/render.ts` | Tool-path text blocks (`renderHits` + `sourcePointer`), LLM-facing — deliberately outside the entry UI. |
 | `src/entry-render.ts` | Lazy pi-tui renderer: maps an `OutEntry` (via `renderOut` roles) to one multi-line `Text` + `keyHint` (only collapsed search summaries expand). No Box/card machinery — status renders unboxed like every entry. `RendererOptions.TextCtor` is the unit-test seam. |
-| `src/deps.ts` | `makeRuntime` (assembles cfg + clients + handlers IO), `applyConfig` (hot reload after settings writes). |
+| `src/deps.ts` | `makeRuntime` (resolves the project first, then the effective config; assembles cfg + clients + handlers IO), `applyConfig` (hot reload after settings writes), `writeGlobalConfigAndReload` (D10: persist the global file through `readGlobalConfig`, then re-apply the effective reader). |
 | `src/types.ts` | Shared types: `Config`, `MemoryType`, `SourceKind`, `PointPayload`, `SearchHit`, `RuntimeDeps`, `ToolDeps`. |
 | `src/pi-tui.d.ts` | Ambient types for the lazy `@earendil-works/pi-tui` import. |
 | `src/pi-coding-agent.d.ts` | Ambient types for the lazy `@earendil-works/pi-coding-agent` import (`keyHint`). |
@@ -97,9 +98,15 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
   (builders + role rules live in `src/out.ts`; DESIGN.md owns the strings), add
   it to `helpHandler`, register a test in `test/handlers.test.ts` and assert
   registration in `test/index.test.ts` and `test/factory.test.ts`.
-- **Changing config**: update `Config` in `types.ts`, `DEFAULTS`+`loadConfig`
+- **Changing config**: update `Config` in `types.ts`, `DEFAULTS`+`readGlobalConfig`
   precedence in `config.ts`, and `SETTING_FIELDS` in `handlers.ts` so the form
-  covers it. Validation goes in `setConfigField` — CLI and form share it.
+  covers it. Validation goes in `setConfigField` — CLI and form share it. Adding
+  an **overridable** field is a `PROJECT_OVERRIDABLE_FIELDS` entry in
+  `project-settings.ts` plus the `Config`/`DEFAULTS`/`SETTING_FIELDS` updates, and
+  `/qdrant-settings` routes it to the project layer (add project-store +
+  precedence tests). A **non-allowlisted** field routes to the global file and its
+  write path keeps using `readGlobalConfig` (D10: persist with the reader of the
+  file you write, then re-apply `readEffectiveConfig`).
 - **Changing output text**: consult `DESIGN.md` first (exact strings, glyphs,
   role slots, collapse/expand, error rows). Content + per-line roles go in
   `src/out.ts` (`renderOut` is the single source of truth and is unit-tested
@@ -108,7 +115,11 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 ## Environment & config for tests
 
 Config file: `~/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json`
-(honors `PI_CODING_AGENT_DIR`). Env overrides: `PI_QDRANT_URL`,
+(honors `PI_CODING_AGENT_DIR`); per-project overrides live in
+`~/.pi/agent/pi-qdrant-memory/projects/<projectId>.json` (allowlisted keys only).
+The shipped template `pi-qdrant-memory-config.example.json` (repo root, listed in
+`package.json` `files`) documents the global defaults; it is never read at runtime.
+Env overrides (highest precedence): `PI_QDRANT_URL`,
 `PI_QDRANT_API_KEY`, `PI_QDRANT_EMBEDDING_BASE_URL`, `PI_QDRANT_EMBEDDING_MODEL`,
 `PI_QDRANT_EMBEDDING_API_KEY`, `PI_QDRANT_EXPECTED_DIMENSION`,
 `PI_QDRANT_SCORE_THRESHOLD`, `PI_QDRANT_MAX_RESULTS`, `PI_QDRANT_MODE`,
