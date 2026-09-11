@@ -5,6 +5,21 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.3.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.2.2...v0.3.0) (2026-09-11)
+
+
+### Features
+
+* add the per-project settings store for allowlisted config overrides ([819cdcd](https://github.com/lordekeen/pi-qdrant-memory/commit/819cdcdbf8b248e5b3c5b5e9ab0f27a530521d5d))
+* make /qdrant-settings scope-aware — allowlisted keys write this project's store, the other nine keep writing the global file ([3bcb3f0](https://github.com/lordekeen/pi-qdrant-memory/commit/3bcb3f0c170843b6b14f70d35922d2ac388b9220))
+* re-resolve the effective config on session_start and gate the code sync on the live value ([b0f6c43](https://github.com/lordekeen/pi-qdrant-memory/commit/b0f6c435c2656c98a409a760f8572e8d59c0c716))
+* surface this project's overrides on /qdrant-status ([c4a4b06](https://github.com/lordekeen/pi-qdrant-memory/commit/c4a4b06e8ce0e9036ace413639228895f2d09b5e))
+
+
+### Bug Fixes
+
+* reload the effective config after a global settings write ([6e23a07](https://github.com/lordekeen/pi-qdrant-memory/commit/6e23a0772af89325328fdf0a0e55e61657707a8d))
+
 ## [0.2.2](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.2.1...v0.2.2) (2026-09-11)
 
 
