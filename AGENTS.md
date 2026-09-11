@@ -170,5 +170,10 @@ version without 2FA, a maintainer approves with 2FA, and only then is it live.
   version on demand — that is how 0.2.0 was staged.
 - Before claiming a release shipped: `npm view pi-qdrant-memory version` must
   show the new version. A successful staging run is not a publish.
+- The npmjs.com README renders asynchronously and is only refreshed by a **new
+  version publish** — editing `README.md` alone never updates the package page,
+  so README changes must ride a version bump. A page fetched right after a
+  release can briefly show "This package does not have a README" while that
+  render is still pending; that is not a packaging bug.
 - General mechanics (staged publishing, version floors, GitHub Actions
   failures): the `npm-release-automation` skill.
