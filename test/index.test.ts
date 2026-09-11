@@ -1,13 +1,15 @@
 import test from "node:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { wireApi } from "../src/index.ts";
 import type { WireApi } from "../src/index.ts";
-import type { RuntimeDeps } from "../src/types.ts";
+import type { Config, RuntimeDeps } from "../src/types.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
 import { QdrantError } from "../src/qdrant.ts";
+import { readEffectiveConfig, saveProjectSettings } from "../src/project-settings.ts";
+import { projectIdFrom } from "../src/project.ts";
 
 async function settle(): Promise<void> {
   // refreshStatus is fire-and-forget; yield two ticks so its awaits resolve.
@@ -240,4 +242,129 @@ test("session_start runs the code sync and repaints the footer after it", async 
     assert.ok(last);
     assert.match(last, /🧠 Memory \(5\): mode2 \(pi-mem-abc\)/);
   } finally { cleanup(); }
+});
+
+// ── Phase 5: session_start re-anchor + live effective code-sync gate ──────────
+
+function idxAgentDir(): string {
+  return mkdtempSync(join(tmpdir(), "pi-qm-idx-"));
+}
+
+function gitRepo(dir: string, name: string): string {
+  const repo = join(dir, name);
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  return repo;
+}
+
+/** A runtime whose injected reload swaps ONLY `cfg` — cfg-only, never the
+ * clients. Risk 8: a lifecycle unit test must never construct real
+ * embedding/Qdrant clients (the production reload calls `applyConfig`). */
+function runtimeWith(
+  agentDir: string,
+  cfg: Config,
+  qdrantClient: QdrantLike,
+  embedBatch: (texts: string[]) => Promise<number[][]>,
+  cwd = "/repo",
+): RuntimeDeps {
+  const local: RuntimeDeps = {
+    cfg,
+    agentDir, cwd, projectId: "pi-mem-abc",
+    embed: async () => new Array(768).fill(0.1),
+    embedBatch,
+    qdrant: qdrantClient,
+    readGlobalConfig: () => local.cfg,
+    writeGlobalConfig: () => {},
+    reloadEffectiveConfig: () => { local.cfg = readEffectiveConfig(agentDir, local.projectId, {}); },
+    print: () => {},
+  };
+  return local;
+}
+
+test("session_start re-anchors the project and re-resolves the effective config", async () => {
+  const agentDir = idxAgentDir();
+  try {
+    const repo = gitRepo(agentDir, "target");
+    const targetId = await projectIdFrom(repo);
+    saveProjectSettings(agentDir, targetId, { codeKnowledge: "off" });
+    const localRt = runtimeWith(
+      agentDir,
+      { ...rt.cfg, codeKnowledge: "on" }, // factory-time frozen value
+      qdrant,
+      async (t) => t.map(() => new Array(768).fill(0.1)),
+    );
+    const api = fakeApi();
+    const cleanup = wireApi(api, localRt);
+    try {
+      const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+      await onStart({}, { cwd: repo });
+      assert.equal(localRt.projectId, targetId); // re-anchored to the hosting repo
+      assert.equal(localRt.cfg.codeKnowledge, "off"); // re-resolved for that project
+    } finally { cleanup(); }
+  } finally { rmSync(agentDir, { recursive: true, force: true }); }
+});
+
+test("session_start gate reads the LIVE effective value: an override-off project does not sync", async () => {
+  const agentDir = idxAgentDir();
+  try {
+    const repo = gitRepo(agentDir, "target");
+    const targetId = await projectIdFrom(repo);
+    saveProjectSettings(agentDir, targetId, { codeKnowledge: "off" });
+    let snapshots = 0;
+    let embedBatches = 0;
+    const recording: QdrantLike = {
+      ...qdrant,
+      async codeIndexSnapshot() { snapshots++; return new Map(); },
+    };
+    const localRt = runtimeWith(
+      agentDir,
+      { ...rt.cfg, codeKnowledge: "on" }, // the FROZEN registration value is on…
+      recording,
+      async (t) => { embedBatches++; return t.map(() => new Array(768).fill(0.1)); },
+    );
+    const api = fakeApi();
+    const cleanup = wireApi(api, localRt);
+    try {
+      const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+      await onStart({}, { cwd: repo });
+      await settle();
+      await settle();
+      // …but the live effective value is off, so no sync work may happen. This
+      // genuinely fails if the gate reads the frozen `codeMemoryOn` boolean.
+      assert.equal(snapshots, 0, "override-off must suppress the code sync even when registration-time codeKnowledge was on");
+      assert.equal(embedBatches, 0);
+    } finally { cleanup(); }
+  } finally { rmSync(agentDir, { recursive: true, force: true }); }
+});
+
+test("session_start gate reads the LIVE effective value: an override-on project syncs", async () => {
+  const agentDir = idxAgentDir();
+  try {
+    const repo = gitRepo(agentDir, "target");
+    writeFileSync(join(repo, "a.ts"), "export function alpha() {}\n");
+    const targetId = await projectIdFrom(repo);
+    saveProjectSettings(agentDir, targetId, { codeKnowledge: "on" });
+    let snapshots = 0;
+    const recording: QdrantLike = {
+      ...qdrant,
+      async codeIndexSnapshot() { snapshots++; return new Map(); },
+    };
+    const localRt = runtimeWith(
+      agentDir,
+      { ...rt.cfg, codeKnowledge: "off" }, // the FROZEN registration value is off…
+      recording,
+      async (t) => t.map(() => new Array(768).fill(0.1)),
+    );
+    const api = fakeApi();
+    const cleanup = wireApi(api, localRt);
+    try {
+      const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+      await onStart({}, { cwd: repo });
+      await settle();
+      await settle();
+      // …but the live effective value turned on, so the sync runs (indexing for
+      // the next session even though this session's tool set is fixed).
+      assert.equal(localRt.cfg.codeKnowledge, "on");
+      assert.ok(snapshots >= 1, "override-on must run the code sync even when registration-time codeKnowledge was off");
+    } finally { cleanup(); }
+  } finally { rmSync(agentDir, { recursive: true, force: true }); }
 });

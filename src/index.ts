@@ -310,6 +310,12 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
         rt.projectId = await projectIdFrom(cwd);
       } catch { /* keep the factory-time anchor */ }
     }
+    // The hosting project drives its own settings (D7): re-resolve the effective
+    // config for the live projectId and swap it into the runtime. Unconditional
+    // (not just on re-anchor) so a store written by another session is picked up
+    // too. Local disk only — never blocks on Qdrant; applyConfig swaps cfg +
+    // clients and does NOT re-register.
+    rt.reloadEffectiveConfig();
     // Footer statusline — icon-led label like ketch's "🌐 ketch: active", then
     // the stored-memory count + mode + project collection as the state
     // (DESIGN.md footer-status). Mode is re-resolved live so a /qdrant-settings
@@ -318,7 +324,11 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     api.setStatus(memoryHeaderText({ mode, collection: rt.projectId }));
     if (mode === "mode1") await ingestPending();
     void refreshStatus(); // repaint with the count once known, best-effort
-    if (codeMemoryOn) {
+    // LIVE effective gate (D7 item 4): a session re-anchored into a project
+    // whose override is off must skip the sync even when the factory-time value
+    // was on. Same shape as /qdrant-index-code's live-config guard. Tool
+    // registration stays fixed to `codeMemoryOn` (session-fixed by design).
+    if (rt.cfg.codeKnowledge === "on") {
       // Fire-and-forget code sync (spec §10): never blocks session start.
       void runCodeSync();
     }
