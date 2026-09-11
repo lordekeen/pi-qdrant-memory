@@ -54,7 +54,7 @@ hand. If absent, the defaults below apply (zero-config run).
 | `maxResults` | `10` | Default `memory_search` limit |
 | `mode` | `auto` | `auto` detect \| `blackhole` force Mode 1 \| `own` force Mode 2 |
 | `codeKnowledge` | `off` | `on` enables structural code summaries + the `code_memory` tool (next session) |
-| `codeScoreThreshold` | `0.55` | Score threshold for `code_memory` searches, 0–1 |
+| `codeScoreThreshold` | `0.55` | Score threshold for `code_memory` searches, 0–1 (per-model; see [Code memory](#code-memory-opt-in)) |
 
 Env overrides at load, precedence defaults → file → env:
 `PI_QDRANT_URL`, `PI_QDRANT_API_KEY`, `PI_QDRANT_EMBEDDING_BASE_URL`, `PI_QDRANT_EMBEDDING_MODEL`,
@@ -107,6 +107,15 @@ extractor is built in; no external indexer is used.
   forces a resync.
 - **Retrieval:** the `code_memory` tool (registered only while enabled) searches code summaries
   at `codeScoreThreshold`; `memory_search` never returns code hits.
+
+  **Thresholds are per-model, and this one is load-bearing.** The shipped `0.55` was calibrated
+  against `nomic-embed-text` so that relevant code queries (≈0.6) clear it while unrelated ones
+  (≈0.5) do not — a narrow band, because embedding models compress cosine similarity. On a model
+  that scores lower overall, code search can silently return nothing. To find where your model
+  actually sits, temporarily lower `codeScoreThreshold` (e.g. to `0.3`) and read the `score=`
+  values in `code_memory` output, then set it just above the band where unrelated matches stop
+  appearing. Note this only applies to code search: `memory_search` uses `scoreThreshold` and
+  never returns code hits.
 - **Mid-session flips** take effect at the next session start (the settings output reminds
   you); only indexing can be run immediately via `/qdrant-index-code`.
 
