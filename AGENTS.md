@@ -145,3 +145,30 @@ OpenAI-compatible embeddings endpoint (defaults `:8080/v1`, `nomic-embed-text`,
 Small, focused commits. Imperative present-tense subject; optional
 `feat: / fix: / refactor: / docs: / test: / ui:` prefix. One logical change per
 commit. Commit only after typecheck+tests pass (see `verification-before-completion`).
+
+## Releasing
+
+Two workflows in `.github/workflows/`: `release-please.yml` (automatic) and
+`publish-manual.yml` (on demand). Publishing is **staged**: CI submits the
+version without 2FA, a maintainer approves with 2FA, and only then is it live.
+
+1. `release-please` maintains a release PR from conventional commits (version
+   bump + `CHANGELOG.md`).
+2. Merging that PR creates the GitHub release and tag — **the merge alone does
+   not publish to npm**; nothing is live yet.
+3. Creating the release triggers the `publish` job, which stages the new
+   version with `npm stage publish` (no 2FA in CI).
+4. A maintainer approves with 2FA — `npm stage approve <stage-id>`, or
+   npmjs.com -> Staged Packages tab -> Approve — and only then is it live.
+
+- `NPM_TOKEN` (repo secret) is a **staging-capable granular token** — correct
+  and intentional. Do not "fix" it into a direct-publish token; staging is the
+  intended flow, not a workaround.
+- The publish job must run on **Node 24**: `npm stage publish` needs npm CLI
+  >= 11.15.0, and Node 22 bundles npm 10.x (Node 24 bundles npm 11.x).
+- `manual-publish` (`gh workflow run manual-publish`) stages the current `main`
+  version on demand — that is how 0.2.0 was staged.
+- Before claiming a release shipped: `npm view pi-qdrant-memory version` must
+  show the new version. A successful staging run is not a publish.
+- General mechanics (staged publishing, version floors, GitHub Actions
+  failures): the `npm-release-automation` skill.
