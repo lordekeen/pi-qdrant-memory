@@ -5,6 +5,26 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.2.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.1.0...v0.2.0) (2026-09-11)
+
+
+### Features
+
+* batch embeddings for code-memory sync (phase 3) ([c410f74](https://github.com/lordekeen/pi-qdrant-memory/commit/c410f74b6e47acfd6211a5bbb7d5d725c88228ce))
+* code_memory tool, index-code command, sync wiring, flip notice (phase 6) ([afbe85b](https://github.com/lordekeen/pi-qdrant-memory/commit/afbe85b7f456c2f56eaced0faeb73943f1243fc6))
+* code-memory config groundwork (phase 1) ([292ec77](https://github.com/lordekeen/pi-qdrant-memory/commit/292ec7798a1eaf414dce36c0fe7d9f3aa4611255))
+* code-memory sync engine (phase 5) ([a89ae3d](https://github.com/lordekeen/pi-qdrant-memory/commit/a89ae3d2677f77552a199a81b8812baeb936e299))
+* qdrant surface for code-memory sync (phase 2) ([a02d6ac](https://github.com/lordekeen/pi-qdrant-memory/commit/a02d6acd6e871c323f2933b5670d2a808630221c))
+* standalone structural code extractor (phase 4) ([561fe86](https://github.com/lordekeen/pi-qdrant-memory/commit/561fe86bfe5c44b716cbecf2cd2ef4dc104a276d))
+
+
+### Bug Fixes
+
+* code sync deleted every point it had just written ([4c483de](https://github.com/lordekeen/pi-qdrant-memory/commit/4c483dee458c1432e87f2e3bf8a45c0e8bd77456))
+* code-memory review fixes (live-verified defects) ([c8a4f95](https://github.com/lordekeen/pi-qdrant-memory/commit/c8a4f950e55b9858121bd90552e13953824e79fa))
+* mark pi-bundled peers optional; regenerate lockfile ([bb1541e](https://github.com/lordekeen/pi-qdrant-memory/commit/bb1541ec01ced62634c0a1171f13b2aa09bf8242))
+* sync lockfile with peerDependencies; make renderer-seam test env-agnostic ([012176d](https://github.com/lordekeen/pi-qdrant-memory/commit/012176d81457edbbe2eee3fa8f2e49259396d97e))
+
 ## [0.1.0] - 2026-09-10
 
 ### Added

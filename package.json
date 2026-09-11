@@ -1,18 +1,33 @@
 {
   "name": "pi-qdrant-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Semantic, cross-session retrieval over durable conversation knowledge for pi.dev, backed by Qdrant.",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "pi", "memory", "qdrant", "embeddings", "semantic-search"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "memory",
+    "qdrant",
+    "embeddings",
+    "semantic-search"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lordekeen/pi-qdrant-memory.git"
   },
   "homepage": "https://github.com/lordekeen/pi-qdrant-memory#readme",
   "bugs": "https://github.com/lordekeen/pi-qdrant-memory/issues",
-  "engines": { "node": ">=22.19" },
-  "files": ["src/", "README.md", "DESIGN.md", "CHANGELOG.md", "LICENSE"],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "DESIGN.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
@@ -27,8 +42,16 @@
     "@earendil-works/pi-tui": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "@earendil-works/pi-tui": { "optional": true }
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
   },
-  "pi": { "extensions": ["./src/index.ts"] }
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
 }
