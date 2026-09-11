@@ -288,8 +288,9 @@ visuals.
 ### agent-tool-results
 
 `memory_save`, `memory_search`, and `code_memory` return plain text to the model:
-`remembered (remember_tool): <text>` or `<tool> failed: <reason>` on errors, and for
-searches the same plain hit-block format as today. Code-memory hits carry a
+`remembered (remember_tool): <text>` or `<tool> failed: <reason>` on errors
+(`<reason>` is a **bare** reason — the tool name and `failed:` lead appear exactly
+once), and for searches the same plain hit-block format as today. Code-memory hits carry a
 `file:line` source pointer (`[code] 0.81 (src/render.ts:15)`) so the model can open
 the file; `code_memory` covers structure only — its guidelines pair it with
 `memory_search` for rationale. These strings feed the LLM (not the human TUI) and are

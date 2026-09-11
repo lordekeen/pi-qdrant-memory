@@ -51,17 +51,48 @@ test("rememberLogic respects explicit type", async () => {
   assert.equal(d.q.upserted[0][0].payload.type, "preference");
 });
 
-test("rememberLogic rejects empty text with error result", async () => {
+test("rememberLogic rejects empty text with a bare reason", async () => {
   const d = deps();
   const res = await rememberLogic(d, "   ");
   assert.ok(!res.ok);
-  assert.match((res as { error: string }).error, /empty/i);
+  // tools-core returns bare reason text — no tool name, no `failed:` prefix.
+  assert.equal((res as { error: string }).error, "text is empty");
 });
 
-test("rememberLogic returns error result (no throw) when embed fails", async () => {
+test("rememberLogic rejects over-long text with a bare reason", async () => {
+  const d = deps();
+  const res = await rememberLogic(d, "x".repeat(4001));
+  assert.ok(!res.ok);
+  assert.equal((res as { error: string }).error, "text too long (>4000 chars)");
+});
+
+test("rememberLogic returns a bare error reason (no throw) when embed fails", async () => {
   const d = deps({ embed: async () => { throw new Error("down"); } });
   const res = await rememberLogic(d, "x");
   assert.ok(!res.ok);
+  // Just the underlying error text — the caller composes the final message.
+  assert.equal((res as { error: string }).error, "Error: down");
+});
+
+test("memorySearchLogic rejects an empty query with a bare reason", async () => {
+  const res = await memorySearchLogic(deps(), "   ");
+  assert.ok(!res.ok);
+  assert.equal((res as { error: string }).error, "query is empty");
+});
+
+test("memorySearchLogic returns a bare error reason when the search fails", async () => {
+  const q: QdrantLike = {
+    async ensureCollection() { return "exists"; },
+    async upsert() {},
+    async search() { throw new Error("connection refused"); },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+  };
+  const res = await memorySearchLogic(deps({ qdrant: q }), "q");
+  assert.ok(!res.ok);
+  assert.equal((res as { error: string }).error, "Error: connection refused");
 });
 
 test("memorySearchLogic embeds query and searches with type filter and capped limit", async () => {

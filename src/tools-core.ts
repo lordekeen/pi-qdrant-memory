@@ -9,8 +9,11 @@ const MAX_TEXT = 4000;
 
 export async function rememberLogic(deps: ToolDeps, text: string, type?: MemoryType): Promise<ToolResult<PointPayload>> {
   const trimmed = text.trim();
-  if (!trimmed) return { ok: false, error: "remember: text is empty" };
-  if (trimmed.length > MAX_TEXT) return { ok: false, error: `remember: text too long (>${MAX_TEXT} chars)` };
+  // Bare reason text only: the caller owns the final message (tool wrappers
+  // prepend `<tool> failed:`, command handlers their own voice), so the reason
+  // never carries a tool name or a `failed:` prefix of its own.
+  if (!trimmed) return { ok: false, error: "text is empty" };
+  if (trimmed.length > MAX_TEXT) return { ok: false, error: `text too long (>${MAX_TEXT} chars)` };
   const payload: PointPayload = {
     type: type ?? "decision",
     text: trimmed,
@@ -31,7 +34,7 @@ export async function rememberLogic(deps: ToolDeps, text: string, type?: MemoryT
     await deps.qdrant.upsert(deps.projectId, [{ id, vector, payload }]);
     return { ok: true, value: payload };
   } catch (err) {
-    return { ok: false, error: `remember failed: ${String(err)}` };
+    return { ok: false, error: String(err) };
   }
 }
 
@@ -42,7 +45,7 @@ export async function memorySearchLogic(
   limit?: number,
 ): Promise<ToolResult<SearchHit[]>> {
   const trimmed = query.trim();
-  if (!trimmed) return { ok: false, error: "memory_search: query is empty" };
+  if (!trimmed) return { ok: false, error: "query is empty" };
   const capped = Math.max(1, Math.min(limit ?? deps.cfg.maxResults, deps.cfg.maxResults));
   try {
     // G1: ensure the collection exists so the first search on a fresh project
@@ -59,7 +62,7 @@ export async function memorySearchLogic(
     });
     return { ok: true, value: hits };
   } catch (err) {
-    return { ok: false, error: `memory_search failed: ${String(err)}` };
+    return { ok: false, error: String(err) };
   }
 }
 

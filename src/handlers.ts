@@ -195,7 +195,7 @@ export async function rememberHandler(io: HandlerIO, text: string, type?: Memory
   // deterministic point id — it is never echoed to the human; only the
   // LLM-facing memory_save return names it (DESIGN.md agent-tool-results).
   if (res.ok) io.emit(message(`remembered: ${res.value.text}`));
-  else io.emit(errorEntry(`error: ${res.error}`));
+  else io.emit(errorEntry(`error: remember failed: ${res.error}`));
   return { exit: false };
 }
 
@@ -205,10 +205,11 @@ export async function searchHandler(io: HandlerIO, query: string, type?: MemoryT
     io.emit(res.value.length === 0 ? message(EMPTY_SEARCH_TEXT) : searchEntry(res.value.map(searchHitView)));
   } else {
     // Command voice: /qdrant-search failures read "error: search failed:
-    // <reason>" (plan §1.2) — not the LLM tool's "memory_search failed:" lead,
-    // which stays on the memory_search tool return (DESIGN.md agent-tool-results).
-    const reason = res.error.replace(/^memory_search( failed)?: /, "");
-    io.emit(errorEntry(`error: search failed: ${reason}`));
+    // <reason>" (plan §1.2). `res.error` is now a bare reason (tools-core no
+    // longer prefixes a tool name), so no prefix-stripping is needed here — the
+    // LLM tool's "memory_search failed:" lead lives only on the memory_search
+    // tool return (DESIGN.md agent-tool-results).
+    io.emit(errorEntry(`error: search failed: ${res.error}`));
   }
   return { exit: false };
 }

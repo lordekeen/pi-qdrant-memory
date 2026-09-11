@@ -224,17 +224,34 @@ test("searchHandler emits an error entry when the search fails", async () => {
   await searchHandler(d, "query");
   assert.equal(d.emitted[0].kind, "error");
   // Command voice: /qdrant-search failures read "error: search failed: <reason>"
-  // (plan §1.2), never the LLM tool's "memory_search failed:" lead (DESIGN.md
-  // agent-tool-results — which stays on the memory_search tool return).
-  assert.match(d.printed.join("\n"), /error: search failed: .*connection refused/);
+  // (plan §1.2). `res.error` is a bare reason, so the LLM tool's
+  // "memory_search failed:" lead never leaks here (DESIGN.md agent-tool-results)
+  // — and the reason is not double-labelled.
+  assert.equal(d.printed.join("\n"), "error: search failed: Error: connection refused");
   assert.doesNotMatch(d.printed.join("\n"), /memory_search failed/);
+  assert.doesNotMatch(d.printed.join("\n"), /search failed: search failed/);
+});
+
+test("searchHandler names the command once when the query is empty", async () => {
+  const d = io();
+  await searchHandler(d, "   ");
+  assert.equal(d.emitted[0].kind, "error");
+  assert.equal(d.printed.join("\n"), "error: search failed: query is empty");
 });
 
 test("rememberHandler emits an error entry when embedding fails", async () => {
   const d = io({ embed: async () => { throw new Error("embedder down"); } });
   await rememberHandler(d, "use REST");
   assert.equal(d.emitted[0].kind, "error");
-  assert.match(d.printed.join("\n"), /error: remember failed: .*embedder down/);
+  assert.equal(d.printed.join("\n"), "error: remember failed: Error: embedder down");
+  assert.doesNotMatch(d.printed.join("\n"), /remember failed: remember/);
+});
+
+test("rememberHandler names the command once when the text is empty", async () => {
+  const d = io();
+  await rememberHandler(d, "   ");
+  assert.equal(d.emitted[0].kind, "error");
+  assert.equal(d.printed.join("\n"), "error: remember failed: text is empty");
 });
 
 test("emitted output never carries a /qdrant: text prefix", async () => {

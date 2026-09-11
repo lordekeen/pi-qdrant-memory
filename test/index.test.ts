@@ -200,6 +200,28 @@ test("code_memory executes a code-typed search", async () => {
   } finally { cleanup(); }
 });
 
+test("tool errors name the invoked tool exactly once", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, onRt); // on → memory_save, memory_search, code_memory all registered
+  try {
+    type Tool = { name: string; execute: (id: string, p: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> };
+    const tools = api.tools as Tool[];
+    const save = tools.find((t) => t.name === "memory_save")!;
+    const search = tools.find((t) => t.name === "memory_search")!;
+    const code = tools.find((t) => t.name === "code_memory")!;
+
+    assert.equal((await save.execute("t", { text: "  " })).content[0]!.text, "remember failed: text is empty");
+    assert.equal((await search.execute("t", { query: "  " })).content[0]!.text, "memory_search failed: query is empty");
+
+    const codeErr = (await code.execute("t", { query: "  " })).content[0]!.text;
+    assert.equal(codeErr, "code_memory failed: query is empty");
+    // Strengthened intent: code_memory's error must never name memory_search,
+    // and no message carries the doubled `X failed: X:` shape.
+    assert.doesNotMatch(codeErr, /memory_search/);
+    assert.doesNotMatch(codeErr, /code_memory failed: code_memory/);
+  } finally { cleanup(); }
+});
+
 test("session_start runs the code sync and repaints the footer after it", async () => {
   const counted: QdrantLike = {
     ...qdrant,
