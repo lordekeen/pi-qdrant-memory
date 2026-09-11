@@ -5,6 +5,13 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.2.2](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.2.1...v0.2.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* document that codeScoreThreshold is per-model ([4a3e851](https://github.com/lordekeen/pi-qdrant-memory/commit/4a3e85157e70376c45f2f616b8521cca8480468d))
+
 ## [0.2.1](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.2.0...v0.2.1) (2026-09-11)
 
 
