@@ -54,7 +54,7 @@ hand. If absent, the defaults below apply (zero-config run).
 | `maxResults` | `10` | Default `memory_search` limit |
 | `mode` | `auto` | `auto` detect \| `blackhole` force Mode 1 \| `own` force Mode 2 |
 | `codeKnowledge` | `off` | `on` enables structural code summaries + the `code_memory` tool (next session) |
-| `codeScoreThreshold` | `0.4` | Score threshold for `code_memory` searches, 0–1 |
+| `codeScoreThreshold` | `0.55` | Score threshold for `code_memory` searches, 0–1 |
 
 Env overrides at load, precedence defaults → file → env:
 `PI_QDRANT_URL`, `PI_QDRANT_API_KEY`, `PI_QDRANT_EMBEDDING_BASE_URL`, `PI_QDRANT_EMBEDDING_MODEL`,

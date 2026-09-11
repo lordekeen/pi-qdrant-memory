@@ -108,7 +108,7 @@ test("codeKnowledge and codeScoreThreshold: defaults, env, and validation", () =
   try {
     const cfg = loadConfig(dir, {});
     assert.equal(cfg.codeKnowledge, "off");
-    assert.equal(cfg.codeScoreThreshold, 0.4);
+    assert.equal(cfg.codeScoreThreshold, 0.55);
 
     const env = loadConfig(dir, { PI_QDRANT_CODE_KNOWLEDGE: "on", PI_QDRANT_CODE_SCORE_THRESHOLD: "0.55" });
     assert.equal(env.codeKnowledge, "on");

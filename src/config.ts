@@ -13,7 +13,7 @@ export const DEFAULTS: Config = {
   maxResults: 10,
   mode: "auto",
   codeKnowledge: "off",
-  codeScoreThreshold: 0.4,
+  codeScoreThreshold: 0.55,
 };
 
 export function configPath(agentDir: string): string {
