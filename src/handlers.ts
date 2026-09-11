@@ -30,7 +30,7 @@ import {
   settingsUsageText,
   statusEntry,
 } from "./out.ts";
-import type { CodeMemoryHealth, HelpRow, OutEntry, SettingsScopeRow, StatusHealth } from "./out.ts";
+import type { CodeMemoryHealth, HelpRow, OutEntry, ProjectSettingRow, SettingsScopeRow, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
 import { QdrantError } from "./qdrant.ts";
 import type { ProjectOverridableField, ProjectSettings } from "./project-settings.ts";
@@ -103,11 +103,23 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
     : collectionMissing
       ? { state: "warn", collection: io.projectId }
       : { state: "ok", collection: io.projectId, points: count };
+  // This project's allowlisted overrides (D5): explicit per-key branches, no
+  // casts. Quiet by default — the row is passed only when non-empty.
+  const overrides = io.readProjectSettings();
+  const global = io.readGlobalConfig();
+  const projectSettings: ProjectSettingRow[] = [];
+  if (overrides.codeKnowledge !== undefined) {
+    projectSettings.push({ key: "codeKnowledge", value: overrides.codeKnowledge, globalValue: global.codeKnowledge });
+  }
+  if (overrides.codeScoreThreshold !== undefined) {
+    projectSettings.push({ key: "codeScoreThreshold", value: overrides.codeScoreThreshold, globalValue: global.codeScoreThreshold });
+  }
   const health: StatusHealth = {
     mode,
     qdrant,
     embeddings: embedOk ? { state: "ok" } : { state: "err" },
     ...(io.codeMemory ? { codeMemory: io.codeMemory } : {}),
+    ...(projectSettings.length ? { projectSettings } : {}),
     detail: {
       collection: io.projectId,
       qdrantUrl: io.cfg.qdrantUrl,

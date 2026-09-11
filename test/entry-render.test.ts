@@ -67,6 +67,17 @@ test("status renders one plain text block: header + subsystem + config detail", 
   assert.ok(!lines.some((l) => l.includes("customMessageBg")), "no background slot requested");
 });
 
+test("status project-settings row survives the role→theme mapping", () => {
+  const withOverride: StatusHealth = {
+    ...health,
+    projectSettings: [{ key: "codeKnowledge", value: "on", globalValue: "off" }],
+  };
+  const component = renderEntryComponent(statusEntry(withOverride), seam, IDENTITY_THEME);
+  assert.ok(component, "expected a status component");
+  const lines = component.render(60);
+  assert.ok(lines.includes("project settings: codeKnowledge = on (global: off)"), lines.join("\n"));
+});
+
 test("status state rows carry semantic roles through the theme", () => {
   const warn = statusEntry({
     ...health, qdrant: { state: "warn", collection: "pi-mem-abc" },

@@ -113,10 +113,37 @@ test("status shows config detail in every render (no API keys), ignoring expande
   assert.match(text, /qdrant url: http:\/\/localhost:6333/);
   assert.match(text, /dimension: 768 · threshold: 0.15 · maxResults: 10/);
   assert.doesNotMatch(text, /apiKey|api_key|key=/i);
+  assert.doesNotMatch(text, /project settings:/); // no overrides → quiet
   // Collection id lives in the header; the old separate `collection:` row is gone.
   assert.doesNotMatch(text, /^collection: /m);
   // No detail is hidden behind an expand gesture — expanded renders identically.
   assert.deepEqual(renderOut(e, { expanded: true }), lines);
+});
+
+test("status renders the project-settings row for one key and for both", () => {
+  const one = statusEntry({ ...health, projectSettings: [{ key: "codeKnowledge", value: "on", globalValue: "off" }] });
+  const linesOne = renderOut(one);
+  assert.equal(spanText(linesOne.at(-1)!), "project settings: codeKnowledge = on (global: off)");
+
+  const both = statusEntry({ ...health, projectSettings: [
+    { key: "codeKnowledge", value: "on", globalValue: "off" },
+    { key: "codeScoreThreshold", value: 0.6, globalValue: 0.55 },
+  ] });
+  const linesBoth = renderOut(both);
+  assert.equal(spanText(linesBoth.at(-1)!),
+    "project settings: codeKnowledge = on (global: off); codeScoreThreshold = 0.6 (global: 0.55)");
+});
+
+test("status omits the project-settings row for undefined or empty overrides", () => {
+  const undef = renderOut(statusEntry(health));
+  assert.ok(!undef.some((l) => spanText(l).startsWith("project settings:")));
+  const empty = renderOut(statusEntry({ ...health, projectSettings: [] }));
+  assert.deepEqual(empty, undef);
+});
+
+test("project-settings numeric value renders as its stored form (never toFixed)", () => {
+  const lines = renderOut(statusEntry({ ...health, projectSettings: [{ key: "codeScoreThreshold", value: 0.6, globalValue: 0.5 }] }));
+  assert.equal(spanText(lines.at(-1)!), "project settings: codeScoreThreshold = 0.6 (global: 0.5)");
 });
 
 test("search collapsed is one line with a colored top-type tag + top-hit preview", () => {

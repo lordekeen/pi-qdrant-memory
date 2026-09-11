@@ -159,12 +159,27 @@ code memory: ✓ 12 files · 89 symbols
 qdrant url: http://localhost:6333
 model: nomic-embed-text @ http://localhost:8080/v1
 dimension: 768 · threshold: 0.15 · maxResults: 5
+project settings: codeKnowledge = on (global: off); codeScoreThreshold = 0.6 (global: 0.55)
 ```
 
 The `code memory:` row appears only while the feature is wired (registration-time
 `codeKnowledge: on`). Variants: `code memory: off` (muted slot),
 `code memory: on (syncing…)` (dim slot, before the first sync lands),
 `code memory: ✓ {files} files · {symbols} symbols` (success slot, after a sync).
+
+The `project settings:` row sits in the config-detail block (after `dimension:`,
+with `qdrant url:` / `model:`) and is emitted only when this project has ≥ 1
+allowlisted override — quiet by default, matching the design ethos. One line,
+`; `-joined; each entry is `<key> = <value> (global: <g>)`, the value in its
+stored JSON form (`String(v)` for numbers, never `toFixed`, so the displayed
+value equals the stored one). Variants: enum-only
+(`project settings: codeKnowledge = on (global: off)`), numeric-only
+(`project settings: codeScoreThreshold = 0.6 (global: 0.55)`), or both keys. It is
+load-bearing in the off-direction: when an override turns `codeKnowledge` off
+while the global is on, the `code memory:` row is **absent** (feature not wired)
+and this row is the only place that explains why. A `codeScoreThreshold`-only
+override gates nothing and is surfaced for explainability (naming the bar the
+results were cut at). No row appears when the store is empty.
 
 State variants on the subsystem rows — the glyph carries the class, the color
 refines it:

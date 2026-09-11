@@ -416,6 +416,33 @@ test("statusHandler omits the code-memory row when not wired", async () => {
   assert.doesNotMatch(d.printed.join("\n"), /code memory/);
 });
 
+test("statusHandler surfaces this project's overrides in the project-settings row", async () => {
+  const d = io();
+  d.globalState.codeKnowledge = "off";
+  d.globalState.codeScoreThreshold = 0.55;
+  d.storeState.codeKnowledge = "on";
+  d.storeState.codeScoreThreshold = 0.6;
+  await statusHandler(d);
+  assert.match(d.printed.join("\n"),
+    /project settings: codeKnowledge = on \(global: off\); codeScoreThreshold = 0\.6 \(global: 0\.55\)/);
+});
+
+test("statusHandler project-settings row is the only explanation when an override turns codeKnowledge off", async () => {
+  const d = io(); // codeMemory not wired → the `code memory:` row is absent
+  d.globalState.codeKnowledge = "on";
+  d.storeState.codeKnowledge = "off";
+  await statusHandler(d);
+  const all = d.printed.join("\n");
+  assert.doesNotMatch(all, /code memory/);
+  assert.match(all, /project settings: codeKnowledge = off \(global: on\)/);
+});
+
+test("statusHandler omits the project-settings row on an empty store", async () => {
+  const d = io();
+  await statusHandler(d);
+  assert.doesNotMatch(d.printed.join("\n"), /project settings/);
+});
+
 test("help lists /qdrant-index-code only when codeKnowledge is on", async () => {
   const on = io({ cfg: { ...cfg, codeKnowledge: "on" } });
   await helpHandler(on);

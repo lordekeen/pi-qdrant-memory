@@ -28,6 +28,9 @@ export interface StatusHealth {
   /** Present only while the code-memory feature is wired (registration-time
    * codeKnowledge = on); omitted entirely when off. */
   codeMemory?: CodeMemoryHealth;
+  /** Present only when this project has ≥ 1 allowlisted override (D5). Omitted
+   * entirely otherwise — quiet by default. */
+  projectSettings?: ProjectSettingRow[];
   detail: {
     collection: string;
     qdrantUrl: string;
@@ -38,6 +41,10 @@ export interface StatusHealth {
   };
 }
 export interface CodeMemoryHealth { state: "off" | "syncing" | "synced" | "error"; files?: number; symbols?: number; error?: string; }
+
+/** One allowlisted project override for the `/qdrant-status` row (D5). Values
+ * keep their stored JSON type; formatting for display is the renderer's job. */
+export interface ProjectSettingRow { key: string; value: string | number; globalValue: string | number; }
 export interface StatusEntry { kind: "status"; health: StatusHealth; }
 
 export interface SearchHitView { type: MemoryType; score: number; pointer: string; text: string; }
@@ -252,13 +259,22 @@ function statusLines(health: StatusHealth): OutLine[] {
   return out;
 }
 
-function statusDetailLines(d: StatusHealth["detail"]): OutLine[] {
+function statusDetailLines(d: StatusHealth["detail"], projectSettings?: ProjectSettingRow[]): OutLine[] {
   const dim = d.dimension;
-  return [
+  const out: OutLine[] = [
     { spans: [s("qdrant url: "), s(d.qdrantUrl)] },
     { spans: [s("model: "), s(d.model)] },
     { spans: [s("dimension: "), s(String(dim)), s(" · threshold: "), s(String(d.threshold)), s(" · maxResults: "), s(String(d.maxResults))] },
   ];
+  if (projectSettings && projectSettings.length) {
+    // One line, `; `-joined, values in their stored JSON form: `String(v)` for
+    // numbers (never `toFixed`), so the displayed value equals the stored one.
+    const row = projectSettings
+      .map((p) => `${p.key} = ${String(p.value)} (global: ${String(p.globalValue)})`)
+      .join("; ");
+    out.push({ spans: [s("project settings: "), s(row)] });
+  }
+  return out;
 }
 
 function searchCollapsed(hits: SearchHitView[]): OutLine[] {
@@ -317,7 +333,7 @@ export function renderOut(e: OutEntry, options: OutlineOptions = {}): OutLine[] 
       // card fill: header + subsystem rows then config detail in the same
       // label column (DESIGN.md status). Rows show regardless of the host's
       // expanded flag.
-      return [...statusLines(e.health), ...statusDetailLines(e.health.detail)];
+      return [...statusLines(e.health), ...statusDetailLines(e.health.detail, e.health.projectSettings)];
     case "search":
       return options.expanded ? searchExpanded(e.hits) : searchCollapsed(e.hits);
   }
