@@ -70,6 +70,7 @@ Env overrides at load, precedence defaults → file → env:
 `/qdrant-search <query>` — manual semantic search.
 `/qdrant-index-code` — re-index code summaries now (only when `codeKnowledge: on`).
 `/qdrant-clear` — reset the current project's collection.
+`/qdrant-help` — this list.
 
 The config file stores API keys and is written with owner-only permissions
 (`0600`).
@@ -80,7 +81,6 @@ While a session is active the extension shows a footer status entry:
 `🧠 Memory (N): <mode> (<collection>)` — `N` is the number of memories stored
 in the project collection, refreshed at session start and after every
 successful save/clear. When Qdrant is unreachable the count is omitted.
-`/qdrant-help` — this list.
 
 ## Agent tools
 
@@ -91,6 +91,8 @@ successful save/clear. When Qdrant is unreachable the count is omitted.
 The tools carry always-on prompt guidance (via `promptSnippet`/`promptGuidelines`): the model is nudged to call
 `memory_save` when a decision/constraint/preference settles (with concise, self-contained statements, without
 re-recording what auto-capture covers) and to call `memory_search` when resuming prior work or before re-deciding.
+When code memory is on, `code_memory` likewise carries guidance to reach for it on "how/where does X work"
+questions and to open the returned `file:line` pointers.
 No companion skill is needed for the core loop — the guidance ships with the tools.
 
 ## Code memory (opt-in)

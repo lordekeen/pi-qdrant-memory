@@ -3,15 +3,16 @@
 Guidance for coding agents (and humans) making changes to this repository.
 Read [README.md](./README.md) for the product, [DESIGN.md](./DESIGN.md) for the
 extension's UI/interaction contract, and `docs/specs/` (design + implementation
-plan + plan review) for the original intent and decision log.
+plan + plan review; **local-only and gitignored** — they are absent from a fresh
+clone) for the original intent and decision log.
 
 ## What this is
 
 A **pi.dev extension** (TypeScript, no build step) giving the pi agent semantic,
 cross-session/cross-project retrieval over durable conversation knowledge. It
 embeds knowledge text into a per-project Qdrant collection and exposes it to the
-agent via two tools (`memory_save`, `memory_search`) and to the human via the
-`/qdrant-*` command set.
+agent via two tools (`memory_save`, `memory_search`) plus the opt-in `code_memory`
+tool, and to the human via the `/qdrant-*` command set.
 
 ## Commands (run these before claiming anything works)
 
@@ -24,7 +25,7 @@ npm run test:smoke       # opt-in live E2E — needs Qdrant + an embeddings serv
 `npm test` must be green and `npm run typecheck` clean before you commit. Do not
 skip the typecheck: `erasableSyntaxOnly` + `verbatimModuleSyntax` catch real
 runtime issues that tests miss. The smoke test is skipped by default; run it only
-when you change ingest/search/embedding paths and have both servers up.
+when you change ingest/search/embedding/code-sync paths and have both servers up.
 
 ## Non-negotiables (project invariants)
 
@@ -57,9 +58,9 @@ when you change ingest/search/embedding paths and have both servers up.
 
 | File | Role |
 | --- | --- |
-| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, `/qdrant-*` commands, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). |
-| `src/handlers.ts` | Slash-command handlers (status/settings/remember/search/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command.
-| `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested.
+| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, `/qdrant-*` commands, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). | |
+| `src/handlers.ts` | Slash-command handlers (status/settings/remember/search/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. |
+| `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested. |
 | `src/config.ts` | `DEFAULTS`, `loadConfig` (defaults → file → env precedence), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form). |
 | `src/mode.ts` | Runtime mode resolution: `detectBlackhole`, `resolveMode` (mode1 = blackhole present; mode2 = own capture), `agentDirFromEnv`. |
 | `src/project.ts` | `projectIdFrom` — hashes the nearest git root realpath → `pi-mem-<16hex>`. |
@@ -71,7 +72,7 @@ when you change ingest/search/embedding paths and have both servers up.
 | `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
 | `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point), `autoSnapshot`. |
 | `src/codescan.ts` | Standalone structural code extractor (opt-in, zero-dep): repo walk + per-language line matchers → deterministic per-symbol/per-file summaries. |
-| `src/code-sync.ts` | `syncCodeKnowledge` — scan → Qdrant snapshot (file_path→file_sha) → per-file diff → delete-by-file_path → batched embed/upsert. Never throws; Qdrant is the cache. |
+| `src/code-sync.ts` | `syncCodeKnowledge` — scan → Qdrant snapshot (file_path→file_sha) → per-file diff → per whole-file batch: embed → delete-by-file_path → upsert. Batches are built from whole files so each file is replaced atomically and a failed embed never deletes. Never throws; Qdrant is the cache. |
 | `src/render.ts` | Tool-path text blocks (`renderHits` + `sourcePointer`), LLM-facing — deliberately outside the entry UI. |
 | `src/entry-render.ts` | Lazy pi-tui renderer: maps an `OutEntry` (via `renderOut` roles) to one multi-line `Text` + `keyHint` (only collapsed search summaries expand). No Box/card machinery — status renders unboxed like every entry. `RendererOptions.TextCtor` is the unit-test seam. |
 | `src/deps.ts` | `makeRuntime` (assembles cfg + clients + handlers IO), `applyConfig` (hot reload after settings writes). |
@@ -110,7 +111,8 @@ Config file: `~/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json`
 (honors `PI_CODING_AGENT_DIR`). Env overrides: `PI_QDRANT_URL`,
 `PI_QDRANT_API_KEY`, `PI_QDRANT_EMBEDDING_BASE_URL`, `PI_QDRANT_EMBEDDING_MODEL`,
 `PI_QDRANT_EMBEDDING_API_KEY`, `PI_QDRANT_EXPECTED_DIMENSION`,
-`PI_QDRANT_SCORE_THRESHOLD`, `PI_QDRANT_MAX_RESULTS`, `PI_QDRANT_MODE`.
+`PI_QDRANT_SCORE_THRESHOLD`, `PI_QDRANT_MAX_RESULTS`, `PI_QDRANT_MODE`,
+`PI_QDRANT_CODE_KNOWLEDGE`, `PI_QDRANT_CODE_SCORE_THRESHOLD`.
 
 Unit tests never need servers: they inject fake `embed`/`QdrantLike` and a fake
 `WireApi`. Only the smoke test needs real Qdrant (default `:6333`) and an
@@ -128,6 +130,12 @@ OpenAI-compatible embeddings endpoint (defaults `:8080/v1`, `nomic-embed-text`,
 - Behavior that touches `ctx.ui` (settings form) is tested through a scripted
   `SettingsUI` fake (happy path, Esc-cancel, invalid input, declined confirm).
 - Prefer behavior tests over mock-heavy tests; keep mocks structural.
+- **A fake that models a store must model its side effects, in order.** The
+  code-sync data-loss bug shipped because a fake `deletePointsByFiles` recorded
+  the paths it was given but never removed the recorded upserts, so a
+  delete-after-upsert wipe was invisible to a fully green suite. Make store fakes
+  actually add/remove, and where ordering matters assert an operation timeline
+  (e.g. a file's delete must precede its upsert) rather than just call shape.
 
 ## Definition of done
 
