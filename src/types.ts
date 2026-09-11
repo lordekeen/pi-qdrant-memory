@@ -52,9 +52,15 @@ export interface RuntimeDeps {
    * when the runtime was assembled without a batching client (tests). */
   embedBatch?: (texts: string[]) => Promise<number[][]>;
   qdrant: QdrantLike;
-  readConfig(): Config;
-  writeConfig(c: Config): void;
+  /** The global file reader (env → file → DEFAULTS); the persist side of a
+   * non-allowlisted settings write (D10). */
+  readGlobalConfig(): Config;
+  /** Persist the full global file (D10); never materialize a project override. */
+  writeGlobalConfig(c: Config): void;
   print(text: string): void;
+  /** Re-resolve env → project → global → DEFAULTS for the current `projectId`
+   * and swap it into the live runtime (swap clients, never re-register). */
+  reloadEffectiveConfig(): void;
 }
 
 /** The runtime slice remember/search tool logic needs — no output channel. */

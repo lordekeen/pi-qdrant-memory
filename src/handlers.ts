@@ -1,10 +1,12 @@
 import { resolveMode, detectBlackhole } from "./mode.ts";
 import { setConfigField } from "./config.ts";
+import { clearProjectField, loadProjectSettings, saveProjectSettings } from "./project-settings.ts";
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
 import { errorEntry, helpEntry, message, outText, searchEntry, searchHitView, statusEntry, EMPTY_SEARCH_TEXT, codeMemoryReloadNotice } from "./out.ts";
 import type { CodeMemoryHealth, HelpRow, OutEntry, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
 import { QdrantError } from "./qdrant.ts";
+import type { ProjectOverridableField, ProjectSettings } from "./project-settings.ts";
 import type { Config, MemoryType, RuntimeDeps } from "./types.ts";
 
 export interface HandlerIO {
@@ -14,8 +16,11 @@ export interface HandlerIO {
   projectId: string;
   embed: (t: string) => Promise<number[]>;
   qdrant: QdrantLike;
-  readConfig(): Config;
-  writeConfig(c: Config): void;
+  readGlobalConfig(): Config;
+  writeGlobalConfig(c: Config): void;
+  readProjectSettings(): ProjectSettings;
+  writeProjectSettings(p: ProjectSettings): void;
+  clearProjectSetting(field: ProjectOverridableField): void;
   /** Emit one structured output entry (message/error/help/status/search). */
   emit(e: OutEntry): void;
   /** Live code-memory sync state; present only when the feature is wired. */
@@ -39,8 +44,11 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
     get projectId() { return deps.projectId; },
     get embed() { return deps.embed; },
     get qdrant() { return deps.qdrant; },
-    readConfig: deps.readConfig,
-    writeConfig: deps.writeConfig,
+    readGlobalConfig: deps.readGlobalConfig,
+    writeGlobalConfig: deps.writeGlobalConfig,
+    readProjectSettings: () => loadProjectSettings(deps.agentDir, deps.projectId),
+    writeProjectSettings: (p) => { saveProjectSettings(deps.agentDir, deps.projectId, p); deps.reloadEffectiveConfig(); },
+    clearProjectSetting: (f) => { clearProjectField(deps.agentDir, deps.projectId, f); deps.reloadEffectiveConfig(); },
     emit: options.emit ?? ((e) => deps.print(outText(e))),
     codeMemory: options.codeMemory,
   };
@@ -87,11 +95,11 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
 }
 
 export async function settingsHandler(io: HandlerIO, field?: string, value?: string): Promise<HandlerResult> {
-  const cfg = io.readConfig();
+  const cfg = io.readGlobalConfig();
   if (field && value !== undefined) {
     const applied = setConfigField(cfg, field, value);
     if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return { exit: false }; }
-    io.writeConfig(applied.next);
+    io.writeGlobalConfig(applied.next);
     io.emit(message(`settings: ${field} updated (reloaded at runtime)`));
     // Mid-session codeKnowledge flips cannot re-register tools — tell the user
     // what needs a reload and what does not (spec §12).
@@ -145,7 +153,7 @@ function cfgField(cfg: Config, key: SettingField): string | number | null {
  * an explicit confirm. Validation is shared with the CLI via `setConfigField`.
  */
 export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<void> {
-  const cfg = io.readConfig();
+  const cfg = io.readGlobalConfig();
   const optionToKey = new Map<string, SettingField>();
   const options = SETTING_FIELDS.map((k) => {
     const label = `${k} = ${displayValue(cfgField(cfg, k))}`;
@@ -180,7 +188,7 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
     `${key} = ${displayValue(nextValue)}  (was ${displayValue(cur)}; run /qdrant-settings again to edit another field)`,
   );
   if (!ok) { io.emit(message(`settings: ${key} unchanged (cancelled)`)); return; }
-  io.writeConfig(applied.next);
+  io.writeGlobalConfig(applied.next);
   io.emit(message(`settings: ${key} updated (reloaded at runtime)`));
   // Same mid-session flip notice as the CLI path (spec §12).
   if (key === "codeKnowledge") io.emit(message(codeMemoryReloadNotice(applied.next.codeKnowledge)));

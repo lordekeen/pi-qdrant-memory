@@ -6,6 +6,7 @@ import {
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
 import type { HandlerIO, SettingsUI } from "../src/handlers.ts";
+import type { ProjectSettings } from "../src/project-settings.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
 import { QdrantError } from "../src/qdrant.ts";
 import type { Config } from "../src/types.ts";
@@ -21,6 +22,7 @@ function io(over: Partial<HandlerIO> = {}): HandlerIO & { emitted: OutEntry[]; p
   const emitted: OutEntry[] = [];
   const printed: string[] = [];
   const written: Config[] = [];
+  const store: ProjectSettings = {};
   const qdrant: QdrantLike = {
     async ensureCollection() { return "exists"; },
     async upsert() {},
@@ -34,8 +36,11 @@ function io(over: Partial<HandlerIO> = {}): HandlerIO & { emitted: OutEntry[]; p
     cfg, agentDir: "/tmp/agent", cwd: "/repo", projectId: "pi-mem-abc",
     embed: async () => new Array(768).fill(0.1),
     qdrant,
-    readConfig: () => cfg,
-    writeConfig: (c) => written.push(c),
+    readGlobalConfig: () => cfg,
+    writeGlobalConfig: (c) => written.push(c),
+    readProjectSettings: () => ({ ...store }),
+    writeProjectSettings: (p) => { Object.assign(store, p); },
+    clearProjectSetting: (f) => { delete store[f]; },
     emit: (e) => { emitted.push(e); printed.push(outText(e)); },
     emitted,
     printed,

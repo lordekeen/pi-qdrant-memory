@@ -1,6 +1,6 @@
-import { makeRuntime, applyConfig } from "./deps.ts";
+import { makeRuntime, writeGlobalConfigAndReload } from "./deps.ts";
 import type { MakeRuntimeIO } from "./deps.ts";
-import { loadConfig, writeConfigFile } from "./config.ts";
+import { readGlobalConfig, writeConfigFile } from "./config.ts";
 import { agentDirFromEnv, detectBlackhole } from "./mode.ts";
 import { resolveMode } from "./mode.ts";
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
@@ -433,17 +433,19 @@ export default async function factory(api: unknown): Promise<void> {
   pi.registerEntryRenderer(CUSTOM_TYPE, (entry, options, theme) =>
     renderEntryComponent(entry?.data, options as RendererOptions | undefined, theme as RendererTheme | undefined));
 
-  // Assigned by makeRuntime below; writeConfig may run later (after a settings
-  // write) and needs to reload the assembled runtime onto the new config.
+  // Assigned by makeRuntime below; writeGlobalConfig may run later (after a
+  // settings write) and needs to reload the assembled runtime onto the new
+  // config.
   let rt: RuntimeDeps | undefined;
 
   const io: MakeRuntimeIO = {
-    readConfig: () => loadConfig(agentDir, env),
-    writeConfig: (c) => {
-      writeConfigFile(agentDir, c);
-      // Reload-on-save (design D13): reflect the new settings immediately by
-      // re-reading the canonical file and swapping cfg + embed/qdrant clients.
-      if (rt) applyConfig(rt, loadConfig(agentDir, env));
+    readGlobalConfig: () => readGlobalConfig(agentDir, env),
+    writeGlobalConfig: (c) => {
+      // D10 fix: `io.writeConfig` reloaded with `loadConfig` (global), which
+      // would drop a live project override from the runtime for the rest of the
+      // session. Persist the global file, then re-apply the EFFECTIVE reader.
+      if (rt) writeGlobalConfigAndReload(rt, agentDir, c);
+      else writeConfigFile(agentDir, c);
     },
     // Text sink for non-wire paths (handlers emit structured entries via the
     // wireApi adapter's appendEntry; this is the plain fallback).

@@ -43,7 +43,7 @@ const rt: RuntimeDeps = {
   cfg: { qdrantUrl: "http://localhost:6333", qdrantApiKey: null, embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text", embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10, mode: "own", codeKnowledge: "off", codeScoreThreshold: 0.4 },
   agentDir: "/tmp/agent", cwd: "/repo", projectId: "pi-mem-abc",
   embed: async () => new Array(768).fill(0.1), qdrant,
-  readConfig: () => rt.cfg, writeConfig: () => {}, print: () => {},
+  readGlobalConfig: () => rt.cfg, writeGlobalConfig: () => {}, reloadEffectiveConfig: () => {}, print: () => {},
 };
 
 test("wireApi registers memory_save and memory_search tools", () => {

@@ -1,4 +1,5 @@
-import { loadConfig } from "./config.ts";
+import { readGlobalConfig, writeConfigFile } from "./config.ts";
+import { readEffectiveConfig } from "./project-settings.ts";
 import { EmbeddingClient } from "./embeddings.ts";
 import { QdrantClient } from "./qdrant.ts";
 import { projectIdFrom } from "./project.ts";
@@ -6,8 +7,10 @@ import type { QdrantLike } from "./qdrant.ts";
 import type { Config, RuntimeDeps } from "./types.ts";
 
 export interface MakeRuntimeIO {
-  readConfig(): Config;
-  writeConfig(c: Config): void;
+  /** Today's `readConfig`: the global file reader (D10). */
+  readGlobalConfig(): Config;
+  /** Today's `writeConfig`: persists the full global file (D10 persist side). */
+  writeGlobalConfig(c: Config): void;
   print(text: string): void;
   embed?: (t: string) => Promise<number[]>;
   embedBatch?: (texts: string[]) => Promise<number[][]>;
@@ -20,13 +23,14 @@ export async function makeRuntime(
   env: NodeJS.ProcessEnv,
   io: MakeRuntimeIO,
 ): Promise<RuntimeDeps> {
-  const cfg = loadConfig(agentDir, env);
+  // Project id FIRST: the project layer is part of the effective config (D7).
   const projectId = await projectIdFrom(cwd);
+  const cfg = readEffectiveConfig(agentDir, projectId, env);
   const embeddingClient = new EmbeddingClient(
     cfg.embeddingBaseURL, cfg.embeddingModel, cfg.embeddingApiKey, cfg.expectedDimension);
   const embedder = io.embed ?? ((text: string) => embeddingClient.embed(text));
   const qdrant = io.qdrant ?? (new QdrantClient(cfg.qdrantUrl, cfg.qdrantApiKey) as QdrantLike);
-  return {
+  const rt: RuntimeDeps = {
     cfg,
     agentDir,
     cwd,
@@ -34,10 +38,23 @@ export async function makeRuntime(
     embed: embedder,
     embedBatch: io.embedBatch ?? ((texts: string[]) => embeddingClient.embedBatch(texts)),
     qdrant,
-    readConfig: io.readConfig,
-    writeConfig: io.writeConfig,
+    readGlobalConfig: io.readGlobalConfig,
+    writeGlobalConfig: io.writeGlobalConfig,
     print: io.print,
+    reloadEffectiveConfig: () => applyConfig(rt, readEffectiveConfig(agentDir, rt.projectId, env)),
   };
+  return rt;
+}
+
+/**
+ * D10 write discipline: persist the full Config to the GLOBAL file through the
+ * global reader's value, then re-apply the EFFECTIVE reader to the live
+ * runtime. Two readers, two halves — wiring either half to the wrong one is
+ * the D10 bug (a global write must never drop a live project override).
+ */
+export function writeGlobalConfigAndReload(rt: RuntimeDeps, agentDir: string, next: Config): void {
+  writeConfigFile(agentDir, next);
+  rt.reloadEffectiveConfig();
 }
 
 /**

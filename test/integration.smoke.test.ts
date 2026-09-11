@@ -59,7 +59,7 @@ test("end-to-end remember then search against real servers", o, async () => {
     },
     agentDir: "/tmp/agent", cwd: "/repo", projectId,
     embed: (t) => embedder.embed(t),
-    qdrant, readConfig: () => rt.cfg, writeConfig: () => {}, print: () => {},
+    qdrant, readGlobalConfig: () => rt.cfg, writeGlobalConfig: () => {}, reloadEffectiveConfig: () => {}, print: () => {},
   };
   try {
     const saved = await rememberLogic(rt, "we decided the sync layer uses REST over gRPC", "decision");
@@ -118,7 +118,7 @@ test("code-memory sync populates, converges, edits and deletes against real serv
     agentDir: "/tmp/agent", cwd: repoRoot, projectId,
     embed: (t) => embedder.embed(t),
     embedBatch,
-    qdrant, readConfig: () => rt.cfg, writeConfig: () => {}, print: () => {},
+    qdrant, readGlobalConfig: () => rt.cfg, writeGlobalConfig: () => {}, reloadEffectiveConfig: () => {}, print: () => {},
   };
   const sync = () => syncCodeKnowledge({ embedBatch, qdrant, projectId, expectedDimension: EMBED_DIM, repoRoot });
   const codePoints = async (): Promise<RawPoint[]> =>
