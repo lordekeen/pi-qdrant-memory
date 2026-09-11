@@ -12,26 +12,47 @@ import { syncCodeKnowledge, SYNC_BATCH_SIZE } from "../src/code-sync.ts";
 import type { SyncDeps } from "../src/code-sync.ts";
 import { createHash } from "node:crypto";
 
+interface StoredPoint {
+  file_path?: string;
+  file_sha?: string;
+  source_kind: string;
+  type: string;
+}
+
 interface Recorded {
   deleted: string[][];
-  upserts: Array<Array<{ id: string; payload: { file_path?: string; source_kind: string; type: string } }>>;
+  upserts: Array<Array<{ id: string; payload: StoredPoint }>>;
   snapshot: Map<string, string>;
   failDeletes: boolean;
+  /** Simulated point store: point id → payload, so delete-by-file_path is real
+   * and a delete after an upsert is observable (the original bug). */
+  store: Map<string, StoredPoint>;
+  /** Ordered operation timeline — pins per-file delete-before-upsert. */
+  ops: Array<{ op: "delete"; paths: string[] } | { op: "upsert"; ids: string[] }>;
 }
 
 function fakeQdrant() {
-  const rec: Recorded = { deleted: [], upserts: [], snapshot: new Map(), failDeletes: false };
+  const rec: Recorded = {
+    deleted: [], upserts: [], snapshot: new Map(), failDeletes: false,
+    store: new Map(), ops: [],
+  };
   const qdrant = {
     async ensureCollection() { return "exists" as const; },
-    async upsert(_n: string, points: Array<{ id: string; payload: { file_path?: string; source_kind: string; type: string } }>) {
+    async upsert(_n: string, points: Array<{ id: string; payload: StoredPoint }>) {
       rec.upserts.push(points);
+      for (const p of points) rec.store.set(p.id, p.payload);
+      rec.ops.push({ op: "upsert", ids: points.map((p) => p.id) });
     },
     async search() { return []; },
     async count() { return 0; },
     async clearCollection() {},
     async deletePointsByFiles(_n: string, paths: string[]) {
       if (rec.failDeletes) throw new Error("qdrant down");
-      rec.deleted.push(paths);
+      rec.deleted.push([...paths]);
+      rec.ops.push({ op: "delete", paths: [...paths] });
+      for (const [id, p] of rec.store) {
+        if (p.file_path !== undefined && paths.includes(p.file_path)) rec.store.delete(id);
+      }
     },
     async codeIndexSnapshot() { return rec.snapshot; },
   };
@@ -65,8 +86,9 @@ test("first sync indexes everything: no deletes, node + file points per file", a
     writeFile(root, "src/a.ts", "export function alpha() {}\n");
     const { rec, qdrant } = fakeQdrant();
     const res = await syncCodeKnowledge(deps(root, qdrant));
-    // First sync: snapshot empty → nothing vanished; the single changed file
-    // is still invalidated before re-upsert (D6 delete-then-replace).
+    // First sync: snapshot empty → nothing vanished; the single changed file is
+    // embedded, then its (empty) prior points are deleted by file_path, then its
+    // new points are upserted — delete before upsert.
     assert.deepEqual(rec.deleted, [["src/a.ts"]]);
     assert.equal(res.deleted, 1);
     assert.equal(res.files, 1);
@@ -79,6 +101,11 @@ test("first sync indexes everything: no deletes, node + file points per file", a
       assert.equal(p.payload.type, "code");
       assert.equal(p.payload.file_path, "src/a.ts");
     }
+    // The freshly upserted points must survive the pass (delete precedes upsert).
+    assert.equal(rec.store.size, 2);
+    const deleteAt = rec.ops.findIndex((o) => o.op === "delete");
+    const upsertAt = rec.ops.findIndex((o) => o.op === "upsert");
+    assert.ok(deleteAt >= 0 && upsertAt >= 0 && deleteAt < upsertAt);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -106,10 +133,16 @@ test("changed file is deleted then re-upserted; vanished file is deleted", async
     rec.snapshot.set("src/a.ts", "stale-sha");
     rec.snapshot.set("src/gone.ts", "old-sha");
     const res = await syncCodeKnowledge(deps(root, qdrant));
-    assert.deepEqual(rec.deleted, [["src/gone.ts", "src/a.ts"]]);
+    // Changed-file deletes arrive with their batch; vanished-file deletes arrive
+    // as the trailing extras call. Assert the set + ordering, not call grouping.
+    assert.deepEqual([...new Set(rec.deleted.flat())].sort(), ["src/a.ts", "src/gone.ts"]);
     assert.equal(res.deleted, 2);
     assert.equal(res.files, 1);
     assert.equal(rec.upserts.length, 1);
+    const deleteAt = rec.ops.findIndex((o) => o.op === "delete" && o.paths.includes("src/a.ts"));
+    const upsertAt = rec.ops.findIndex((o) => o.op === "upsert");
+    assert.ok(deleteAt >= 0 && deleteAt < upsertAt, "changed file's delete must precede its upsert");
+    assert.equal(rec.store.size, 2);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -195,6 +228,88 @@ test("a failed embed batch keeps the previous index intact (embed before invalid
     assert.equal(rec.upserts.length, 0);
     assert.equal(res.ok, true); // sync itself converged without throwing
     assert.equal(res.symbols, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("fresh sync leaves a populated index (regression: upserts are not wiped by the delete)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-sync-"));
+  try {
+    writeFile(root, "src/a.ts", "export function alpha() {}\nexport function beta() {}\n");
+    const { rec, qdrant } = fakeQdrant();
+    const first = await syncCodeKnowledge(deps(root, qdrant));
+    assert.equal(first.ok, true);
+    assert.equal(first.files, 1);
+    assert.equal(first.symbols, 3); // 2 node summaries + 1 file summary
+    // The collection must actually hold the freshly written points — the bug
+    // left it empty after every sync.
+    assert.equal(rec.store.size, 3, "index must not be empty after a fresh sync");
+    const stored = [...rec.store.values()];
+    assert.ok(stored.some((p) => p.file_path === "src/a.ts" && p.source_kind === "code_summary" && p.type === "code"));
+    const idsFirst = [...rec.store.keys()].sort();
+
+    // Emulate the snapshot the index now advertises (new shas), then sync
+    // unchanged: it converges (skips) and the same points remain in place.
+    for (const p of rec.store.values()) {
+      if (p.file_path !== undefined && p.file_sha !== undefined) rec.snapshot.set(p.file_path, p.file_sha);
+    }
+    const second = await syncCodeKnowledge(deps(root, qdrant));
+    assert.equal(second.skipped, 1);
+    assert.equal(second.files, 0);
+    assert.ok(rec.store.size > 0, "second sync must not wipe the index");
+    assert.deepEqual([...rec.store.keys()].sort(), idsFirst);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a changed file's delete precedes its upsert (invariant 1)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-sync-"));
+  try {
+    writeFile(root, "src/a.ts", "export function alpha() {}\n");
+    const { rec, qdrant } = fakeQdrant();
+    rec.snapshot.set("src/a.ts", "stale-sha");
+    await syncCodeKnowledge(deps(root, qdrant));
+    const deleteAt = rec.ops.findIndex((o) => o.op === "delete" && o.paths.includes("src/a.ts"));
+    const upsertAt = rec.ops.findIndex((o) => o.op === "upsert");
+    assert.ok(deleteAt >= 0, "expected a delete for the changed file");
+    assert.ok(upsertAt >= 0, "expected an upsert");
+    assert.ok(deleteAt < upsertAt, "delete must precede the upsert");
+    assert.ok(rec.store.size > 0, "the upserted points must survive the pass");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a file larger than SYNC_BATCH_SIZE is replaced atomically (never half-indexed)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-sync-"));
+  try {
+    const bigLines = Array.from(
+      { length: SYNC_BATCH_SIZE + 1 },
+      (_v, i) => `export function big${String(i)}() {}`,
+    ).join("\n") + "\n";
+    writeFile(root, "src/big.ts", bigLines);
+    writeFile(root, "src/small.ts", "export function small() {}\n");
+    const { rec, qdrant } = fakeQdrant();
+    rec.snapshot.set("src/big.ts", "stale-big");
+    rec.snapshot.set("src/small.ts", "stale-small");
+    rec.store.set("old-small", { file_path: "src/small.ts", source_kind: "code_summary", type: "code" });
+    const d: SyncDeps = {
+      ...deps(root, qdrant),
+      // The big file's own batch embeds fine; the small file's batch fails.
+      embedBatch: async (texts: string[]) => {
+        if (texts.some((t) => t.includes("src/small.ts"))) throw new Error("embed hiccup");
+        return texts.map(() => [0.5, 0.5, 0.5]);
+      },
+    };
+    const res = await syncCodeKnowledge(d);
+    // The >cap file is one whole batch (33 node summaries + 1 file summary): it
+    // is fully replaced, never left half-indexed.
+    const bigPoints = [...rec.store.values()].filter((p) => p.file_path === "src/big.ts");
+    assert.equal(bigPoints.length, SYNC_BATCH_SIZE + 2);
+    assert.equal(res.symbols, SYNC_BATCH_SIZE + 2);
+    assert.equal(res.files, 1);
+    // The failed batch's file keeps its old points: an embed failure never deletes.
+    assert.equal(rec.deleted.flat().includes("src/small.ts"), false);
+    assert.ok(rec.store.has("old-small"), "small file's old points must survive the failed embed");
+    const deleteAt = rec.ops.findIndex((o) => o.op === "delete" && o.paths.includes("src/big.ts"));
+    const upsertAt = rec.ops.findIndex((o) => o.op === "upsert");
+    assert.ok(deleteAt >= 0 && deleteAt < upsertAt, "big file's delete must precede its upsert");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -5,10 +5,12 @@
  *
  * Qdrant is the cache (D5): payloads carry file_path + file_sha so unchanged
  * files cost nothing and no local cache file exists. Failure containment
- * contract (review fix): invalidation of a changed file happens only AFTER its
- * replacements are embedded — a failed embed batch leaves those files' previous
- * points intact, and the next sync re-converges (the snapshot still shows the
- * old sha). Vanished files are always deleted (nothing to embed).
+ * contract (review fix): each changed file is embedded, then invalidated, then
+ * re-upserted — per file, so a failed embed never deletes and a replaced file's
+ * stale points cannot survive. A file is never split across embed batches, so a
+ * file's replace is all-or-nothing within a pass (a file can never end a pass
+ * partially indexed while the snapshot already advertises its new sha).
+ * Vanished files are always deleted (nothing to embed).
  *
  * The sync never throws: `ok: false` propagates the top-level failure so the
  * command/status surfaces can report it (spec §10.1/§14) instead of rendering
@@ -78,13 +80,16 @@ export async function syncCodeKnowledge(deps: SyncDeps): Promise<SyncResult> {
       snapshot.get(f.filePath) !== f.sha && (f.nodes.length > 0 || snapshot.has(f.filePath)));
     const skipped = scan.files.length - changed.length;
 
-    // Embed FIRST, invalidate after: only files whose replacements are fully
-    // embedded get their old points deleted (spec §9 containment contract).
+    // Build per-file groups (a file's node summaries followed by its file
+    // summary, contiguous) so a file is never split across embed batches. A
+    // file's delete+upsert is therefore all-or-nothing within a pass: it can
+    // never end a pass partially indexed while the snapshot claims its new sha.
     const ts = Date.now();
-    const pending: PendingSummary[] = [];
+    const groups: PendingSummary[][] = [];
     for (const file of changed) {
+      const group: PendingSummary[] = [];
       for (const node of file.nodes) {
-        pending.push({
+        group.push({
           text: summaryFor(node),
           file,
           symbol: node.name,
@@ -94,14 +99,29 @@ export async function syncCodeKnowledge(deps: SyncDeps): Promise<SyncResult> {
       }
       const fileSummary = fileSummaryFor(file);
       if (fileSummary) {
-        pending.push({ text: fileSummary, file });
+        group.push({ text: fileSummary, file });
       }
+      if (group.length) groups.push(group);
     }
+
+    // Accumulate whole groups into batches until the next group would exceed
+    // SYNC_BATCH_SIZE summaries; a single group larger than the cap becomes its
+    // own batch (never split).
+    const batches: PendingSummary[][] = [];
+    let currentBatch: PendingSummary[] = [];
+    for (const group of groups) {
+      if (currentBatch.length && currentBatch.length + group.length > SYNC_BATCH_SIZE) {
+        batches.push(currentBatch);
+        currentBatch = [];
+      }
+      currentBatch.push(...group);
+    }
+    if (currentBatch.length) batches.push(currentBatch);
 
     let symbols = 0;
     const embeddedFiles = new Set<string>();
-    for (let i = 0; i < pending.length; i += SYNC_BATCH_SIZE) {
-      const batch = pending.slice(i, i + SYNC_BATCH_SIZE);
+    const invalidated = new Set<string>();
+    for (const batch of batches) {
       let vectors: number[][];
       try {
         vectors = await deps.embedBatch(batch.map((s) => s.text));
@@ -110,6 +130,23 @@ export async function syncCodeKnowledge(deps: SyncDeps): Promise<SyncResult> {
         // next sync retries them (snapshot still shows the old sha).
         console.error(`pi-qdrant-memory: code sync embed batch failed (non-fatal, will retry next sync): ${String(err)}`);
         continue;
+      }
+      // Embed succeeded: invalidate this batch's files BEFORE upserting their
+      // replacements. Delete-by-file_path also removes points whose summaries
+      // no longer exist (removed/renamed symbols). A file's delete always
+      // precedes its own upsert (invariant 1).
+      const batchPaths = [...new Set(batch.map((s) => s.file.filePath))];
+      const stalePaths = batchPaths.filter((p) => !invalidated.has(p));
+      if (stalePaths.length) {
+        try {
+          await deps.qdrant.deletePointsByFiles(deps.projectId, stalePaths);
+        } catch (err) {
+          // Delete failures are tolerated (spec §8.2): the next sync
+          // re-converges from the snapshot. Still mark them invalidated — a
+          // replay must not delete points it just upserted.
+          console.error(`pi-qdrant-memory: code sync delete failed (non-fatal): ${String(err)}`);
+        }
+        for (const p of stalePaths) invalidated.add(p);
       }
       const points: QdrantPoint[] = batch.map((s, k) => {
         const payload: PointPayload = {
@@ -135,28 +172,24 @@ export async function syncCodeKnowledge(deps: SyncDeps): Promise<SyncResult> {
       }
     }
 
-    // Invalidate only now: vanished files, changed files that were fully
-    // re-embedded, and changed files that now have zero definitions (nothing
-    // to embed — their stale points go immediately). Files whose embed failed
-    // keep their old points.
-    const toInvalidate = [
+    // Vanished files and changed files that now have zero definitions have no
+    // pending points, so invalidating them here cannot collide with any upsert
+    // above. This still runs when every embed failed (their stale points must
+    // go anyway).
+    const extras = [
       ...vanished,
-      ...changed
-        .filter((f) => f.nodes.length === 0 || embeddedFiles.has(f.filePath))
-        .map((f) => f.filePath),
-    ];
-    if (toInvalidate.length) {
-      // Delete failures are tolerated (spec §8.2): the real client already
-      // logs non-fatally; a raw throw here must not flip the sync to failure —
-      // the next sync re-converges from the snapshot.
+      ...changed.filter((f) => f.nodes.length === 0).map((f) => f.filePath),
+    ].filter((p) => !invalidated.has(p));
+    if (extras.length) {
       try {
-        await deps.qdrant.deletePointsByFiles(deps.projectId, toInvalidate);
+        await deps.qdrant.deletePointsByFiles(deps.projectId, extras);
       } catch (err) {
         console.error(`pi-qdrant-memory: code sync delete failed (non-fatal): ${String(err)}`);
       }
+      for (const p of extras) invalidated.add(p);
     }
 
-    return { ok: true, files: embeddedFiles.size, symbols, skipped, deleted: toInvalidate.length };
+    return { ok: true, files: embeddedFiles.size, symbols, skipped, deleted: invalidated.size };
   } catch (err) {
     // Top-level failure (Qdrant down, scan aborted): report it instead of a
     // success-shaped zero — the command emits an error entry and the status
