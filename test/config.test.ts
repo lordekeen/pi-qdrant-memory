@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DEFAULTS, configPath, loadConfig, setConfigField } from "../src/config.ts";
+import { DEFAULTS, configPath, loadConfig, readGlobalConfig, setConfigField } from "../src/config.ts";
+import { saveProjectSettings } from "../src/project-settings.ts";
 import type { Config } from "../src/types.ts";
 
 function tempAgentDir(): string {
@@ -127,5 +128,24 @@ test("codeKnowledge and codeScoreThreshold: defaults, env, and validation", () =
     const thr = setConfigField(base, "codeScoreThreshold", "0.3");
     assert.equal(thr.ok, true);
     if (thr.ok) assert.equal(thr.next.codeScoreThreshold, 0.3);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("loadConfig is the historical alias of readGlobalConfig", () => {
+  assert.equal(loadConfig, readGlobalConfig);
+});
+
+test("readGlobalConfig never consults the project store (global-layer purity)", () => {
+  const dir = tempAgentDir();
+  try {
+    // A store holding an override must be invisible to the global reader: it is
+    // the D10 persist side (the global file must never be written from an
+    // effective config), so it may not read the project layer either.
+    saveProjectSettings(dir, "pi-mem-0123456789abcdef", { codeKnowledge: "on", codeScoreThreshold: 0.6 });
+    const cfg = readGlobalConfig(dir, {});
+    assert.equal(cfg.codeKnowledge, DEFAULTS.codeKnowledge);
+    assert.equal(cfg.codeScoreThreshold, DEFAULTS.codeScoreThreshold);
+    assert.deepEqual(cfg, DEFAULTS);
+    assert.equal(loadConfig(dir, {}).codeKnowledge, "off");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

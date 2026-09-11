@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DEFAULTS, setConfigField } from "./config.ts";
+import { DEFAULTS, isConfigKnowledge, readGlobalConfig, setConfigField } from "./config.ts";
 import type { Config } from "./types.ts";
 
 /** The only Config keys a project may override (spec D1). Growing this list is
@@ -112,4 +112,36 @@ function writeStoreFile(agentDir: string, projectId: string, settings: ProjectSe
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   try { chmodSync(file, 0o600); } catch { /* best-effort: creation mode already set */ }
+}
+
+/**
+ * Effective config (spec D3): env → project override → global file → DEFAULTS,
+ * per field, the project layer only for allowlisted keys. Local disk only,
+ * never throws, never touches the network (spec D9).
+ *
+ * It lives here rather than in `config.ts` deliberately (plan refinement 1):
+ * `loadProjectSettings` needs `setConfigField`/`DEFAULTS` from config.ts, so
+ * hosting both there would create a runtime ESM import cycle. Imports run one
+ * way: `config.ts` ← `project-settings.ts`.
+ */
+export function readEffectiveConfig(
+  agentDir: string,
+  projectId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Config {
+  // A fresh object every call, so mutating it never touches `DEFAULTS`.
+  const cfg = readGlobalConfig(agentDir, env);
+  const over = loadProjectSettings(agentDir, projectId);
+  // readGlobalConfig already applied env-over-file-over-defaults. The project
+  // layer fills the gap only where env supplied nothing *usable*: an invalid
+  // env value falls through there, so it must not mask the override either.
+  if (!isConfigKnowledge(env.PI_QDRANT_CODE_KNOWLEDGE) && over.codeKnowledge !== undefined) {
+    cfg.codeKnowledge = over.codeKnowledge;
+  }
+  const rawThreshold = env.PI_QDRANT_CODE_SCORE_THRESHOLD;
+  const envPinsThreshold = rawThreshold !== undefined && Number.isFinite(Number(rawThreshold));
+  if (!envPinsThreshold && over.codeScoreThreshold !== undefined) {
+    cfg.codeScoreThreshold = over.codeScoreThreshold;
+  }
+  return cfg;
 }

@@ -98,7 +98,11 @@ function numEnv(raw: string | undefined, fileValue: unknown, def: number): numbe
   return Number.isFinite(n) ? n : def;
 }
 
-export function loadConfig(agentDir: string, env: NodeJS.ProcessEnv = process.env): Config {
+/** The **global** layer reader: `DEFAULTS` → global config file → env, per field.
+ * It knows nothing about projects — the project layer is applied by
+ * `readEffectiveConfig` in `src/project-settings.ts` (one-directional imports:
+ * `config.ts` ← `project-settings.ts`, no ESM cycle). */
+export function readGlobalConfig(agentDir: string, env: NodeJS.ProcessEnv = process.env): Config {
   const file = configPath(agentDir);
   let fromFile: Partial<Config> = {};
   if (existsSync(file)) {
@@ -131,3 +135,6 @@ export function loadConfig(agentDir: string, env: NodeJS.ProcessEnv = process.en
     codeScoreThreshold: numEnv(env.PI_QDRANT_CODE_SCORE_THRESHOLD, fromFile.codeScoreThreshold, DEFAULTS.codeScoreThreshold),
   };
 }
+
+/** Historical name: identical function. New code calls `readGlobalConfig`. */
+export const loadConfig = readGlobalConfig;
