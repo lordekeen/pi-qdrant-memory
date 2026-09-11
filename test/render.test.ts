@@ -23,10 +23,27 @@ test("renderHits tolerates a hit whose payload lacks text", () => {
   assert.doesNotThrow(() => renderHits([{ id: "x", score: 0.5, payload }]));
 });
 
-test("sourcePointer prefers file_path:start_line for code payloads", () => {
+test("sourcePointer renders file_path:start_line for line-level code payloads", () => {
   const hits = [{ id: "x", score: 0.9, payload: {
     type: "code", text: "function f — src/a.ts:2-4 — f()", project_id: "p", ts: 1,
     source_kind: "code_summary", file_path: "src/a.ts", start_line: 2, end_line: 4,
   } as PointPayload }];
   assert.match(renderHits(hits), /\(src\/a\.ts:2\)/);
+});
+
+test("sourcePointer renders the bare file_path for file-level code payloads", () => {
+  const hits = [{ id: "x", score: 0.64, payload: {
+    type: "code", text: "src/qdrant.ts — 7 definitions", project_id: "p", ts: 1,
+    source_kind: "code_summary", file_path: "src/qdrant.ts",
+  } as PointPayload }];
+  const out = renderHits(hits);
+  assert.match(out, /\(src\/qdrant\.ts\)/);
+  assert.doesNotMatch(out, /no source pointer/);
+});
+
+test("sourcePointer falls through to 'no source pointer' only without a file_path", () => {
+  const hits = [{ id: "x", score: 0.4, payload: {
+    type: "fact", text: "orphan", project_id: "p", ts: 1, source_kind: "remember_tool",
+  } as PointPayload }];
+  assert.match(renderHits(hits), /\(no source pointer\)/);
 });

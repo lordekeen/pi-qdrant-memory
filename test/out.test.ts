@@ -171,6 +171,13 @@ test("search hit with no pointer says so", () => {
   assert.equal(v.pointer, "no source pointer");
 });
 
+test("search hit pointer uses file_path for code hits (line-level and file-level)", () => {
+  const line = searchHitView(hit(payload("code", "function f — src/a.ts:2-4 — f()", { source_kind: "code_summary", file_path: "src/a.ts", start_line: 2, end_line: 4 }), 0.9));
+  assert.equal(line.pointer, "src/a.ts:2");
+  const file = searchHitView(hit(payload("code", "src/qdrant.ts — 7 definitions", { source_kind: "code_summary", file_path: "src/qdrant.ts" }), 0.64));
+  assert.equal(file.pointer, "src/qdrant.ts");
+});
+
 test("search hit tolerates a payload without text", () => {
   const broken = { type: "decision", project_id: "p", ts: 1, source_kind: "remember_tool" } as unknown as PointPayload;
   const v = searchHitView(hit(broken, 0.5));

@@ -291,8 +291,10 @@ visuals.
 `remembered (remember_tool): <text>` or `<tool> failed: <reason>` on errors
 (`<reason>` is a **bare** reason — the tool name and `failed:` lead appear exactly
 once), and for searches the same plain hit-block format as today. Code-memory hits carry a
-`file:line` source pointer (`[code] 0.81 (src/render.ts:15)`) so the model can open
-the file; `code_memory` covers structure only — its guidelines pair it with
+`file:line` source pointer (`[code] 0.81 (src/render.ts:15)`); file-level
+summaries with no line carry the bare path (`[code] 0.64 (src/qdrant.ts)`) — either
+way the model can open the file; `code_memory` covers structure only — its
+guidelines pair it with
 `memory_search` for rationale. These strings feed the LLM (not the human TUI) and are
 deliberately **not** chrome-styled; they are out of scope of the entry UI above. The
 human-visible search formatting lives in the `search-results` entry, not in tool return

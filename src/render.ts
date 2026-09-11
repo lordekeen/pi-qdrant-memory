@@ -11,12 +11,17 @@ export function truncatePreview(text: string, max: number = PREVIEW_MAX): string
 }
 
 /** Source pointer for a hit's payload — single source shared by tool text + entry outlines.
- * Code-summary node points point at the source file:line (spec §13); the file
- * pointer is only used when a line exists — file-level points (no line) fall
- * through to the existing rules (review finding 14). */
+ * When the payload has a `file_path` it is the pointer: `file_path:start_line` for
+ * symbol-level code summaries, or the bare `file_path` for file-level summaries
+ * that carry no `start_line` (spec §13). This deliberately supersedes the earlier
+ * rule (review finding 14) that a path without a line fell all the way through to
+ * "no source pointer" — the path is useful on its own. Only when there is no
+ * `file_path` does it fall back to `source_entry_id` / `session_id` / "no source pointer". */
 export function sourcePointer(payload: PointPayload): string {
-  if (payload.file_path && payload.start_line !== undefined) {
-    return `${payload.file_path}:${String(payload.start_line)}`;
+  if (payload.file_path) {
+    return payload.start_line !== undefined
+      ? `${payload.file_path}:${String(payload.start_line)}`
+      : payload.file_path;
   }
   if (payload.source_entry_id) return `source_entry_id=${payload.source_entry_id}`;
   if (payload.session_id) return `session_id=${payload.session_id}`;
