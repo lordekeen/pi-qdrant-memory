@@ -1,10 +1,16 @@
 # Automated releases: release-please maintains a release PR (semver bump +
-# CHANGELOG.md) from conventional commits, and publishes to npm on each
-# GitHub release. Requires the NPM_TOKEN repository secret (automation token).
+# CHANGELOG.md) from conventional commits, and on each GitHub release STAGES the
+# package on npm with `npm stage publish`. Staging needs no 2FA, so it works in
+# CI; a maintainer then approves the staged version with 2FA (`npm stage approve
+# <stage-id>`, or the Staged Packages tab on npmjs.com) before it goes live.
+# Requires the NPM_TOKEN repository secret (a staging-capable granular token).
+#
+# Node 24 is required, not just preferred: `npm stage publish` needs npm CLI
+# >= 11.15.0, and Node 22 still bundles npm 10.x (Node 24 bundles npm 11.19).
 #
 # Security: every action is pinned to a full commit SHA (not a mutable tag),
 # permissions are least-privilege per job, and checkout drops the GitHub
-# credentials before build/publish steps run.
+# credentials before build/stage steps run.
 name: release-please
 
 on:
@@ -38,11 +44,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org/
       - run: npm install
       - run: npm run typecheck
       - run: npm test
-      - run: npm publish
+      # Stages the version; a maintainer approves it on npm to publish.
+      - run: npm stage publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
