@@ -5,6 +5,15 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.2.1](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.2.0...v0.2.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* raise default codeScoreThreshold from 0.4 to 0.55 ([5123222](https://github.com/lordekeen/pi-qdrant-memory/commit/51232229d8a05660b52fdbb8b111efe5532dd53f))
+* show the file path for file-level code summaries ([22be140](https://github.com/lordekeen/pi-qdrant-memory/commit/22be140dd4a606302ce914c5a3739ebdfafcd9fb))
+* tool errors name the invoked tool exactly once ([b973c08](https://github.com/lordekeen/pi-qdrant-memory/commit/b973c08f13745cdb3014929c357e005480e9d4a1))
+
 ## [0.2.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.1.0...v0.2.0) (2026-09-11)
 
 
