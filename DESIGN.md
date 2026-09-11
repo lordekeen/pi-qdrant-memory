@@ -189,7 +189,8 @@ conditional: `/qdrant-index-code` appears (between `/qdrant-clear` and
 ```
 🧠 Memory: mode1 (pi-mem-<hex>)
 commands
-/qdrant-status    connection health + active mode + collection status
+/qdrant-status                 connection health + active mode + collection status
+/qdrant-settings <key> <value> persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global
 ```
 
 ### search-results (`/qdrant-search`)
@@ -235,10 +236,31 @@ leading label may be dimmed):
 ```
 remembered: <verbatim text>
 cleared: collection pi-mem-… reset
-settings: scoreThreshold updated (reloaded at runtime)
+settings: qdrantUrl updated (global config; reloaded at runtime)
 settings: scoreThreshold unchanged (cancelled)
 code memory: takes effect at the next session start — the code_memory tool registers on reload. Run /qdrant-index-code to index the current session's code right away.
 ```
+
+Bare `/qdrant-settings` (no key/value) prints one multi-line usage message naming
+the scope rule and **both** absolute file paths (from `projectSettingsPath` /
+`configPath`, never hand-built):
+
+```
+settings: usage — /qdrant-settings opens the form; /qdrant-settings <key> <value> sets a field.
+          codeKnowledge and codeScoreThreshold are per project (<projectSettingsPath>);
+          the other keys are global (<configPath>).
+          this project: codeKnowledge = off (inherited from global); codeScoreThreshold = 0.6 (this project; global: 0.55)
+```
+
+The two allowlisted keys (`codeKnowledge`, `codeScoreThreshold`) are the only ones
+that write this project's store; the nine other keys keep writing the global
+config file. A set against an allowlisted key confirms both layers —
+`settings: codeKnowledge = on (this project; global: off)` or `settings:
+codeScoreThreshold = 0.6 (this project; global: 0.55)` — and a clear reads
+`settings: <key> override cleared (now using global: <g>)` (e.g. `settings:
+codeKnowledge override cleared (now using global: off)`). The nine
+non-allowlisted keys keep the single-layer clause `settings: <key> updated
+(global config; reloaded at runtime)`.
 
 A `codeKnowledge` settings write additionally emits the direction-aware reload
 notice (spec §12): switching **on** ends `…the code_memory tool registers on
@@ -265,25 +287,41 @@ crash — commands always exit normally with the error as content.
 
 Interactive config editing. Only reachable from the `/qdrant-settings` command
 with no arguments, and only when `ctx.ui` dialogs exist (interactive TUI).
-`/qdrant-settings <key> <value>` bypasses the UI entirely.
+`/qdrant-settings <key> <value>` bypasses the UI entirely. The form displays the
+**effective** value (this project's override, else the global value) and the
+pick labels also name the layer, so the destination is never ambiguous.
 
 Fixed flow, Esc cancels at any step:
 
 1. **pick** — a select dialog titled `Qdrant Memory — choose a setting to edit`,
-   options formatted `<key> = <current value>` (e.g. `mode = auto`,
-   `scoreThreshold = 0.15`).
+   options formatted `<key> = <current value>` plus a scope annotation:
+   `codeKnowledge = on (this project; global: off)` for an overridden allowlisted
+   key, `qdrantUrl = http://localhost:6333 (global)` when the global layer is the
+   one in effect.
 2. **edit** — type-aware: `mode` → nested select over `auto | blackhole | own`;
-   numeric fields → text input titled `<key> (number)` / `<key> (positive
-   number)` with the current value as placeholder; string/null fields → text
-   input with the current value as placeholder.
-3. **confirm** — `Save <key>?` with message `<key> = <new> (was <old>; run
-   /qdrant-settings again to edit another field)`.
+   `codeKnowledge` → nested select over `off | on | default (inherit global:
+   <g>)`; numeric allowlisted fields → text input titled `<key> (number;
+   "default" inherits global: <g>)`; other numeric fields → text input titled
+   `<key> (number)` / `<key> (positive number)`; string/null fields → text input,
+   in each case with the current value as placeholder.
+3. **confirm** — `Save <key>?` with a destination-naming message. Allowlisted
+   keys: `<key> = <new> → this project's settings file (global: <g>) (was <old>;
+   run /qdrant-settings again to edit another field)`. The nine other keys:
+   `<key> = <new> → the global config file (was <old>; run /qdrant-settings again
+   to edit another field)`.
+
+Reset-to-inherited exists **only** for the two allowlisted fields: the enum
+select's `default (inherit global: <g>)` option and a typed `default` at the
+numeric prompt both clear this project's override (confirm title `Clear the
+project override?`, message `<key> returns to the global value (<g>)`); the nine
+non-allowlisted fields expose **no** clear affordance.
 
 Rules: an empty input cancels that step; invalid values print the same error a
 CLI write would and do **not** reach confirm; declining confirm prints
-`settings: <key> unchanged (cancelled)`; a successful write prints
-`settings: <key> updated (reloaded at runtime)`. Host chrome owns all dialog
-visuals.
+`settings: <key> unchanged (cancelled)`; a successful allowlisted write prints
+`settings: <key> = <new> (this project; global: <g>)`, a successful global write
+prints `settings: <key> updated (global config; reloaded at runtime)`. Host
+chrome owns all dialog visuals.
 
 ### agent-tool-results
 

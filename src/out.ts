@@ -77,6 +77,90 @@ export function searchHitView(hit: SearchHit): SearchHitView {
   return { type: hit.payload.type, score: hit.score, pointer: hitPointer(hit.payload), text };
 }
 
+// ── Settings scope surfacing ─────────────────────────────────────────────────
+
+/** Render a config value for display. `null` is the literal `"null"`; numbers
+ * keep their JSON form (`String(v)`, never `toFixed`). */
+export function displayValue(v: string | number | null): string {
+  return v === null ? "null" : typeof v === "string" ? v : String(v);
+}
+
+export interface SettingsScopeRow {
+  key: string;
+  value: string | number | null;
+  globalValue: string | number | null;
+  overridden: boolean;
+}
+
+/**
+ * Shared scope annotation for one settings row. `noOverrideText` carries the
+ * one wording difference between the two surfaces (usage: "inherited from
+ * global"; form pick labels: "global").
+ */
+export function settingsScopeLabel(r: SettingsScopeRow, noOverrideText = "global"): string {
+  const scope = r.overridden
+    ? `this project; global: ${displayValue(r.globalValue)}`
+    : noOverrideText;
+  return `${r.key} = ${displayValue(r.value)} (${scope})`;
+}
+
+/** Bare `/qdrant-settings` usage: the scope rule, both absolute file paths, and
+ * this project's allowlisted rows with scope + inherited values. */
+export function settingsUsageText(p: { projectPath: string; globalPath: string; rows: SettingsScopeRow[] }): string {
+  return [
+    "settings: usage — /qdrant-settings opens the form; /qdrant-settings <key> <value> sets a field.",
+    `          codeKnowledge and codeScoreThreshold are per project (${p.projectPath});`,
+    `          the other keys are global (${p.globalPath}).`,
+    `          this project: ${p.rows.map((r) => settingsScopeLabel(r, "inherited from global")).join("; ")}`,
+  ].join("\n");
+}
+
+/** Allowlisted set confirmation (names this project and the global fallback). */
+export function settingsUpdatedText(field: string, value: string | number, globalValue: string | number): string {
+  return `settings: ${field} = ${String(value)} (this project; global: ${String(globalValue)})`;
+}
+
+/** The nine non-allowlisted keys: today's confirmation with a scope clause. */
+export function settingsGlobalUpdatedText(field: string): string {
+  return `settings: ${field} updated (global config; reloaded at runtime)`;
+}
+
+/** Allowlisted clear confirmation (names the global value now in effect). */
+export function settingsOverrideClearedText(field: string, globalValue: string | number): string {
+  return `settings: ${field} override cleared (now using global: ${String(globalValue)})`;
+}
+
+/** Form select option that clears an allowlisted override. */
+export function resetOptionLabel(globalValue: string | number): string {
+  return `default (inherit global: ${String(globalValue)})`;
+}
+
+/** Form numeric input prompt for an allowlisted field (accepts typed `default`). */
+export function formNumericPrompt(key: string, globalValue: string | number): string {
+  return `${key} (number; "default" inherits global: ${String(globalValue)})`;
+}
+
+/** Form save confirmation: names the destination file (and, for allowlisted
+ * keys, the global fallback), keeping the existing "run again" tail. */
+export function formSaveMessage(
+  key: string,
+  next: string | number | null,
+  prev: string | number | null,
+  dest: "project" | "global",
+  globalValue?: string | number | null,
+): string {
+  const tail = `(was ${displayValue(prev)}; run /qdrant-settings again to edit another field)`;
+  const body = dest === "project"
+    ? `${key} = ${displayValue(next)} → this project's settings file (global: ${displayValue(globalValue ?? null)})`
+    : `${key} = ${displayValue(next)} → the global config file`;
+  return `${body} ${tail}`;
+}
+
+/** Form clear confirmation: names the global value now in effect. */
+export function formClearMessage(key: string, globalValue: string | number | null): string {
+  return `${key} returns to the global value (${displayValue(globalValue)})`;
+}
+
 // ── Roles & outline ──────────────────────────────────────────────────────────
 
 /** Role names double as pi host-theme slots; renderer maps role → theme.fg. */

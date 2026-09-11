@@ -1,9 +1,36 @@
 import { resolveMode, detectBlackhole } from "./mode.ts";
-import { setConfigField } from "./config.ts";
-import { clearProjectField, loadProjectSettings, saveProjectSettings } from "./project-settings.ts";
+import { configPath, setConfigField } from "./config.ts";
+import {
+  PROJECT_OVERRIDABLE_FIELDS,
+  clearProjectField,
+  isProjectOverridable,
+  loadProjectSettings,
+  projectSettingsPath,
+  saveProjectSettings,
+} from "./project-settings.ts";
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
-import { errorEntry, helpEntry, message, outText, searchEntry, searchHitView, statusEntry, EMPTY_SEARCH_TEXT, codeMemoryReloadNotice } from "./out.ts";
-import type { CodeMemoryHealth, HelpRow, OutEntry, StatusHealth } from "./out.ts";
+import {
+  EMPTY_SEARCH_TEXT,
+  codeMemoryReloadNotice,
+  displayValue,
+  errorEntry,
+  formClearMessage,
+  formNumericPrompt,
+  formSaveMessage,
+  helpEntry,
+  message,
+  outText,
+  resetOptionLabel,
+  searchEntry,
+  searchHitView,
+  settingsGlobalUpdatedText,
+  settingsOverrideClearedText,
+  settingsScopeLabel,
+  settingsUpdatedText,
+  settingsUsageText,
+  statusEntry,
+} from "./out.ts";
+import type { CodeMemoryHealth, HelpRow, OutEntry, SettingsScopeRow, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
 import { QdrantError } from "./qdrant.ts";
 import type { ProjectOverridableField, ProjectSettings } from "./project-settings.ts";
@@ -95,19 +122,62 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
 }
 
 export async function settingsHandler(io: HandlerIO, field?: string, value?: string): Promise<HandlerResult> {
-  const cfg = io.readGlobalConfig();
   if (field && value !== undefined) {
-    const applied = setConfigField(cfg, field, value);
+    if (isProjectOverridable(field)) {
+      // Allowlisted key: the project store owns this value. `before` is the live
+      // EFFECTIVE codeKnowledge (env-mask aware) — the reload notice is emitted
+      // iff the write actually changed it.
+      const before = io.cfg.codeKnowledge;
+      if (value === "default") {
+        // Reserved token, matched BEFORE validation (D4): a no-op clear (no
+        // override existed) still confirms "override cleared" — clearing is
+        // idempotent by design.
+        io.clearProjectSetting(field);
+        io.emit(message(settingsOverrideClearedText(field, io.readGlobalConfig()[field])));
+        if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
+        return { exit: false };
+      }
+      const applied = setConfigField(io.readGlobalConfig(), field, value); // same errors as a global write
+      if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return { exit: false }; }
+      io.writeProjectSettings(projectOverride(applied.next, field));       // typed partial, JSON number
+      io.emit(message(settingsUpdatedText(field, applied.next[field], io.readGlobalConfig()[field])));
+      if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
+      return { exit: false };
+    }
+    // Non-allowlisted key: today's global path, persisted from the GLOBAL reader
+    // (D10) — never the effective config.
+    const applied = setConfigField(io.readGlobalConfig(), field, value);
     if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return { exit: false }; }
     io.writeGlobalConfig(applied.next);
-    io.emit(message(`settings: ${field} updated (reloaded at runtime)`));
-    // Mid-session codeKnowledge flips cannot re-register tools — tell the user
-    // what needs a reload and what does not (spec §12).
-    if (field === "codeKnowledge") io.emit(message(codeMemoryReloadNotice(applied.next.codeKnowledge)));
+    io.emit(message(settingsGlobalUpdatedText(field)));
     return { exit: false };
   }
-  io.emit(message(`settings: usage — /qdrant-settings opens the interactive form; /qdrant-settings <key> <value> sets a field (keys: mode, codeKnowledge, embeddingBaseURL, embeddingModel, expectedDimension, scoreThreshold, codeScoreThreshold, maxResults, qdrantUrl, qdrantApiKey, embeddingApiKey)`));
+  const overrides = io.readProjectSettings();
+  const global = io.readGlobalConfig();
+  io.emit(message(settingsUsageText({
+    projectPath: projectSettingsPath(io.agentDir, io.projectId),
+    globalPath: configPath(io.agentDir),
+    rows: scopeRows(io, overrides, global),
+  })));
   return { exit: false };
+}
+
+/** A one-key typed partial for `saveProjectSettings` — no casts. */
+function projectOverride(cfg: Config, field: ProjectOverridableField): ProjectSettings {
+  return field === "codeKnowledge"
+    ? { codeKnowledge: cfg.codeKnowledge }
+    : { codeScoreThreshold: cfg.codeScoreThreshold };
+}
+
+/** One scope row per allowlisted field: effective value, global value, and
+ * whether this project actually holds an override. */
+function scopeRows(io: HandlerIO, overrides: ProjectSettings, global: Config): SettingsScopeRow[] {
+  return PROJECT_OVERRIDABLE_FIELDS.map((key) => ({
+    key,
+    value: cfgField(io.cfg, key),
+    globalValue: cfgField(global, key),
+    overridden: overrides[key] !== undefined,
+  }));
 }
 
 /** The interactive pieces of `ctx.ui` that the settings form needs. */
@@ -134,10 +204,6 @@ const SETTING_FIELDS = [
 
 type SettingField = (typeof SETTING_FIELDS)[number];
 
-function displayValue(value: unknown): string {
-  return value === null ? "null" : typeof value === "string" ? value : String(value);
-}
-
 /**
  * Dynamic access by a `SettingField` key — the `SETTING_FIELDS` names are
  * exactly the `Config` keys, whose values are string | number | null.
@@ -153,10 +219,19 @@ function cfgField(cfg: Config, key: SettingField): string | number | null {
  * an explicit confirm. Validation is shared with the CLI via `setConfigField`.
  */
 export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<void> {
-  const cfg = io.readGlobalConfig();
+  // Display the EFFECTIVE view (io.cfg, live) but persist the GLOBAL reader for
+  // global writes (D10 — the single highest-value trap).
+  const effective = io.cfg;
+  const globalForLabels = io.readGlobalConfig();
+  const overrides = io.readProjectSettings();
   const optionToKey = new Map<string, SettingField>();
   const options = SETTING_FIELDS.map((k) => {
-    const label = `${k} = ${displayValue(cfgField(cfg, k))}`;
+    const label = settingsScopeLabel({
+      key: k,
+      value: cfgField(effective, k),
+      globalValue: cfgField(globalForLabels, k),
+      overridden: isProjectOverridable(k) && overrides[k] !== undefined,
+    });
     optionToKey.set(label, k);
     return label;
   });
@@ -164,34 +239,63 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   if (!pick) return; // Esc cancels the whole form
   const key = optionToKey.get(pick);
   if (!key) return;
-  const cur = cfgField(cfg, key);
+  const cur = cfgField(effective, key);
+  const globalVal = cfgField(globalForLabels, key) as string | number;
+  const projectScoped = isProjectOverridable(key);
 
   let raw: string | undefined;
   if (key === "mode") {
     raw = await ui.select(`mode — currently ${displayValue(cur)}`, ["auto", "blackhole", "own"]);
   } else if (key === "codeKnowledge") {
-    raw = await ui.select(`codeKnowledge — currently ${displayValue(cur)}`, ["off", "on"]);
+    // The select offers a reset option labelled e.g. `default (inherit global:
+    // off)`; normalize it back to the reserved token `default` so the clear
+    // path below matches exactly as if the user had typed `default`.
+    const reset = resetOptionLabel(globalVal);
+    raw = await ui.select(`codeKnowledge — currently ${displayValue(cur)}`, ["off", "on", reset]);
+    if (raw === reset) raw = "default";
   } else if (typeof cur === "number") {
-    const positive = key === "expectedDimension" || key === "maxResults";
-    raw = await ui.input(`${key} (${positive ? "positive " : ""}number)`, String(cur));
+    if (projectScoped) {
+      raw = await ui.input(formNumericPrompt(key, globalVal), String(cur));
+    } else {
+      const positive = key === "expectedDimension" || key === "maxResults";
+      raw = await ui.input(`${key} (${positive ? "positive " : ""}number)`, String(cur));
+    }
   } else {
     raw = await ui.input(`${key}`, cur === null ? undefined : String(cur));
   }
   const value = raw === undefined ? undefined : raw.trim();
   if (value === undefined || value === "") return; // cancelled / cleared input
 
-  const applied = setConfigField(cfg, key, value);
+  if (projectScoped && value === "default") {
+    // Reserved token, matched before validation — mirrors the CLI clear path.
+    const before = io.cfg.codeKnowledge;
+    const ok = await ui.confirm("Clear the project override?", formClearMessage(key, globalVal));
+    if (!ok) { io.emit(message(`settings: ${key} unchanged (cancelled)`)); return; }
+    io.clearProjectSetting(key);
+    io.emit(message(settingsOverrideClearedText(key, io.readGlobalConfig()[key])));
+    if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
+    return;
+  }
+
+  const globalNow = io.readGlobalConfig(); // re-read: never persist a stale/effective Config
+  const applied = setConfigField(globalNow, key, value);
   if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return; }
   const nextValue = cfgField(applied.next, key);
   const ok = await ui.confirm(
     `Save ${key}?`,
-    `${key} = ${displayValue(nextValue)}  (was ${displayValue(cur)}; run /qdrant-settings again to edit another field)`,
+    formSaveMessage(key, nextValue, cur, projectScoped ? "project" : "global", globalVal),
   );
   if (!ok) { io.emit(message(`settings: ${key} unchanged (cancelled)`)); return; }
-  io.writeGlobalConfig(applied.next);
-  io.emit(message(`settings: ${key} updated (reloaded at runtime)`));
-  // Same mid-session flip notice as the CLI path (spec §12).
-  if (key === "codeKnowledge") io.emit(message(codeMemoryReloadNotice(applied.next.codeKnowledge)));
+  const before = io.cfg.codeKnowledge;
+  if (projectScoped) {
+    io.writeProjectSettings(projectOverride(applied.next, key));
+    io.emit(message(settingsUpdatedText(key, nextValue as string | number, globalVal)));
+  } else {
+    io.writeGlobalConfig(applied.next);
+    io.emit(message(settingsGlobalUpdatedText(key)));
+  }
+  // Both paths: the notice follows the live EFFECTIVE codeKnowledge change.
+  if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
 }
 
 export async function rememberHandler(io: HandlerIO, text: string, type?: MemoryType): Promise<HandlerResult> {
@@ -238,7 +342,7 @@ export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {
   const mode = resolveMode(io.cfg, detectBlackhole(io.agentDir));
   const rows: HelpRow[] = [
     { cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
-    { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field (e.g. scoreThreshold 0.2)" },
+    { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global" },
     { cmd: "/qdrant-remember <text>", desc: "save durable knowledge now" },
     { cmd: "/qdrant-search <query>", desc: "semantic search of durable knowledge" },
     { cmd: "/qdrant-clear", desc: "reset the current project's collection" },

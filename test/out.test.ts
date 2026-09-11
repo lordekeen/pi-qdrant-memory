@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   message, errorEntry, helpEntry, statusEntry, searchEntry, searchHitView,
   renderOut, outText, typeRole, memoryHeaderText, codeMemoryReloadNotice, codeMemorySyncMessage,
+  displayValue, settingsScopeLabel, settingsUsageText, settingsUpdatedText, settingsGlobalUpdatedText,
+  settingsOverrideClearedText, resetOptionLabel, formNumericPrompt, formSaveMessage, formClearMessage,
 } from "../src/out.ts";
 import type { OutEntry, OutLine, Span } from "../src/out.ts";
 import type { PointPayload, SearchHit } from "../src/types.ts";
@@ -236,4 +238,59 @@ test("codeMemoryReloadNotice is direction-aware", () => {
   assert.match(codeMemoryReloadNotice("off"), /unregisters on reload/);
   assert.equal(codeMemorySyncMessage({ files: 2, symbols: 9, deleted: 1 }),
     "code memory: 2 files · 9 symbols indexed (1 points replaced)");
+});
+
+// ── settings scope builders ──────────────────────────────────────────────────
+
+test("displayValue renders null and numbers", () => {
+  assert.equal(displayValue(null), "null");
+  assert.equal(displayValue(0.6), "0.6");
+  assert.equal(displayValue("off"), "off");
+});
+
+test("settingsScopeLabel annotates both wordings", () => {
+  const row = { key: "codeKnowledge", value: "on", globalValue: "off", overridden: true };
+  assert.equal(settingsScopeLabel(row), "codeKnowledge = on (this project; global: off)");
+  assert.equal(settingsScopeLabel(row, "inherited from global"), "codeKnowledge = on (this project; global: off)");
+  const noOverride = { key: "qdrantUrl", value: "http://localhost:6333", globalValue: "http://localhost:6333", overridden: false };
+  assert.equal(settingsScopeLabel(noOverride), "qdrantUrl = http://localhost:6333 (global)");
+  assert.equal(settingsScopeLabel(noOverride, "inherited from global"), "qdrantUrl = http://localhost:6333 (inherited from global)");
+});
+
+test("settingsUsageText is one multi-line string naming the scope rule and both paths", () => {
+  const text = settingsUsageText({
+    projectPath: "/a/pi-qdrant-memory/projects/pi-mem-abc.json",
+    globalPath: "/a/pi-qdrant-memory/pi-qdrant-memory-config.json",
+    rows: [
+      { key: "codeKnowledge", value: "off", globalValue: "off", overridden: false },
+      { key: "codeScoreThreshold", value: 0.6, globalValue: 0.55, overridden: true },
+    ],
+  });
+  const lines = text.split("\n");
+  assert.equal(lines.length, 4);
+  assert.equal(lines[0], "settings: usage — /qdrant-settings opens the form; /qdrant-settings <key> <value> sets a field.");
+  assert.match(lines[1], /^ {10}codeKnowledge and codeScoreThreshold are per project \(\/a\/pi-qdrant-memory\/projects\/pi-mem-abc\.json\);$/);
+  assert.match(lines[2], /^ {10}the other keys are global \(\/a\/pi-qdrant-memory\/pi-qdrant-memory-config\.json\)\.$/);
+  assert.equal(lines[3], "          this project: codeKnowledge = off (inherited from global); codeScoreThreshold = 0.6 (this project; global: 0.55)");
+});
+
+test("settings set/clear/global confirmation strings", () => {
+  assert.equal(settingsUpdatedText("codeKnowledge", "on", "off"), "settings: codeKnowledge = on (this project; global: off)");
+  assert.equal(settingsUpdatedText("codeScoreThreshold", 0.6, 0.55), "settings: codeScoreThreshold = 0.6 (this project; global: 0.55)");
+  assert.equal(settingsOverrideClearedText("codeKnowledge", "off"), "settings: codeKnowledge override cleared (now using global: off)");
+  assert.equal(settingsGlobalUpdatedText("qdrantUrl"), "settings: qdrantUrl updated (global config; reloaded at runtime)");
+});
+
+test("form builders produce the destination-naming strings", () => {
+  assert.equal(resetOptionLabel("off"), "default (inherit global: off)");
+  assert.equal(formNumericPrompt("codeScoreThreshold", 0.55), 'codeScoreThreshold (number; "default" inherits global: 0.55)');
+  assert.equal(
+    formSaveMessage("codeScoreThreshold", 0.6, 0.4, "project", 0.55),
+    "codeScoreThreshold = 0.6 → this project's settings file (global: 0.55) (was 0.4; run /qdrant-settings again to edit another field)",
+  );
+  assert.equal(
+    formSaveMessage("qdrantUrl", "http://x:6333", "http://localhost:6333", "global"),
+    "qdrantUrl = http://x:6333 → the global config file (was http://localhost:6333; run /qdrant-settings again to edit another field)",
+  );
+  assert.equal(formClearMessage("codeScoreThreshold", 0.55), "codeScoreThreshold returns to the global value (0.55)");
 });
