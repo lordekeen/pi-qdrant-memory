@@ -5,6 +5,13 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.3.1](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.0...v0.3.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* report collection totals on code memory status instead of sync delta ([52cbfbe](https://github.com/lordekeen/pi-qdrant-memory/commit/52cbfbee89ccdeed1153123378a499fa732e59de))
+
 ## [0.3.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.2.2...v0.3.0) (2026-09-11)
 
 
