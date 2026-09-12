@@ -52,6 +52,11 @@ interface SkipOptions {
 
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", "out", "coverage", "vendor", ".next", "target",
+  // Python virtual environments — un-dotted names are not caught by the
+  // `entry.startsWith(".")` guard in listFilesRecursive.
+  "venv", "env", "virtualenv",
+  // Rust / C / other build artifacts commonly alongside `target`
+  "__pycache__",
 ]);
 
 /** language -> extensions. First matching language wins (order matters). */

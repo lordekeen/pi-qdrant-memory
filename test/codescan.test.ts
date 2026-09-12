@@ -268,3 +268,33 @@ test("tab-indented files are not misread as top-level", () => {
     assert.equal(files[0]!.nodes[0]!.name, "outer");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("scanRepo skips Python venv directories", () => {
+  const root = fixture();
+  try {
+    // Standard un-dotted venv with a .py file inside
+    mkdirSync(join(root, "venv", "lib", "site-packages", "pkg"), { recursive: true });
+    writeFileSync(join(root, "venv", "lib", "site-packages", "pkg", "mod.py"),
+      "def vendored(): pass\n");
+
+    // Same for "env"
+    mkdirSync(join(root, "env", "lib"), { recursive: true });
+    writeFileSync(join(root, "env", "lib", "x.py"), "def also_vendored(): pass\n");
+
+    // Same for "virtualenv"
+    mkdirSync(join(root, "virtualenv", "lib"), { recursive: true });
+    writeFileSync(join(root, "virtualenv", "lib", "v.py"), "def virt(): pass\n");
+
+    // Same for "__pycache__"
+    mkdirSync(join(root, "__pycache__"), { recursive: true });
+    writeFileSync(join(root, "__pycache__", "mod.cpython-311.py"), "def pyc(): pass\n");
+
+    // The actual project source
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "app.py"), "def main(): pass\n");
+
+    const { files } = scanRepo(root);
+    assert.deepEqual(files.map((f) => f.filePath), ["src/app.py"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
