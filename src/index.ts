@@ -108,19 +108,30 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
    * anchor can change at session_start (see there). */
   const codeRepoRoot = async (): Promise<string> => (await findGitRoot(rt.cwd)) ?? rt.cwd;
 
+  let activeCodeSync: Promise<SyncResult> | undefined;
+
   const runCodeSync = async (): Promise<SyncResult> => {
-    const r = await syncCodeKnowledge({
-      embedBatch: rt.embedBatch ?? (async (texts) => Promise.all(texts.map((t) => rt.embed(t)))),
-      qdrant: rt.qdrant,
-      projectId: rt.projectId,
-      expectedDimension: rt.cfg.expectedDimension,
-      repoRoot: await codeRepoRoot(),
-    });
-    codeMemoryState.state = r.ok ? "synced" : "error";
-    codeMemoryState.files = r.totalFiles;
-    codeMemoryState.symbols = r.totalSymbols;
-    void refreshStatus(); // footer count now includes code points
-    return r;
+    if (activeCodeSync) return activeCodeSync;
+    codeMemoryState.state = "syncing";
+    activeCodeSync = (async () => {
+      try {
+        const r = await syncCodeKnowledge({
+          embedBatch: rt.embedBatch ?? (async (texts) => Promise.all(texts.map((t) => rt.embed(t)))),
+          qdrant: rt.qdrant,
+          projectId: rt.projectId,
+          expectedDimension: rt.cfg.expectedDimension,
+          repoRoot: await codeRepoRoot(),
+        });
+        codeMemoryState.state = r.ok ? "synced" : "error";
+        codeMemoryState.files = r.totalFiles;
+        codeMemoryState.symbols = r.totalSymbols;
+        void refreshStatus(); // footer count now includes code points
+        return r;
+      } finally {
+        activeCodeSync = undefined;
+      }
+    })();
+    return activeCodeSync;
   };
 
   // Footer statusline state: total points stored in the project collection.

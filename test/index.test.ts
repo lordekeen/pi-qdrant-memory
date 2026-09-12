@@ -423,3 +423,82 @@ test("qdrant-status reflects collection totals from codeMemoryState after sync",
     } finally { cleanup(); }
   } finally { rmSync(agentDir, { recursive: true, force: true }); }
 });
+
+test("runCodeSync deduplicates concurrent invocations", async () => {
+  const agentDir = idxAgentDir();
+  try {
+    const repo = gitRepo(agentDir, "target");
+    writeFileSync(join(repo, "a.ts"), "export function alpha() {}\n");
+    const targetId = await projectIdFrom(repo);
+    saveProjectSettings(agentDir, targetId, { codeKnowledge: "on" });
+
+    let snapshots = 0;
+    const recording: QdrantLike = {
+      ...qdrant,
+      async codeIndexSnapshot() {
+        snapshots++;
+        await new Promise((r) => setTimeout(r, 10));
+        return new Map();
+      },
+    };
+    const localRt = runtimeWith(
+      agentDir,
+      { ...rt.cfg, codeKnowledge: "on" },
+      recording,
+      async (t) => t.map(() => new Array(768).fill(0.1)),
+      repo,
+    );
+    localRt.projectId = targetId;
+    const api = fakeApi();
+    const cleanup = wireApi(api, localRt);
+    try {
+      const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+      const cmd = (api.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>)
+        .find((c) => c.name === "qdrant-index-code")!;
+      await Promise.all([onStart({}, { cwd: repo }), cmd.execute("")]);
+      await settle();
+      assert.equal(snapshots, 1, "expected exactly one sync, not two concurrent ones");
+    } finally { cleanup(); }
+  } finally { rmSync(agentDir, { recursive: true, force: true }); }
+});
+
+test("runCodeSync sets codeMemoryState to syncing while in-flight", async () => {
+  const agentDir = idxAgentDir();
+  try {
+    const repo = gitRepo(agentDir, "target");
+    writeFileSync(join(repo, "a.ts"), "export function alpha() {}\n");
+    const targetId = await projectIdFrom(repo);
+    saveProjectSettings(agentDir, targetId, { codeKnowledge: "on" });
+
+    let stateDuringSnapshot: string | undefined;
+    const api = fakeApi();
+
+    const recording: QdrantLike = {
+      ...qdrant,
+      async codeIndexSnapshot() {
+        const statusCmd = (api.commands as Array<{ name: string; execute: () => Promise<void> }>).find((c) => c.name === "qdrant-status");
+        if (statusCmd) await statusCmd.execute();
+        const lastEntry = api.entries.at(-1) as { kind: string; health: { codeMemory?: { state?: string } } };
+        stateDuringSnapshot = lastEntry?.health?.codeMemory?.state;
+        return new Map();
+      },
+    };
+    const localRt = runtimeWith(
+      agentDir,
+      { ...rt.cfg, codeKnowledge: "on" },
+      recording,
+      async (t) => t.map(() => new Array(768).fill(0.1)),
+      repo,
+    );
+    localRt.projectId = targetId;
+    const cleanup = wireApi(api, localRt);
+    try {
+      const cmd = (api.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>)
+        .find((c) => c.name === "qdrant-index-code")!;
+      await cmd.execute("");
+      await settle();
+      assert.equal(stateDuringSnapshot, "syncing");
+    } finally { cleanup(); }
+  } finally { rmSync(agentDir, { recursive: true, force: true }); }
+});
+
