@@ -1,6 +1,6 @@
 {
   "name": "pi-qdrant-memory",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Semantic, cross-session retrieval over durable conversation knowledge for pi.dev, backed by Qdrant.",
   "type": "module",
   "license": "MIT",
