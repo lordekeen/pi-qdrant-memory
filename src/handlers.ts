@@ -273,12 +273,19 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
       raw = await ui.input(`${key} (${positive ? "positive " : ""}number)`, String(cur));
     }
   } else {
-    raw = await ui.input(`${key}`, cur === null ? undefined : String(cur));
+    const nullable = key === "qdrantApiKey" || key === "embeddingApiKey";
+    const prompt = nullable ? `${key} (clear to remove)` : key;
+    raw = await ui.input(prompt, cur === null ? undefined : String(cur));
   }
   const value = raw === undefined ? undefined : raw.trim();
-  if (value === undefined || value === "") return; // cancelled / cleared input
+  if (value === undefined) return; // Esc — genuine cancellation
+  if (value === "") {
+    const nullable = key === "qdrantApiKey" || key === "embeddingApiKey";
+    if (!nullable) return;
+  }
+  const resolvedValue = value === "" ? "null" : value;
 
-  if (projectScoped && value === "default") {
+  if (projectScoped && resolvedValue === "default") {
     // Reserved token, matched before validation — mirrors the CLI clear path.
     const before = io.cfg.codeKnowledge;
     const ok = await ui.confirm("Clear the project override?", formClearMessage(key, globalVal));
@@ -290,7 +297,7 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   }
 
   const globalNow = io.readGlobalConfig(); // re-read: never persist a stale/effective Config
-  const applied = setConfigField(globalNow, key, value);
+  const applied = setConfigField(globalNow, key, resolvedValue);
   if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return; }
   const nextValue = cfgField(applied.next, key);
   const ok = await ui.confirm(

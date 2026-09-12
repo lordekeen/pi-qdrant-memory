@@ -237,6 +237,64 @@ test("runSettingsForm leaves config untouched when confirm is declined", async (
   assert.match(d.printed.join("\n"), /unchanged \(cancelled\)/);
 });
 
+test("runSettingsForm clears an API key when input is emptied", async () => {
+  const d = io();
+  d.globalState.qdrantApiKey = "old-key";
+  const ui: SettingsUI = {
+    async select(_title, options) {
+      return options.find((o) => o.startsWith("qdrantApiKey ="));
+    },
+    async input(_prompt, _default) { return ""; }, // user clears the field
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(d.globalWrites.length, 1);
+  assert.equal(d.globalWrites[0].qdrantApiKey, null, "API key should be null");
+});
+
+test("runSettingsForm Esc on API key input writes nothing", async () => {
+  const d = io();
+  d.globalState.qdrantApiKey = "old-key";
+  const ui: SettingsUI = {
+    async select(_title, options) {
+      return options.find((o) => o.startsWith("qdrantApiKey ="));
+    },
+    async input() { return undefined; }, // Esc
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(d.globalWrites.length, 0, "Esc must not write");
+});
+
+test("runSettingsForm empty input on a non-nullable field cancels", async () => {
+  const d = io();
+  const ui: SettingsUI = {
+    async select(_title, options) {
+      return options.find((o) => o.startsWith("qdrantUrl ="));
+    },
+    async input() { return ""; }, // empty input
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(d.globalWrites.length, 0, "non-nullable empty input must cancel");
+});
+
+test("runSettingsForm prompt for API key includes clear hint", async () => {
+  const d = io();
+  d.globalState.qdrantApiKey = "key";
+  let capturedPrompt = "";
+  const ui: SettingsUI = {
+    async select(_title, options) {
+      return options.find((o) => o.startsWith("qdrantApiKey ="));
+    },
+    async input(prompt) { capturedPrompt = prompt; return undefined; },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.ok(capturedPrompt.includes("clear to remove"),
+    `prompt should hint removal, got: ${capturedPrompt}`);
+});
+
 test("runSettingsForm mode field uses a nested select", async () => {
   const d = io();
   let secondSelectTitle = "";
