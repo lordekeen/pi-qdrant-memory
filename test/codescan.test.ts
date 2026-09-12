@@ -298,3 +298,99 @@ test("scanRepo skips Python venv directories", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("scanRepo handles opening brace on subsequent line (Allman style)", () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, "allman.ts"), [
+      "export function add(",
+      "  a: number,",
+      "  b: number",
+      "): number {",
+      "  return a + b;",
+      "}",
+      "",
+      "export class Service",
+      "{",
+      "  doWork() {}",
+      "}",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
+
+    const add = byName.get("add")!;
+    assert.equal(add.startLine, 1);
+    assert.equal(add.endLine, 6);
+    assert.ok(add.signature.includes("add("));
+
+    const svc = byName.get("Service")!;
+    assert.equal(svc.startLine, 8);
+    assert.equal(svc.endLine, 11);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("scanRepo detects multiline arrow function declarations", () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, "arrows.ts"), [
+      "export const processData = (",
+      "  items: string[]",
+      "): number => {",
+      "  return items.length;",
+      "};",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
+
+    const proc = byName.get("processData")!;
+    assert.equal(proc.kind, "function");
+    assert.equal(proc.startLine, 1);
+    assert.ok(proc.endLine >= 5);
+    assert.ok(proc.signature.includes("processData"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("scanRepo handles multiline Python signatures and single-quote docstrings", () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, "multi.py"), [
+      "def calculate(",
+      "    x: int,",
+      "    y: int",
+      ") -> int:",
+      '    """Calculates the sum."""',
+      "    return x + y",
+      "",
+      "def other(",
+      "    a: str",
+      "):",
+      "    '''Single-quote doc.'''",
+      "    pass",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
+
+    const calc = byName.get("calculate")!;
+    assert.equal(calc.startLine, 1);
+    assert.equal(calc.endLine, 6);  // includes the body
+    assert.equal(calc.doc, "Calculates the sum.");
+    assert.ok(calc.signature.includes("calculate("));
+
+    const other = byName.get("other")!;
+    assert.equal(other.doc, "Single-quote doc.");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("scanRepo rejects multiline non-arrow assignments with parentheses", () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, "nonarrow.ts"), [
+      "const total = (",
+      "  1 + 2",
+      ");",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    assert.equal(files[0]!.nodes.length, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+

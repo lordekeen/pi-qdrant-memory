@@ -78,6 +78,8 @@ interface LineMatch {
   kind: CodeKind;
   name: string;
   indent: number;
+  /** When true, the scanRepo loop must confirm `=>` via resolveHeader. */
+  needsArrowConfirm?: boolean;
 }
 
 /** Match one source line as a top-level definition for the language. */
@@ -104,6 +106,10 @@ function matchLine(language: "tsjs" | "python" | "fallback", line: string): Line
     if (m) return { kind: "function", name: m[3], indent };
     m = /^(export\s+)?(const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(async\s*)?[A-Za-z_$][\w$]*\s*=>/.exec(t);
     if (m) return { kind: "function", name: m[3], indent };
+    // Multiline arrow: opening `(` without a close on the same line — the
+    // resolveHeader scan will confirm `=>` on a subsequent line.
+    m = /^(export\s+)?(const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(async\s*)?\(/.exec(t);
+    if (m && !t.includes(")")) return { kind: "function", name: m[3], indent, needsArrowConfirm: true };
     m = /^(export\s+)?enum\s+([A-Za-z_$][\w$]*)/.exec(t);
     if (m) return { kind: "enum", name: m[2], indent };
     return undefined;
@@ -142,8 +148,105 @@ function collapse(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/** Leading contiguous doc comment directly above `defLine` (1-based). */
-function docAbove(lines: string[], defLine: number, language: "tsjs" | "python" | "fallback"): string {
+/** Upper bound on how many lines forward we scan for the header terminator. */
+const MAX_HEADER_LINES = 20;
+
+interface ResolvedHeader {
+  /** 0-based index of the last header line (the line with `{`, `=>`, or `:`). */
+  headerEndIdx: number;
+  /** 0-based index of the first body line (headerEndIdx + 1). */
+  bodyStartIdx: number;
+  /** True if the declaration is an arrow function (found `=>`). */
+  isArrow: boolean;
+  /** The full concatenated + collapsed signature text. */
+  signature: string;
+}
+
+/**
+ * Starting from the definition line at `startIdx`, scan forward to find
+ * the header terminator ({, =>, or : for Python). Returns the resolved
+ * header metadata, or fallback if no terminator is found within bounds
+ * (treated as single-line in that case).
+ */
+function resolveHeader(
+  lines: string[],
+  startIdx: number,
+  language: "tsjs" | "python" | "fallback",
+): ResolvedHeader {
+  const limit = Math.min(lines.length, startIdx + MAX_HEADER_LINES);
+  const sigParts: string[] = [];
+
+  if (language === "python") {
+    // Scan for the `:` that terminates the def/class header.
+    for (let j = startIdx; j < limit; j++) {
+      const t = lines[j]!;
+      sigParts.push(t);
+      // Python headers end with `:` (possibly followed by a comment).
+      if (/:\s*(#.*)?$/.test(t.trimEnd())) {
+        return {
+          headerEndIdx: j,
+          bodyStartIdx: j + 1,
+          isArrow: false,
+          signature: normalizeSignature(sigParts.join(" ")),
+        };
+      }
+    }
+    // Fallback: header is just the definition line.
+    return {
+      headerEndIdx: startIdx,
+      bodyStartIdx: startIdx + 1,
+      isArrow: false,
+      signature: normalizeSignature(lines[startIdx]!),
+    };
+  }
+
+  // tsjs / fallback: scan for `{` or `=>`.
+  let isArrow = false;
+  for (let j = startIdx; j < limit; j++) {
+    const t = lines[j]!;
+    sigParts.push(t);
+
+    if (t.includes("=>")) {
+      isArrow = true;
+    }
+
+    if (t.includes("{")) {
+      return {
+        headerEndIdx: j,
+        bodyStartIdx: j + 1,
+        isArrow,
+        signature: normalizeSignature(sigParts.join(" ")),
+      };
+    }
+
+    // A `;` at the definition indent or end of statement means a brace-less declaration
+    // (type alias, arrow function with expression body, const without braces); stop scanning.
+    if (t.trimEnd().endsWith(";")) {
+      return {
+        headerEndIdx: j,
+        bodyStartIdx: j + 1,
+        isArrow,
+        signature: normalizeSignature(sigParts.join(" ")),
+      };
+    }
+  }
+
+  // No terminator found: treat as single-line.
+  return {
+    headerEndIdx: startIdx,
+    bodyStartIdx: startIdx + 1,
+    isArrow,
+    signature: normalizeSignature(lines[startIdx]!),
+  };
+}
+
+/** Leading contiguous doc comment directly above `defLine` (1-based), or docstring within body for Python. */
+function docAbove(
+  lines: string[],
+  defLine: number,
+  language: "tsjs" | "python" | "fallback",
+  bodyStartIdx?: number,
+): string {
   const collected: string[] = [];
   let i = defLine - 2; // line index above the def
   if (language === "python") {
@@ -155,23 +258,25 @@ function docAbove(lines: string[], defLine: number, language: "tsjs" | "python" 
     }
     if (collected.length) return collapse(collected.join(" ")).slice(0, MAX_DOC_CHARS);
     // …otherwise the docstring is the first statement of the body.
-    let j = defLine; // 0-based idx of the first body line (defLine is 1-based)
+    let j = bodyStartIdx ?? defLine; // 0-based idx of the first body line
     while (j < lines.length && lines[j]?.trim() === "") j++;
     const t = lines[j]?.trim() ?? "";
-    if (t.startsWith('"""')) {
-      // Empty docstring (`""""""`) is a complete statement, not an opener —
-      // otherwise the forward scan swallows the rest of the file (debugger
-      // finding 3). Forward scan is capped regardless.
-      if (t === '""""""') return "";
-      if (t.length > 6 && t.endsWith('"""')) return collapse(t.slice(3, -3)).slice(0, MAX_DOC_CHARS);
-      const block: string[] = [t.slice(3)];
-      const stop = Math.min(lines.length, j + MAX_NODE_LINES);
-      for (let k = j + 1; k < stop; k++) {
-        const l = lines[k]?.trim() ?? "";
-        if (l.endsWith('"""')) { if (l.length > 3) block.push(l.slice(0, -3)); break; }
-        block.push(l);
+    for (const delim of ['"""', "'''"]) {
+      if (t.startsWith(delim)) {
+        // Empty docstring (`""""""` or `''''''`) is a complete statement, not an opener —
+        // otherwise the forward scan swallows the rest of the file (debugger
+        // finding 3). Forward scan is capped regardless.
+        if (t === delim + delim) return "";
+        if (t.length > 6 && t.endsWith(delim)) return collapse(t.slice(3, -3)).slice(0, MAX_DOC_CHARS);
+        const block: string[] = [t.slice(3)];
+        const stop = Math.min(lines.length, j + MAX_NODE_LINES);
+        for (let k = j + 1; k < stop; k++) {
+          const l = lines[k]?.trim() ?? "";
+          if (l.endsWith(delim)) { if (l.length > 3) block.push(l.slice(0, -3)); break; }
+          block.push(l);
+        }
+        return collapse(block.join(" ")).slice(0, MAX_DOC_CHARS);
       }
-      return collapse(block.join(" ")).slice(0, MAX_DOC_CHARS);
     }
     return "";
   }
@@ -321,22 +426,44 @@ export function scanRepo(repoRoot: string, options: SkipOptions = {}): ScanResul
     for (let i = 0; i < lines.length; i++) {
       const m = matchLine(language, lines[i]!);
       if (!m || m.indent !== 0) continue;
+
+      const header = resolveHeader(lines, i, language);
+
+      // Arrow confirmation: if matchLine flagged this as needing =>
+      // confirmation and resolveHeader didn't find it, skip this match.
+      if (m.needsArrowConfirm && !header.isArrow) continue;
+
       const defLine = lines[i]!;
-      // Brace-less declarations (`type Pair = …;`, `const twice = …;`) and
-      // single-line defs (`enum Color { Red }`) end on their own line — the
-      // forward scan would otherwise bleed to the next brace-like line.
-      const singleLine = language !== "python" && (!defLine.includes("{") || defLine.includes("}"));
-      const end = singleLine ? i + 1 : endLineFor(lines, i, m.indent, language);
+
+      // Single-line determination now uses the resolved header, not just
+      // the first line: a brace on a subsequent header line is NOT single-line.
+      let end: number;
+      if (language === "python") {
+        end = endLineFor(lines, header.headerEndIdx, m.indent, language);
+      } else {
+        // Brace-less (type alias, single-line const, arrow with expression body)
+        // or self-closing (enum Color { Red }):
+        // the header contains both `{` and `}`, or contains neither.
+        const fullHeader = lines.slice(i, header.headerEndIdx + 1).join(" ");
+        const singleLine = !fullHeader.includes("{") || fullHeader.includes("}");
+        end = singleLine
+          ? header.headerEndIdx + 1
+          : endLineFor(lines, header.headerEndIdx, m.indent, language);
+      }
+
       nodes.push({
         kind: m.kind,
         name: m.name,
         filePath: rel,
         startLine: i + 1,
         endLine: end,
-        exported: isExported(lines[i]!, language),
-        doc: docAbove(lines, i + 1, language),
-        signature: normalizeSignature(lines[i]!),
+        exported: isExported(defLine, language),
+        doc: docAbove(lines, i + 1, language, header.bodyStartIdx),
+        signature: header.signature,
       });
+
+      // Skip past the resolved header lines so they aren't re-matched.
+      if (header.headerEndIdx > i) i = header.headerEndIdx;
     }
     files.push({ filePath: rel, sha: sha256(content), nodes });
   }
