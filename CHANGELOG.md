@@ -5,6 +5,17 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.3.2](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.1...v0.3.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* add Python venv directories to SKIP_DIRS ([#11](https://github.com/lordekeen/pi-qdrant-memory/issues/11)) ([33f25c7](https://github.com/lordekeen/pi-qdrant-memory/commit/33f25c7a616a4e5939c0e5948213756730fd8a14))
+* allow clearing API keys via the interactive settings form ([#12](https://github.com/lordekeen/pi-qdrant-memory/issues/12)) ([87f9a7a](https://github.com/lordekeen/pi-qdrant-memory/commit/87f9a7ac58bedf66a8c06a56a9a0e73ee397640a))
+* deduplicate concurrent runCodeSync invocations ([#9](https://github.com/lordekeen/pi-qdrant-memory/issues/9)) ([7b3ec6e](https://github.com/lordekeen/pi-qdrant-memory/commit/7b3ec6eb453578b6a8fb1dd7535427f22a9d99c7))
+* handle multiline declarations in codescan ([#6](https://github.com/lordekeen/pi-qdrant-memory/issues/6), [#7](https://github.com/lordekeen/pi-qdrant-memory/issues/7), [#8](https://github.com/lordekeen/pi-qdrant-memory/issues/8)) ([4dac75d](https://github.com/lordekeen/pi-qdrant-memory/commit/4dac75de06c4ed617e45a093969b5b60e429784b))
+* redact URL credentials in EmbeddingError messages and /qdrant-status ([#10](https://github.com/lordekeen/pi-qdrant-memory/issues/10)) ([48780f6](https://github.com/lordekeen/pi-qdrant-memory/commit/48780f66358ebcafe164930433eb7775289e3942))
+
 ## [0.3.1](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.0...v0.3.1) (2026-09-12)
 
 
