@@ -1,3 +1,5 @@
+import { redactUrl } from "./qdrant.ts";
+
 type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 /** Default per-request timeout (ms) — embedding long text on a slow local
@@ -14,6 +16,7 @@ export class EmbeddingError extends Error {
 // assigned in the constructor body.
 export class EmbeddingClient {
   private readonly url: string;
+  private readonly safeUrl: string;
   private readonly model: string;
   private readonly apiKey: string | null;
   private readonly expectedDimension: number;
@@ -29,6 +32,7 @@ export class EmbeddingClient {
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
   ) {
     this.url = baseURL.replace(/\/+$/, "") + "/embeddings";
+    this.safeUrl = redactUrl(this.url);
     this.model = model;
     this.apiKey = apiKey;
     this.expectedDimension = expectedDimension;
@@ -49,15 +53,15 @@ export class EmbeddingClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      throw new EmbeddingError(`Embedding server unreachable at ${this.url}: ${String(err)}`);
+      throw new EmbeddingError(`Embedding server unreachable at ${this.safeUrl}: ${String(err)}`);
     }
     if (!res.ok) {
-      throw new EmbeddingError(`Embedding request failed at ${this.url}: HTTP ${res.status}`);
+      throw new EmbeddingError(`Embedding request failed at ${this.safeUrl}: HTTP ${res.status}`);
     }
     const json = (await res.json()) as { data?: Array<{ embedding?: number[] }> };
     const embedding = json.data?.[0]?.embedding;
     if (!embedding) {
-      throw new EmbeddingError(`Embedding response missing data[0].embedding from ${this.url}`);
+      throw new EmbeddingError(`Embedding response missing data[0].embedding from ${this.safeUrl}`);
     }
     if (embedding.length !== this.expectedDimension) {
       throw new EmbeddingError(
@@ -82,16 +86,16 @@ export class EmbeddingClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      throw new EmbeddingError(`Embedding server unreachable at ${this.url}: ${String(err)}`);
+      throw new EmbeddingError(`Embedding server unreachable at ${this.safeUrl}: ${String(err)}`);
     }
     if (!res.ok) {
-      throw new EmbeddingError(`Embedding request failed at ${this.url}: HTTP ${res.status}`);
+      throw new EmbeddingError(`Embedding request failed at ${this.safeUrl}: HTTP ${res.status}`);
     }
     const json = (await res.json()) as { data?: Array<{ index?: number; embedding?: number[] }> };
     const data = json.data ?? [];
     if (data.length !== texts.length) {
       throw new EmbeddingError(
-        `Embedding batch response has ${String(data.length)} items for ${String(texts.length)} inputs from ${this.url}`);
+        `Embedding batch response has ${String(data.length)} items for ${String(texts.length)} inputs from ${this.safeUrl}`);
     }
     // OpenAI-compatible servers return items with an explicit `index`; trust it
     // when present, fall back to array order (some local servers omit it).
@@ -101,7 +105,7 @@ export class EmbeddingClient {
         ? item.index
         : out.findIndex((v) => v === undefined);
       if (!item.embedding) {
-        throw new EmbeddingError(`Embedding response missing data[${String(idx)}].embedding from ${this.url}`);
+        throw new EmbeddingError(`Embedding response missing data[${String(idx)}].embedding from ${this.safeUrl}`);
       }
       if (item.embedding.length !== this.expectedDimension) {
         throw new EmbeddingError(
@@ -110,7 +114,7 @@ export class EmbeddingClient {
       out[idx] = item.embedding;
     }
     if (out.some((v) => v === undefined)) {
-      throw new EmbeddingError(`Embedding batch response has gaps from ${this.url}`);
+      throw new EmbeddingError(`Embedding batch response has gaps from ${this.safeUrl}`);
     }
     return out;
   }

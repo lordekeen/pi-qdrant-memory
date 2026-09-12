@@ -32,7 +32,7 @@ import {
 } from "./out.ts";
 import type { CodeMemoryHealth, HelpRow, OutEntry, ProjectSettingRow, SettingsScopeRow, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
-import { QdrantError } from "./qdrant.ts";
+import { QdrantError, redactUrl } from "./qdrant.ts";
 import type { ProjectOverridableField, ProjectSettings } from "./project-settings.ts";
 import type { Config, MemoryType, RuntimeDeps } from "./types.ts";
 
@@ -122,8 +122,8 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
     ...(projectSettings.length ? { projectSettings } : {}),
     detail: {
       collection: io.projectId,
-      qdrantUrl: io.cfg.qdrantUrl,
-      model: `${io.cfg.embeddingModel} @ ${io.cfg.embeddingBaseURL}`,
+      qdrantUrl: redactUrl(io.cfg.qdrantUrl),
+      model: `${io.cfg.embeddingModel} @ ${redactUrl(io.cfg.embeddingBaseURL)}`,
       dimension: io.cfg.expectedDimension,
       threshold: io.cfg.scoreThreshold,
       maxResults: io.cfg.maxResults,

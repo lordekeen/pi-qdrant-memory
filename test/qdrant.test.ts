@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { QdrantClient, QdrantError } from "../src/qdrant.ts";
+import { QdrantClient, QdrantError, redactUrl } from "../src/qdrant.ts";
 import type { PointPayload } from "../src/types.ts";
 
 function jsonRes(body: unknown, status = 200) {
@@ -210,4 +210,19 @@ test("codeIndexSnapshot pages through scroll results and skips malformed payload
   assert.equal(snap.get("src/a.ts"), "aaa");
   assert.equal(snap.get("src/b.ts"), "bbb");
   assert.equal(snap.has("src/broken.ts"), false);
+});
+
+test("redactUrl strips username and password", () => {
+  assert.equal(
+    redactUrl("http://user:s3cret@host:6333/path"),
+    "http://***:***@host:6333/path",
+  );
+});
+
+test("redactUrl is a no-op when no credentials present", () => {
+  assert.equal(redactUrl("http://host:6333"), "http://host:6333/");
+});
+
+test("redactUrl returns unparseable URLs unchanged", () => {
+  assert.equal(redactUrl("not-a-url"), "not-a-url");
 });

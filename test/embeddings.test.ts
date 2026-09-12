@@ -104,3 +104,19 @@ test("embedBatch rejects duplicate indexes via the gap check", async () => {
     ] }));
   await assert.rejects(() => client.embedBatch(["a", "b"]), EmbeddingError);
 });
+
+test("EmbeddingError messages redact URL credentials", async () => {
+  const client = new EmbeddingClient(
+    "http://user:s3cret@embedhost:8080/v1",
+    "m", null, 768,
+    async () => { throw new Error("ECONNREFUSED"); },
+  );
+  try {
+    await client.embed("test");
+    assert.fail("should have thrown");
+  } catch (err) {
+    assert.ok(err instanceof EmbeddingError);
+    assert.ok(!err.message.includes("s3cret"), "password must not appear in error message");
+    assert.ok(err.message.includes("***"), "redacted placeholder must be present");
+  }
+});

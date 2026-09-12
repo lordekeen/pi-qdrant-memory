@@ -113,6 +113,17 @@ test("statusHandler prints mode and collection health", async () => {
   assert.equal(d.emitted[0].kind, "status");
 });
 
+test("statusHandler redacts credentials in detail output", async () => {
+  const d = io();
+  d.globalState.qdrantUrl = "http://admin:hunter2@qdrant.local:6333";
+  d.globalState.embeddingBaseURL = "http://tok:pass@embed.local:8080/v1";
+  await statusHandler(d);
+  const text = d.printed.join("\n");
+  assert.ok(!text.includes("hunter2"), "qdrantUrl password leaked");
+  assert.ok(!text.includes("pass@"), "embeddingBaseURL password leaked");
+  assert.ok(text.includes("***"), "redacted placeholder present");
+});
+
 test("settingsHandler persists field=value and prints confirmation", async () => {
   const d = io();
   await settingsHandler(d, "scoreThreshold", "0.2");

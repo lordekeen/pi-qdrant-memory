@@ -6,7 +6,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Strip any userinfo credentials from a URL before it lands in an error
  * message that will be echoed to the TUI. */
-function redactUrl(url: string): string {
+export function redactUrl(url: string): string {
   try {
     const u = new URL(url);
     if (u.username || u.password) {
