@@ -18,6 +18,7 @@ const fakeQdrant: QdrantLike = {
   async clearCollection() {},
   async deletePointsByFiles() {},
   async codeIndexSnapshot() { return new Map(); },
+  async countBySourceKind() { return 0; },
 };
 
 /** Fake clients only: assert on `rt.cfg`, never on the swapped embed/qdrant

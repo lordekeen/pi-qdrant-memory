@@ -72,6 +72,7 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
     async clearCollection() { qdrantClears++; },
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
   };
   return {
     get cfg() { return effective(); },
@@ -138,6 +139,7 @@ test("statusHandler distinguishes a missing collection from an unreachable serve
     async clearCollection() {},
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
   };
   const d = io({ qdrant: qdrant404 });
   await statusHandler(d);
@@ -274,6 +276,7 @@ test("searchHandler emits an error entry when the search fails", async () => {
     async count() { return 0; }, async clearCollection() {},
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
   };
   const d = io({ qdrant: qdrantErr });
   await searchHandler(d, "query");

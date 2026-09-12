@@ -24,6 +24,7 @@ interface Recorded {
   upserts: Array<Array<{ id: string; payload: StoredPoint }>>;
   snapshot: Map<string, string>;
   failDeletes: boolean;
+  failCount?: boolean;
   /** Simulated point store: point id → payload, so delete-by-file_path is real
    * and a delete after an upsert is observable (the original bug). */
   store: Map<string, StoredPoint>;
@@ -55,6 +56,10 @@ function fakeQdrant() {
       }
     },
     async codeIndexSnapshot() { return rec.snapshot; },
+    async countBySourceKind(_n: string, kind: string) {
+      if (rec.failCount) throw new Error("count boom");
+      return [...rec.store.values()].filter((p) => p.source_kind === kind).length;
+    },
   };
   return { rec, qdrant };
 }
@@ -354,5 +359,73 @@ test("zero-definition files do not churn as changed on every sync", async () => 
     const second = await syncCodeKnowledge(deps(root, qdrant));
     assert.deepEqual(rec.deleted.at(-1), ["src/docs.ts"]);
     void second;
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("collection totals: cold start, converged resync, edit, vanish, and count failure", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-sync-"));
+  try {
+    const aContent = "export function alpha() {}\n";
+    const bContent = "export function beta() {}\n";
+    const cContent = "export function gamma() {}\n";
+    writeFile(root, "src/a.ts", aContent);
+    writeFile(root, "src/b.ts", bContent);
+    writeFile(root, "src/c.ts", cContent);
+    const { rec, qdrant } = fakeQdrant();
+
+    // 1. Cold start: 3 files indexed, totals match deltas
+    const cold = await syncCodeKnowledge(deps(root, qdrant));
+    assert.equal(cold.ok, true);
+    assert.equal(cold.files, 3);
+    assert.equal(cold.symbols, 6); // 3 node + 3 file summaries
+    assert.equal(cold.totalFiles, 3);
+    assert.equal(cold.totalSymbols, 6);
+
+    // Update snapshot to advertise what is stored in rec.store
+    for (const p of rec.store.values()) {
+      if (p.file_path && p.file_sha) rec.snapshot.set(p.file_path, p.file_sha);
+    }
+
+    // 2. Converged pass: delta is 0, but totals reflect collection inventory
+    const converged = await syncCodeKnowledge(deps(root, qdrant));
+    assert.equal(converged.ok, true);
+    assert.equal(converged.files, 0); // delta
+    assert.equal(converged.symbols, 0); // delta
+    assert.equal(converged.totalFiles, 3); // collection total
+    assert.equal(converged.totalSymbols, 6); // collection total
+
+    // 3. Partial sync: edit a.ts to have 2 definitions (3 summaries total for a.ts)
+    const aNewContent = "export function alphaOne() {}\nexport function alphaTwo() {}\n";
+    writeFile(root, "src/a.ts", aNewContent);
+    const edited = await syncCodeKnowledge(deps(root, qdrant));
+    assert.equal(edited.ok, true);
+    assert.equal(edited.files, 1); // delta: only a.ts reindexed
+    assert.equal(edited.symbols, 3); // delta: 2 nodes + 1 file summary for a.ts
+    assert.equal(edited.totalFiles, 3); // total files still 3
+    assert.equal(edited.totalSymbols, 7); // 3 for a.ts + 2 for b.ts + 2 for c.ts
+
+    for (const p of rec.store.values()) {
+      if (p.file_path && p.file_sha) rec.snapshot.set(p.file_path, p.file_sha);
+    }
+
+    // 4. Vanished file: delete c.ts
+    rmSync(join(root, "src/c.ts"));
+    const vanished = await syncCodeKnowledge(deps(root, qdrant));
+    assert.equal(vanished.ok, true);
+    assert.equal(vanished.files, 0); // delta
+    assert.equal(vanished.deleted, 1); // c.ts deleted
+    assert.equal(vanished.totalFiles, 2); // only a.ts and b.ts remain
+    assert.equal(vanished.totalSymbols, 5); // 7 - 2 = 5
+
+    for (const p of rec.store.values()) {
+      if (p.file_path && p.file_sha) rec.snapshot.set(p.file_path, p.file_sha);
+    }
+
+    // 5. countBySourceKind failure degrades gracefully to undefined symbols
+    rec.failCount = true;
+    const degraded = await syncCodeKnowledge(deps(root, qdrant));
+    assert.equal(degraded.ok, true);
+    assert.equal(degraded.totalFiles, 2);
+    assert.equal(degraded.totalSymbols, undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

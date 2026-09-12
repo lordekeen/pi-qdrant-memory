@@ -17,6 +17,7 @@ function deps(over: Partial<RuntimeDeps> = {}): RuntimeDeps & { q: { upserted: Q
     async clearCollection() {},
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
   };
   return {
     cfg: {
@@ -89,6 +90,7 @@ test("memorySearchLogic returns a bare error reason when the search fails", asyn
     async clearCollection() {},
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
   };
   const res = await memorySearchLogic(deps({ qdrant: q }), "q");
   assert.ok(!res.ok);
@@ -106,6 +108,7 @@ test("memorySearchLogic embeds query and searches with type filter and capped li
     async clearCollection() {},
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
   };
   const d = deps({ qdrant: q });
   const res = await memorySearchLogic(d, "what did we decide about transport", "decision", 3);
@@ -125,6 +128,7 @@ test("memorySearchLogic caps limit at maxResults", async () => {
     async clearCollection() {},
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
   };
   const d = deps({ qdrant: q });
   await memorySearchLogic(d, "q", undefined, 1000);
@@ -151,6 +155,7 @@ test("memory_search uses codeScoreThreshold for code queries, scoreThreshold oth
       async clearCollection() {},
       async deletePointsByFiles() {},
       async codeIndexSnapshot() { return new Map<string, string>(); },
+      async countBySourceKind() { return 0; },
     } as unknown as RuntimeDeps["qdrant"],
   });
   await memorySearchLogic(d, "why is auth like this");

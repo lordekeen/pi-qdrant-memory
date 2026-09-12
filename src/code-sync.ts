@@ -46,6 +46,10 @@ export interface SyncResult {
   skipped: number;
   /** File paths invalidated (changed + vanished files). */
   deleted: number;
+  /** Total distinct code files indexed in the collection after sync. */
+  totalFiles?: number;
+  /** Total code-summary points in the collection after sync. */
+  totalSymbols?: number;
 }
 
 
@@ -189,14 +193,40 @@ export async function syncCodeKnowledge(deps: SyncDeps): Promise<SyncResult> {
       for (const p of extras) invalidated.add(p);
     }
 
-    return { ok: true, files: embeddedFiles.size, symbols, skipped, deleted: invalidated.size };
+    const postSyncFiles = new Set(snapshot.keys());
+    for (const p of vanished) postSyncFiles.delete(p);
+    for (const f of changed) {
+      if (f.nodes.length === 0) postSyncFiles.delete(f.filePath);
+    }
+    for (const p of invalidated) {
+      if (!embeddedFiles.has(p)) postSyncFiles.delete(p);
+    }
+    for (const p of embeddedFiles) postSyncFiles.add(p);
+    const totalFiles = postSyncFiles.size;
+
+    let totalSymbols: number | undefined;
+    try {
+      totalSymbols = await deps.qdrant.countBySourceKind(deps.projectId, "code_summary");
+    } catch (err) {
+      console.error(`pi-qdrant-memory: code sync countBySourceKind failed (non-fatal): ${String(err)}`);
+    }
+
+    return {
+      ok: true,
+      files: embeddedFiles.size,
+      symbols,
+      skipped,
+      deleted: invalidated.size,
+      totalFiles,
+      totalSymbols,
+    };
   } catch (err) {
     // Top-level failure (Qdrant down, scan aborted): report it instead of a
     // success-shaped zero — the command emits an error entry and the status
     // row shows failure (spec §10.1/§14, review findings 7/8).
     const reason = err instanceof Error ? err.message : String(err);
     console.error(`pi-qdrant-memory: code sync failed (non-fatal): ${reason}`);
-    return { ok: false, error: reason, files: 0, symbols: 0, skipped: 0, deleted: 0 };
+    return { ok: false, error: reason, files: 0, symbols: 0, skipped: 0, deleted: 0, totalFiles: 0, totalSymbols: 0 };
   }
 }
 

@@ -117,8 +117,8 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
       repoRoot: await codeRepoRoot(),
     });
     codeMemoryState.state = r.ok ? "synced" : "error";
-    codeMemoryState.files = r.files;
-    codeMemoryState.symbols = r.symbols;
+    codeMemoryState.files = r.totalFiles;
+    codeMemoryState.symbols = r.totalSymbols;
     void refreshStatus(); // footer count now includes code points
     return r;
   };

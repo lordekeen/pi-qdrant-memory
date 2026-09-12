@@ -126,6 +126,22 @@ test("count returns point count", async () => {
   assert.equal(await client.count("pi-mem-abc"), 7);
 });
 
+test("countBySourceKind counts points matching source_kind filter", async () => {
+  let seenBody: unknown;
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points/count", (_u, i) => {
+    seenBody = JSON.parse(String(i.body));
+    return jsonRes({ result: { count: 42 } });
+  });
+  const client = makeClient(routes);
+  const count = await client.countBySourceKind("pi-mem-abc", "code_summary");
+  assert.equal(count, 42);
+  assert.deepEqual(seenBody, {
+    filter: { must: [{ key: "source_kind", match: { value: "code_summary" } }] },
+    exact: true,
+  });
+});
+
 test("network errors are wrapped as QdrantError", async () => {
   const client = new QdrantClient("http://qdrant:6333", null,
     async () => { throw new Error("ECONNREFUSED"); });

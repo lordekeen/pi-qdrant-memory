@@ -165,7 +165,7 @@ project settings: codeKnowledge = on (global: off); codeScoreThreshold = 0.6 (gl
 The `code memory:` row appears only while the feature is wired (registration-time
 `codeKnowledge: on`). Variants: `code memory: off` (muted slot),
 `code memory: on (syncing…)` (dim slot, before the first sync lands),
-`code memory: ✓ {files} files · {symbols} symbols` (success slot, after a sync).
+`code memory: ✓ {files} files · {symbols} symbols` (success slot, reporting total indexed collection inventory after a sync).
 
 The `project settings:` row sits in the config-detail block (after `dimension:`,
 with `qdrant url:` / `model:`) and is emitted only when this project has ≥ 1

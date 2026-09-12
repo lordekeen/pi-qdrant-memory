@@ -45,6 +45,8 @@ export interface QdrantLike {
   deletePointsByFiles(name: string, filePaths: string[]): Promise<void>;
   /** Previously indexed code files: file_path → file_sha. */
   codeIndexSnapshot(name: string): Promise<Map<string, string>>;
+  /** Count points matching a source_kind filter. */
+  countBySourceKind(name: string, kind: string): Promise<number>;
 }
 
 type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -186,6 +188,14 @@ export class QdrantClient implements QdrantLike {
 
   async count(name: string): Promise<number> {
     const json = await this.request("POST", `/collections/${encodeURIComponent(name)}/points/count`, { exact: true }) as { result: { count: number } };
+    return json.result.count;
+  }
+
+  async countBySourceKind(name: string, kind: string): Promise<number> {
+    const json = await this.request("POST",
+      `/collections/${encodeURIComponent(name)}/points/count`,
+      { filter: { must: [{ key: "source_kind", match: { value: kind } }] }, exact: true },
+    ) as { result: { count: number } };
     return json.result.count;
   }
 

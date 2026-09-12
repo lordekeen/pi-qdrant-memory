@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { wireApi } from "../src/index.ts";
 import type { WireApi } from "../src/index.ts";
 import type { Config, RuntimeDeps } from "../src/types.ts";
@@ -10,6 +11,8 @@ import type { QdrantLike } from "../src/qdrant.ts";
 import { QdrantError } from "../src/qdrant.ts";
 import { readEffectiveConfig, saveProjectSettings } from "../src/project-settings.ts";
 import { projectIdFrom } from "../src/project.ts";
+import { outText } from "../src/out.ts";
+import type { OutEntry } from "../src/out.ts";
 
 async function settle(): Promise<void> {
   // refreshStatus is fire-and-forget; yield two ticks so its awaits resolve.
@@ -39,6 +42,7 @@ const qdrant: QdrantLike = {
   async search() { return []; }, async count() { return 0; }, async clearCollection() {},
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
 };
 
 const rt: RuntimeDeps = {
@@ -365,6 +369,57 @@ test("session_start gate reads the LIVE effective value: an override-on project 
       // the next session even though this session's tool set is fixed).
       assert.equal(localRt.cfg.codeKnowledge, "on");
       assert.ok(snapshots >= 1, "override-on must run the code sync even when registration-time codeKnowledge was off");
+    } finally { cleanup(); }
+  } finally { rmSync(agentDir, { recursive: true, force: true }); }
+});
+
+test("qdrant-status reflects collection totals from codeMemoryState after sync", async () => {
+  const agentDir = idxAgentDir();
+  try {
+    const repo = gitRepo(agentDir, "target");
+    const sha = (c: string): string => createHash("sha256").update(c).digest("hex");
+    const bContent = "export function beta() {}\n";
+    const cContent = "export function gamma() {}\n";
+    writeFileSync(join(repo, "a.ts"), "export function alpha() {}\n");
+    writeFileSync(join(repo, "b.ts"), bContent);
+    writeFileSync(join(repo, "c.ts"), cContent);
+    const targetId = await projectIdFrom(repo);
+    saveProjectSettings(agentDir, targetId, { codeKnowledge: "on" });
+
+    const snapshot = new Map<string, string>([
+      ["a.ts", "stale-sha"],
+      ["b.ts", sha(bContent)],
+      ["c.ts", sha(cContent)],
+    ]);
+
+    const recording: QdrantLike = {
+      ...qdrant,
+      async codeIndexSnapshot() { return snapshot; },
+      async countBySourceKind() { return 18; },
+    };
+    const localRt = runtimeWith(
+      agentDir,
+      { ...rt.cfg, codeKnowledge: "on" },
+      recording,
+      async (t) => t.map(() => new Array(768).fill(0.1)),
+    );
+    const api = fakeApi();
+    const cleanup = wireApi(api, localRt);
+    try {
+      const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+      await onStart({}, { cwd: repo });
+      await settle();
+      await settle();
+
+      const statusCmd = (api.commands as Array<{ name: string; execute: () => Promise<void> }>).find((c) => c.name === "qdrant-status");
+      assert.ok(statusCmd);
+      await statusCmd.execute();
+
+      const lastEntry = api.entries.at(-1) as { kind: string; health: { codeMemory?: { files?: number; symbols?: number } } };
+      assert.equal(lastEntry.kind, "status");
+      assert.equal(lastEntry.health.codeMemory?.files, 3); // 3 total files
+      assert.equal(lastEntry.health.codeMemory?.symbols, 18); // 18 total symbols
+      assert.match(outText(lastEntry as OutEntry), /3 files · 18 symbols/);
     } finally { cleanup(); }
   } finally { rmSync(agentDir, { recursive: true, force: true }); }
 });
