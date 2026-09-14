@@ -47,6 +47,8 @@ export interface QdrantLike {
   codeIndexSnapshot(name: string): Promise<Map<string, string>>;
   /** Count points matching a source_kind filter. */
   countBySourceKind(name: string, kind: string): Promise<number>;
+  /** Retrieve the subset of given point IDs that already exist in the collection. */
+  existingPointIds?(name: string, ids: string[]): Promise<Set<string>>;
 }
 
 type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -252,5 +254,20 @@ export class QdrantClient implements QdrantLike {
       offset = next;
     }
     return out;
+  }
+
+  async existingPointIds(name: string, ids: string[]): Promise<Set<string>> {
+    if (!ids.length) return new Set();
+    const enc = encodeURIComponent(name);
+    try {
+      const json = await this.request("POST", `/collections/${enc}/points`, {
+        ids,
+        with_payload: false,
+        with_vector: false,
+      }) as { result?: Array<{ id: string | number }> };
+      return new Set((json.result ?? []).map((p) => String(p.id)));
+    } catch {
+      return new Set();
+    }
   }
 }

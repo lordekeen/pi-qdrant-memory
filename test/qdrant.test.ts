@@ -226,3 +226,26 @@ test("redactUrl is a no-op when no credentials present", () => {
 test("redactUrl returns unparseable URLs unchanged", () => {
   assert.equal(redactUrl("not-a-url"), "not-a-url");
 });
+
+test("existingPointIds queries Qdrant and returns set of found point ids (#17)", async () => {
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  let requestedBody: unknown;
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points", (_u, i) => {
+    requestedBody = JSON.parse(String(i.body));
+    return jsonRes({
+      result: [{ id: "id1" }, { id: "id3" }],
+    });
+  });
+  const client = makeClient(routes);
+  const found = await client.existingPointIds("pi-mem-abc", ["id1", "id2", "id3"]);
+  assert.deepEqual(requestedBody, { ids: ["id1", "id2", "id3"], with_payload: false, with_vector: false });
+  assert.equal(found.size, 2);
+  assert.ok(found.has("id1"));
+  assert.ok(!found.has("id2"));
+  assert.ok(found.has("id3"));
+
+  // Empty ids returns empty set without network request
+  const empty = await client.existingPointIds("pi-mem-abc", []);
+  assert.equal(empty.size, 0);
+});
+

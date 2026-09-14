@@ -304,7 +304,12 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
       const arts = readPendingArtifacts(rt.agentDir);
       const items = arts.map((a) => artifactToIngestItem(a, rt.projectId, Date.now()));
       if (items.length) {
-        await ingestItems({ embed: rt.embed, qdrant: rt.qdrant, projectId: rt.projectId }, rt.cfg.expectedDimension, items);
+        await ingestItems({
+          embed: rt.embed,
+          embedBatch: rt.embedBatch,
+          qdrant: rt.qdrant,
+          projectId: rt.projectId,
+        }, rt.cfg.expectedDimension, items);
       }
     } catch (err) {
       console.error(`pi-qdrant-memory: Mode-1 pending ingest error (non-fatal): ${String(err)}`);

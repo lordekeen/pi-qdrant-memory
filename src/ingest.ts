@@ -19,6 +19,7 @@ export interface IngestItem {
 
 export interface IngestDeps {
   embed: (text: string) => Promise<number[]>;
+  embedBatch?: (texts: string[]) => Promise<number[][]>;
   qdrant: QdrantLike;
   projectId: string;
 }
@@ -38,18 +39,65 @@ export async function ingestItems(
   items: IngestItem[],
 ): Promise<{ attempted: number; ingested: number }> {
   await ensureAndGet(deps, dim);
-  const points: QdrantPoint[] = [];
-  let ingested = 0;
-  for (const item of items) {
+
+  const itemsWithIds = items.map((item) => ({
+    item,
+    id: pointId(item.text, item.sourceKind, item.contextId),
+  }));
+
+  let needed = itemsWithIds;
+  if (deps.qdrant.existingPointIds) {
     try {
-      const vector = await deps.embed(item.text);
-      const id = pointId(item.text, item.sourceKind, item.contextId);
-      points.push({ id, vector, payload: { ...item.payload, text: item.text } as PointPayload });
-      ingested++;
-    } catch (err) {
-      console.error(`pi-qdrant-memory: ingest skipped (embed failed): ${String(err)}`);
+      const existing = await deps.qdrant.existingPointIds(deps.projectId, itemsWithIds.map((x) => x.id));
+      if (existing.size > 0) {
+        needed = itemsWithIds.filter((x) => !existing.has(x.id));
+      }
+    } catch {
+      // Non-fatal: fall back to processing all items
     }
   }
+
+  if (!needed.length) {
+    return { attempted: items.length, ingested: 0 };
+  }
+
+  const points: QdrantPoint[] = [];
+  let ingested = 0;
+
+  if (deps.embedBatch) {
+    for (let i = 0; i < needed.length; i += 32) {
+      const chunk = needed.slice(i, i + 32);
+      try {
+        const vectors = await deps.embedBatch(chunk.map((x) => x.item.text));
+        for (let j = 0; j < chunk.length; j++) {
+          const entry = chunk[j]!;
+          points.push({
+            id: entry.id,
+            vector: vectors[j]!,
+            payload: { ...entry.item.payload, text: entry.item.text } as PointPayload,
+          });
+          ingested++;
+        }
+      } catch (err) {
+        console.error(`pi-qdrant-memory: ingest batch skipped (embed failed): ${String(err)}`);
+      }
+    }
+  } else {
+    for (const entry of needed) {
+      try {
+        const vector = await deps.embed(entry.item.text);
+        points.push({
+          id: entry.id,
+          vector,
+          payload: { ...entry.item.payload, text: entry.item.text } as PointPayload,
+        });
+        ingested++;
+      } catch (err) {
+        console.error(`pi-qdrant-memory: ingest skipped (embed failed): ${String(err)}`);
+      }
+    }
+  }
+
   if (points.length) {
     try {
       await deps.qdrant.upsert(deps.projectId, points);

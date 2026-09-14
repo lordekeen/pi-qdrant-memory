@@ -60,3 +60,51 @@ test("ingestItems never throws and reports embed failures as skipped", async () 
   assert.equal(res.attempted, 1);
   assert.equal(res.ingested, 0);
 });
+
+test("ingestItems skips items that already exist in Qdrant and makes 0 embed calls (#17)", async () => {
+  const q = fakeQdrant();
+  const existingId = pointId("already stored", "remember_tool", "s1");
+  q.existingPointIds = async (_name: string, ids: string[]) => new Set(ids.filter((id) => id === existingId));
+
+  const embedded: string[] = [];
+  const deps = {
+    embed: async (t: string) => { embedded.push(t); return new Array(768).fill(0.1); },
+    qdrant: q, projectId: "pi-mem-abc",
+  };
+
+  const res = await ingestItems(deps, 768, [
+    { text: "already stored", sourceKind: "remember_tool" as const, contextId: "s1",
+      payload: { type: "decision" as const, project_id: "pi-mem-abc", ts: 1, source_kind: "remember_tool" as const } },
+  ]);
+  assert.equal(res.attempted, 1);
+  assert.equal(res.ingested, 0);
+  assert.equal(embedded.length, 0);
+  assert.equal(q.upserted.length, 0);
+});
+
+test("ingestItems uses embedBatch when available for pending items (#17)", async () => {
+  const q = fakeQdrant();
+  const batchCalls: string[][] = [];
+  const deps = {
+    embed: async () => { throw new Error("should not be called"); },
+    embedBatch: async (texts: string[]) => {
+      batchCalls.push(texts);
+      return texts.map(() => new Array(768).fill(0.2));
+    },
+    qdrant: q, projectId: "pi-mem-abc",
+  };
+
+  const res = await ingestItems(deps, 768, [
+    { text: "item1", sourceKind: "remember_tool" as const, contextId: "s1",
+      payload: { type: "decision" as const, project_id: "pi-mem-abc", ts: 1, source_kind: "remember_tool" as const } },
+    { text: "item2", sourceKind: "remember_tool" as const, contextId: "s2",
+      payload: { type: "decision" as const, project_id: "pi-mem-abc", ts: 2, source_kind: "remember_tool" as const } },
+  ]);
+  assert.equal(res.attempted, 2);
+  assert.equal(res.ingested, 2);
+  assert.equal(batchCalls.length, 1);
+  assert.deepEqual(batchCalls[0], ["item1", "item2"]);
+  assert.equal(q.upserted.length, 1);
+  assert.equal(q.upserted[0]!.length, 2);
+});
+
