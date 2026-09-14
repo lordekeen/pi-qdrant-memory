@@ -5,6 +5,18 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.3.3](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.2...v0.3.3) (2026-09-14)
+
+
+### Bug Fixes
+
+* chunk oversized embed batches to SYNC_BATCH_SIZE in code sync ([#16](https://github.com/lordekeen/pi-qdrant-memory/issues/16)) ([43c6154](https://github.com/lordekeen/pi-qdrant-memory/commit/43c61548dedcff4f088f4de28db2e04be550648f))
+* extract split arrow function declarations in codescan ([#15](https://github.com/lordekeen/pi-qdrant-memory/issues/15)) ([2aae05d](https://github.com/lordekeen/pi-qdrant-memory/commit/2aae05d3c4d60303327ea6824ea625c16259c7f4))
+* handle parameter braces and destructuring in codescan ([#14](https://github.com/lordekeen/pi-qdrant-memory/issues/14)) ([3df7456](https://github.com/lordekeen/pi-qdrant-memory/commit/3df7456d00819bcaca52e3b33dd71c8480622f84))
+* scan past 200 lines to find definition endLine in codescan ([#19](https://github.com/lordekeen/pi-qdrant-memory/issues/19)) ([14bbeb6](https://github.com/lordekeen/pi-qdrant-memory/commit/14bbeb6ad8369ff21a3136b5d88b0ccbce3d7145))
+* skip existing points and batch embeds in pending ingest ([#17](https://github.com/lordekeen/pi-qdrant-memory/issues/17)) ([227918f](https://github.com/lordekeen/pi-qdrant-memory/commit/227918f820b0e739f766dbc8ff8eb2db30275b11))
+* warn when project override is masked by an env variable ([#18](https://github.com/lordekeen/pi-qdrant-memory/issues/18)) ([a8998ca](https://github.com/lordekeen/pi-qdrant-memory/commit/a8998ca1acf0ce39c598e88fcc1324c0394f4142))
+
 ## [0.3.2](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.1...v0.3.2) (2026-09-12)
 
 
