@@ -429,3 +429,40 @@ test("collection totals: cold start, converged resync, edit, vanish, and count f
     assert.equal(degraded.totalSymbols, undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("large file definitions are chunked so embedBatch never exceeds SYNC_BATCH_SIZE (#16)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-qm-sync-"));
+  try {
+    // 70 functions + 1 file summary = 71 summaries.
+    const manyLines = Array.from(
+      { length: 70 },
+      (_v, i) => `export function fn${String(i)}() {}`,
+    ).join("\n") + "\n";
+    writeFile(root, "src/huge.ts", manyLines);
+    const { rec, qdrant } = fakeQdrant();
+
+    const batchSizes: number[] = [];
+    const d: SyncDeps = {
+      ...deps(root, qdrant),
+      embedBatch: async (texts: string[]) => {
+        batchSizes.push(texts.length);
+        if (texts.length > SYNC_BATCH_SIZE) {
+          throw new Error(`Batch size ${texts.length} exceeded SYNC_BATCH_SIZE ${SYNC_BATCH_SIZE}`);
+        }
+        return texts.map(() => [0.1, 0.2, 0.3]);
+      },
+    };
+
+    const res = await syncCodeKnowledge(d);
+    assert.equal(res.ok, true);
+    assert.equal(res.files, 1);
+    assert.equal(res.symbols, 71);
+    // Verified: every call was <= SYNC_BATCH_SIZE (32, 32, 7)
+    assert.deepEqual(batchSizes, [32, 32, 7]);
+    for (const size of batchSizes) {
+      assert.ok(size <= SYNC_BATCH_SIZE);
+    }
+    assert.equal(rec.store.size, 71);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+

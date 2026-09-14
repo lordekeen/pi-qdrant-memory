@@ -128,7 +128,12 @@ export async function syncCodeKnowledge(deps: SyncDeps): Promise<SyncResult> {
     for (const batch of batches) {
       let vectors: number[][];
       try {
-        vectors = await deps.embedBatch(batch.map((s) => s.text));
+        vectors = [];
+        for (let offset = 0; offset < batch.length; offset += SYNC_BATCH_SIZE) {
+          const chunk = batch.slice(offset, offset + SYNC_BATCH_SIZE);
+          const chunkVectors = await deps.embedBatch(chunk.map((s) => s.text));
+          vectors.push(...chunkVectors);
+        }
       } catch (err) {
         // Skip the batch; the files' previous points stay untouched and the
         // next sync retries them (snapshot still shows the old sha).
