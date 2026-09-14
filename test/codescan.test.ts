@@ -438,5 +438,26 @@ test("scanRepo handles parameter braces in destructuring and inline object types
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("scanRepo correctly extracts endLine for definitions longer than 200 lines (#19)", () => {
+  const root = fixture();
+  try {
+    const body = Array.from({ length: 250 }, (_v, i) => `  const x${i} = ${i};`).join("\n");
+    writeFileSync(join(root, "long.ts"), [
+      "export function longFunction(): void {",
+      body,
+      "}",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    assert.equal(files.length, 1);
+    const node = files[0]!.nodes[0]!;
+    assert.equal(node.name, "longFunction");
+    assert.equal(node.startLine, 1);
+    assert.equal(node.endLine, 252);
+    const summary = summaryFor(node);
+    assert.match(summary, /long\.ts:1-252/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
 
 

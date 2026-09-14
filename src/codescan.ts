@@ -12,7 +12,7 @@ import { join, relative, sep } from "node:path";
 /** Hard limits (spec §6.1) — protect the embed budget and the event loop. */
 export const MAX_FILE_BYTES = 1_000_000;
 export const MAX_FILES = 2_000;
-const MAX_NODE_LINES = 200;
+const MAX_DOC_LINES = 200;
 const MAX_DOC_CHARS = 400;
 const MAX_SIGNATURE_CHARS = 200;
 
@@ -302,7 +302,7 @@ function docAbove(
         if (t === delim + delim) return "";
         if (t.length > 6 && t.endsWith(delim)) return collapse(t.slice(3, -3)).slice(0, MAX_DOC_CHARS);
         const block: string[] = [t.slice(3)];
-        const stop = Math.min(lines.length, j + MAX_NODE_LINES);
+        const stop = Math.min(lines.length, j + MAX_DOC_LINES);
         for (let k = j + 1; k < stop; k++) {
           const l = lines[k]?.trim() ?? "";
           if (l.endsWith(delim)) { if (l.length > 3) block.push(l.slice(0, -3)); break; }
@@ -345,17 +345,16 @@ function docAbove(
   return collapse(collected.join(" ")).slice(0, MAX_DOC_CHARS);
 }
 
-/** End line: closing brace at def indent (or EOF/200-line cap), or next
+/** End line: closing brace at def indent (or EOF), or next
  * indent ≤ def (python). Indent counts tabs+spaces (debugger finding 4). */
 function endLineFor(lines: string[], startIdx: number, defIndent: number, language: "tsjs" | "python" | "fallback"): number {
-  const last = Math.min(lines.length, startIdx + 1 + MAX_NODE_LINES);
   const indentOf = (t: string): number => t.match(/^[\t ]*/)?.[0].length ?? 0;
   if (language === "python") {
     // End = last body line (1-based) before the first non-blank line at or
     // below the def's indent. Blank/comment lines inside the body don't end it.
     let lastContent = startIdx;
-    for (let i = startIdx + 1; i < last; i++) {
-      const t = lines[i];
+    for (let i = startIdx + 1; i < lines.length; i++) {
+      const t = lines[i]!;
       if (t.trim() === "" || t.trim().startsWith("#")) continue;
       if (indentOf(t) <= defIndent) break;
       lastContent = i;
@@ -365,12 +364,12 @@ function endLineFor(lines: string[], startIdx: number, defIndent: number, langua
   // The closing brace must sit at the def's own indent — a nested bare `}`
   // (closing an inner if/try) must not terminate the node (debugger finding 1:
   // 73/161 nodes on this very repo had wrong ranges without the guard).
-  for (let i = startIdx + 1; i < last; i++) {
-    const t = lines[i];
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const t = lines[i]!;
     if (t.trim() === "") continue;
     if (indentOf(t) <= defIndent && (t.startsWith("}") || t.endsWith("}"))) return i + 1;
   }
-  return last;
+  return lines.length;
 }
 
 function normalizeSignature(line: string): string {
