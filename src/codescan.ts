@@ -160,6 +160,10 @@ interface ResolvedHeader {
   isArrow: boolean;
   /** The full concatenated + collapsed signature text. */
   signature: string;
+  /** True if the header terminated with an opening body `{`. */
+  hasBodyBrace: boolean;
+  /** 0-based character index of the opening body `{` on `lines[headerEndIdx]`, if hasBodyBrace. */
+  bodyBraceCharIdx?: number;
 }
 
 /**
@@ -187,6 +191,7 @@ function resolveHeader(
           headerEndIdx: j,
           bodyStartIdx: j + 1,
           isArrow: false,
+          hasBodyBrace: false,
           signature: normalizeSignature(sigParts.join(" ")),
         };
       }
@@ -196,12 +201,15 @@ function resolveHeader(
       headerEndIdx: startIdx,
       bodyStartIdx: startIdx + 1,
       isArrow: false,
+      hasBodyBrace: false,
       signature: normalizeSignature(lines[startIdx]!),
     };
   }
 
   // tsjs / fallback: scan for `{` or `=>`.
   let isArrow = false;
+  let parenDepth = 0;
+  let inQuote: string | null = null;
   for (let j = startIdx; j < limit; j++) {
     const t = lines[j]!;
     sigParts.push(t);
@@ -210,22 +218,46 @@ function resolveHeader(
       isArrow = true;
     }
 
-    if (t.includes("{")) {
+    let bodyBraceIdx = -1;
+    for (let cIdx = 0; cIdx < t.length; cIdx++) {
+      const ch = t[cIdx];
+      if (inQuote) {
+        if (ch === inQuote && t[cIdx - 1] !== "\\") {
+          inQuote = null;
+        }
+      } else {
+        if (ch === '"' || ch === "'" || ch === "`") {
+          inQuote = ch;
+        } else if (ch === "(") {
+          parenDepth++;
+        } else if (ch === ")") {
+          if (parenDepth > 0) parenDepth--;
+        } else if (ch === "{" && parenDepth === 0) {
+          bodyBraceIdx = cIdx;
+          break;
+        }
+      }
+    }
+
+    if (bodyBraceIdx !== -1) {
       return {
         headerEndIdx: j,
         bodyStartIdx: j + 1,
         isArrow,
+        hasBodyBrace: true,
+        bodyBraceCharIdx: bodyBraceIdx,
         signature: normalizeSignature(sigParts.join(" ")),
       };
     }
 
     // A `;` at the definition indent or end of statement means a brace-less declaration
     // (type alias, arrow function with expression body, const without braces); stop scanning.
-    if (t.trimEnd().endsWith(";")) {
+    if (parenDepth === 0 && t.trimEnd().endsWith(";")) {
       return {
         headerEndIdx: j,
         bodyStartIdx: j + 1,
         isArrow,
+        hasBodyBrace: false,
         signature: normalizeSignature(sigParts.join(" ")),
       };
     }
@@ -236,6 +268,7 @@ function resolveHeader(
     headerEndIdx: startIdx,
     bodyStartIdx: startIdx + 1,
     isArrow,
+    hasBodyBrace: false,
     signature: normalizeSignature(lines[startIdx]!),
   };
 }
@@ -440,15 +473,20 @@ export function scanRepo(repoRoot: string, options: SkipOptions = {}): ScanResul
       let end: number;
       if (language === "python") {
         end = endLineFor(lines, header.headerEndIdx, m.indent, language);
-      } else {
-        // Brace-less (type alias, single-line const, arrow with expression body)
-        // or self-closing (enum Color { Red }):
-        // the header contains both `{` and `}`, or contains neither.
-        const fullHeader = lines.slice(i, header.headerEndIdx + 1).join(" ");
-        const singleLine = !fullHeader.includes("{") || fullHeader.includes("}");
-        end = singleLine
+      } else if (header.hasBodyBrace) {
+        // If the header terminated with a body `{`, check whether the body closed
+        // on the same line (e.g. `export function noop() {}` or `enum Color { Red }`).
+        // Parameter destructuring braces (e.g. `{ port, host }`) precede `bodyBraceCharIdx`
+        // and cannot close the body.
+        const endLineText = lines[header.headerEndIdx]!;
+        const closedOnSameLine = header.bodyBraceCharIdx !== undefined
+          && endLineText.indexOf("}", header.bodyBraceCharIdx) !== -1;
+        end = closedOnSameLine
           ? header.headerEndIdx + 1
           : endLineFor(lines, header.headerEndIdx, m.indent, language);
+      } else {
+        // Brace-less declaration (type alias, arrow with expression body):
+        end = header.headerEndIdx + 1;
       }
 
       nodes.push({

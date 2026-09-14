@@ -393,4 +393,50 @@ test("scanRepo rejects multiline non-arrow assignments with parentheses", () => 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("scanRepo handles parameter braces in destructuring and inline object types (#14)", () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, "destruct.ts"), [
+      "export function setupSingle({ port, host }: ServerConfig): void {",
+      "  startServer(port, host);",
+      "}",
+      "",
+      "export function setupMulti(",
+      "  options: { port: number }",
+      "): void {",
+      "  start();",
+      "}",
+      "",
+      "export const arrowDestruct = ({ a, b }: { a: number; b: string }): void => {",
+      "  console.log(a, b);",
+      "};",
+      "",
+      "export function noopDestruct({ x }: { x: number }): void {}",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
+
+    const single = byName.get("setupSingle")!;
+    assert.equal(single.startLine, 1);
+    assert.equal(single.endLine, 3);
+    assert.ok(single.signature.includes("setupSingle({ port, host }: ServerConfig): void"));
+
+    const multi = byName.get("setupMulti")!;
+    assert.equal(multi.startLine, 5);
+    assert.equal(multi.endLine, 9);
+    assert.ok(multi.signature.includes("setupMulti("));
+    assert.ok(multi.signature.includes("options: { port: number }"));
+    assert.ok(multi.signature.includes("): void"));
+
+    const arrow = byName.get("arrowDestruct")!;
+    assert.equal(arrow.startLine, 11);
+    assert.equal(arrow.endLine, 13);
+
+    const noop = byName.get("noopDestruct")!;
+    assert.equal(noop.startLine, 15);
+    assert.equal(noop.endLine, 15);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
 
