@@ -458,6 +458,28 @@ test("scanRepo correctly extracts endLine for definitions longer than 200 lines 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("scanRepo extracts split arrow functions with return type on next line (#15)", () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, "splitarrow.ts"), [
+      "export const formatValue = (value: number)",
+      "  : string => {",
+      "  return value.toFixed(2);",
+      "};",
+    ].join("\n"));
+    const { files } = scanRepo(root);
+    assert.equal(files.length, 1);
+    assert.equal(files[0]!.nodes.length, 1);
+    const node = files[0]!.nodes[0]!;
+    assert.equal(node.name, "formatValue");
+    assert.equal(node.kind, "function");
+    assert.equal(node.startLine, 1);
+    assert.equal(node.endLine, 4);
+    assert.ok(node.signature.includes("formatValue = (value: number) : string"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
 
 
 

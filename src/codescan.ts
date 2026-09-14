@@ -106,10 +106,10 @@ function matchLine(language: "tsjs" | "python" | "fallback", line: string): Line
     if (m) return { kind: "function", name: m[3], indent };
     m = /^(export\s+)?(const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(async\s*)?[A-Za-z_$][\w$]*\s*=>/.exec(t);
     if (m) return { kind: "function", name: m[3], indent };
-    // Multiline arrow: opening `(` without a close on the same line — the
+    // Multiline arrow: opening `(` without `=>` on the same line — the
     // resolveHeader scan will confirm `=>` on a subsequent line.
-    m = /^(export\s+)?(const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(async\s*)?\(/.exec(t);
-    if (m && !t.includes(")")) return { kind: "function", name: m[3], indent, needsArrowConfirm: true };
+    m = /^(export\s+)?(const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(async\s*)?(<[^>]*>)?\s*\(/.exec(t);
+    if (m && !t.includes("=>")) return { kind: "function", name: m[3], indent, needsArrowConfirm: true };
     m = /^(export\s+)?enum\s+([A-Za-z_$][\w$]*)/.exec(t);
     if (m) return { kind: "enum", name: m[2], indent };
     return undefined;
