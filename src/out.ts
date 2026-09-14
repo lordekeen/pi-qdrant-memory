@@ -123,8 +123,14 @@ export function settingsUsageText(p: { projectPath: string; globalPath: string; 
 }
 
 /** Allowlisted set confirmation (names this project and the global fallback). */
-export function settingsUpdatedText(field: string, value: string | number, globalValue: string | number): string {
-  return `settings: ${field} = ${String(value)} (this project; global: ${String(globalValue)})`;
+export function settingsUpdatedText(
+  field: string,
+  value: string | number,
+  globalValue: string | number,
+  maskNote?: string,
+): string {
+  const base = `settings: ${field} = ${String(value)} (this project; global: ${String(globalValue)})`;
+  return maskNote ? `${base} — ${maskNote}` : base;
 }
 
 /** The nine non-allowlisted keys: today's confirmation with a scope clause. */
@@ -133,8 +139,13 @@ export function settingsGlobalUpdatedText(field: string): string {
 }
 
 /** Allowlisted clear confirmation (names the global value now in effect). */
-export function settingsOverrideClearedText(field: string, globalValue: string | number): string {
-  return `settings: ${field} override cleared (now using global: ${String(globalValue)})`;
+export function settingsOverrideClearedText(
+  field: string,
+  globalValue: string | number,
+  maskNote?: string,
+): string {
+  const base = `settings: ${field} override cleared (now using global: ${String(globalValue)})`;
+  return maskNote ? `${base} — ${maskNote}` : base;
 }
 
 /** Form select option that clears an allowlisted override. */

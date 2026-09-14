@@ -304,7 +304,15 @@ test("settingsUsageText is one multi-line string naming the scope rule and both 
 test("settings set/clear/global confirmation strings", () => {
   assert.equal(settingsUpdatedText("codeKnowledge", "on", "off"), "settings: codeKnowledge = on (this project; global: off)");
   assert.equal(settingsUpdatedText("codeScoreThreshold", 0.6, 0.55), "settings: codeScoreThreshold = 0.6 (this project; global: 0.55)");
+  assert.equal(
+    settingsUpdatedText("codeKnowledge", "off", "off", "NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on"),
+    "settings: codeKnowledge = off (this project; global: off) — NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on",
+  );
   assert.equal(settingsOverrideClearedText("codeKnowledge", "off"), "settings: codeKnowledge override cleared (now using global: off)");
+  assert.equal(
+    settingsOverrideClearedText("codeKnowledge", "off", "NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on"),
+    "settings: codeKnowledge override cleared (now using global: off) — NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on",
+  );
   assert.equal(settingsGlobalUpdatedText("qdrantUrl"), "settings: qdrantUrl updated (global config; reloaded at runtime)");
 });
 

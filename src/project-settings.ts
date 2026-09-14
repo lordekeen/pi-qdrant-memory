@@ -145,3 +145,33 @@ export function readEffectiveConfig(
   }
   return cfg;
 }
+
+/**
+ * Detect whether a project-overridable field is currently masked by an active
+ * environment variable.
+ */
+export function envMask(
+  field: ProjectOverridableField,
+  env: NodeJS.ProcessEnv = process.env,
+): { envVar: string; envVal: string } | undefined {
+  if (field === "codeKnowledge") {
+    const val = env.PI_QDRANT_CODE_KNOWLEDGE;
+    if (isConfigKnowledge(val)) {
+      return { envVar: "PI_QDRANT_CODE_KNOWLEDGE", envVal: val };
+    }
+  } else if (field === "codeScoreThreshold") {
+    const val = env.PI_QDRANT_CODE_SCORE_THRESHOLD;
+    if (val !== undefined && Number.isFinite(Number(val))) {
+      return { envVar: "PI_QDRANT_CODE_SCORE_THRESHOLD", envVal: val };
+    }
+  }
+  return undefined;
+}
+
+export function maskNote(
+  field: ProjectOverridableField,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const mask = envMask(field, env);
+  return mask ? `NOTE: currently masked by ${mask.envVar}=${mask.envVal}` : undefined;
+}

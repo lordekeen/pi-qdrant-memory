@@ -33,6 +33,7 @@ import {
 import type { CodeMemoryHealth, HelpRow, OutEntry, ProjectSettingRow, SettingsScopeRow, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
 import { QdrantError, redactUrl } from "./qdrant.ts";
+import { maskNote } from "./project-settings.ts";
 import type { ProjectOverridableField, ProjectSettings } from "./project-settings.ts";
 import type { Config, MemoryType, RuntimeDeps } from "./types.ts";
 
@@ -52,6 +53,8 @@ export interface HandlerIO {
   emit(e: OutEntry): void;
   /** Live code-memory sync state; present only when the feature is wired. */
   codeMemory?: CodeMemoryHealth;
+  /** Environment variables; defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface DepsToIOOptions { emit?: (e: OutEntry) => void; codeMemory?: CodeMemoryHealth; }
@@ -71,6 +74,7 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
     get projectId() { return deps.projectId; },
     get embed() { return deps.embed; },
     get qdrant() { return deps.qdrant; },
+    get env() { return process.env; },
     readGlobalConfig: deps.readGlobalConfig,
     writeGlobalConfig: deps.writeGlobalConfig,
     readProjectSettings: () => loadProjectSettings(deps.agentDir, deps.projectId),
@@ -145,14 +149,14 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
         // override existed) still confirms "override cleared" — clearing is
         // idempotent by design.
         io.clearProjectSetting(field);
-        io.emit(message(settingsOverrideClearedText(field, io.readGlobalConfig()[field])));
+        io.emit(message(settingsOverrideClearedText(field, io.readGlobalConfig()[field], maskNote(field, io.env))));
         if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
         return { exit: false };
       }
       const applied = setConfigField(io.readGlobalConfig(), field, value); // same errors as a global write
       if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return { exit: false }; }
       io.writeProjectSettings(projectOverride(applied.next, field));       // typed partial, JSON number
-      io.emit(message(settingsUpdatedText(field, applied.next[field], io.readGlobalConfig()[field])));
+      io.emit(message(settingsUpdatedText(field, applied.next[field], io.readGlobalConfig()[field], maskNote(field, io.env))));
       if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
       return { exit: false };
     }
@@ -291,7 +295,7 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
     const ok = await ui.confirm("Clear the project override?", formClearMessage(key, globalVal));
     if (!ok) { io.emit(message(`settings: ${key} unchanged (cancelled)`)); return; }
     io.clearProjectSetting(key);
-    io.emit(message(settingsOverrideClearedText(key, io.readGlobalConfig()[key])));
+    io.emit(message(settingsOverrideClearedText(key, io.readGlobalConfig()[key], maskNote(key, io.env))));
     if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
     return;
   }
@@ -308,7 +312,7 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   const before = io.cfg.codeKnowledge;
   if (projectScoped) {
     io.writeProjectSettings(projectOverride(applied.next, key));
-    io.emit(message(settingsUpdatedText(key, nextValue as string | number, globalVal)));
+    io.emit(message(settingsUpdatedText(key, nextValue as string | number, globalVal, maskNote(key, io.env))));
   } else {
     io.writeGlobalConfig(applied.next);
     io.emit(message(settingsGlobalUpdatedText(key)));

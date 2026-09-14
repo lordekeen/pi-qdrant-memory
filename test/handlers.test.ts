@@ -76,6 +76,7 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
   };
   return {
     get cfg() { return effective(); },
+    get env() { return envState; },
     agentDir: "/tmp/agent", cwd: "/repo", projectId: "pi-mem-abc",
     embed: async () => new Array(768).fill(0.1),
     qdrant,
@@ -661,14 +662,63 @@ test("bare command (headless) prints the scope rule, both paths, and this projec
   assert.match(all, /codeScoreThreshold = 0\.6 \(this project; global: 0\.4\)/);
 });
 
-test("a masked project write (env pins the value) confirms but emits no notice", async () => {
+test("a masked project write (env pins the value) confirms but emits no notice and warns of mask", async () => {
   const d = io();
   d.envState.PI_QDRANT_CODE_KNOWLEDGE = "off";
   await settingsHandler(d, "codeKnowledge", "on");
   assert.deepEqual(d.projectWrites[0], { codeKnowledge: "on" });
   assert.match(d.printed.join("\n"), /codeKnowledge = on \(this project; global: off\)/);
+  assert.match(d.printed.join("\n"), /NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=off/);
   assert.doesNotMatch(d.printed.join("\n"), /next session start/);
 });
+
+test("clearing an allowlisted override when masked by env warns about mask", async () => {
+  const d = io();
+  d.envState.PI_QDRANT_CODE_KNOWLEDGE = "on";
+  d.storeState.codeKnowledge = "off";
+  await settingsHandler(d, "codeKnowledge", "default");
+  assert.match(
+    d.printed.join("\n"),
+    /settings: codeKnowledge override cleared \(now using global: off\) — NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on/,
+  );
+});
+
+test("form: allowlisted write and clear warn when masked by env", async () => {
+  const d = io();
+  d.envState.PI_QDRANT_CODE_SCORE_THRESHOLD = "0.7";
+  const ui: SettingsUI = {
+    async select(_title, options) {
+      return options.find((o) => o.startsWith("codeScoreThreshold ="));
+    },
+    async input() { return "0.5"; },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.match(
+    d.printed.join("\n"),
+    /settings: codeScoreThreshold = 0\.5 \(this project; global: 0\.4\) — NOTE: currently masked by PI_QDRANT_CODE_SCORE_THRESHOLD=0\.7/,
+  );
+
+  const dClear = io();
+  dClear.envState.PI_QDRANT_CODE_KNOWLEDGE = "on";
+  dClear.storeState.codeKnowledge = "off";
+  let selects = 0;
+  const uiClear: SettingsUI = {
+    async select(_title, options) {
+      selects++;
+      if (selects === 1) return options.find((o) => o.startsWith("codeKnowledge ="));
+      return options.find((o) => o.startsWith("default"));
+    },
+    async input() { throw new Error("not used"); },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(uiClear, dClear);
+  assert.match(
+    dClear.printed.join("\n"),
+    /settings: codeKnowledge override cleared \(now using global: off\) — NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on/,
+  );
+});
+
 
 test("form, project scope: an allowlisted write goes to the store and reloads", async () => {
   const d = io();
