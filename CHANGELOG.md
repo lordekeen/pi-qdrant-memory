@@ -5,6 +5,13 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.4.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.3...v0.4.0) (2026-09-18)
+
+
+### Features
+
+* memory lifecycle, retraction ladder, and pre-save verification ([e1573e9](https://github.com/lordekeen/pi-qdrant-memory/commit/e1573e9a34c1715838bae88fc5abe3658d87fba2))
+
 ## [0.3.3](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.2...v0.3.3) (2026-09-14)
 
 
