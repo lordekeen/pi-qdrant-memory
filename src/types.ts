@@ -5,6 +5,8 @@ export type SourceKind = "blackhole_observation" | "blackhole_reflection" | "rem
 export type ConfigMode = "auto" | "blackhole" | "own";
 export type CodeKnowledgeMode = "off" | "on";
 
+export type MemoryForgetMode = "off" | "on";
+
 export interface Config {
   qdrantUrl: string;
   qdrantApiKey: string | null;
@@ -17,6 +19,7 @@ export interface Config {
   mode: ConfigMode;
   codeKnowledge: CodeKnowledgeMode;
   codeScoreThreshold: number;
+  memoryForget: MemoryForgetMode;
 }
 
 export interface PointPayload {
@@ -34,6 +37,7 @@ export interface PointPayload {
   symbol?: string;
   start_line?: number;
   end_line?: number;
+  skipped?: boolean;
 }
 
 export interface SearchHit {
@@ -47,6 +51,12 @@ export interface RuntimeDeps {
   agentDir: string;
   cwd: string;
   projectId: string;
+  env?: NodeJS.ProcessEnv;
+  resolvedIO?: {
+    embed?: (text: string) => Promise<number[]>;
+    embedBatch?: (texts: string[]) => Promise<number[][]>;
+    qdrant?: QdrantLike;
+  };
   embed: (text: string) => Promise<number[]>;
   /** Batched variant for the code-memory sync; falls back to per-text embed
    * when the runtime was assembled without a batching client (tests). */
@@ -61,6 +71,8 @@ export interface RuntimeDeps {
   /** Re-resolve env → project → global → DEFAULTS for the current `projectId`
    * and swap it into the live runtime (swap clients, never re-register). */
   reloadEffectiveConfig(): void;
+  /** Memoized verified collection existence set (OI-010). */
+  collectionReady?: Set<string>;
 }
 
 /** The runtime slice remember/search tool logic needs — no output channel. */
@@ -69,4 +81,6 @@ export interface ToolDeps {
   projectId: string;
   embed(text: string): Promise<number[]>;
   qdrant: QdrantLike;
+  /** Memoized verified collection existence set (OI-010). */
+  collectionReady?: Set<string>;
 }

@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { CodeKnowledgeMode, Config, ConfigMode } from "./types.ts";
+import type { CodeKnowledgeMode, Config, ConfigMode, MemoryForgetMode } from "./types.ts";
 
 export const DEFAULTS: Config = {
   qdrantUrl: "http://localhost:6333",
@@ -14,6 +14,7 @@ export const DEFAULTS: Config = {
   mode: "auto",
   codeKnowledge: "off",
   codeScoreThreshold: 0.55,
+  memoryForget: "off",
 };
 
 export function configPath(agentDir: string): string {
@@ -42,6 +43,10 @@ export function isConfigKnowledge(v: string | undefined): v is CodeKnowledgeMode
   return v === "off" || v === "on";
 }
 
+export function isConfigForget(v: string | undefined): v is MemoryForgetMode {
+  return v === "off" || v === "on";
+}
+
 /**
  * Apply a validated `field = value` write to a config copy. Shared by the CLI
  * (`/qdrant-settings <key> <value>`) and the interactive form so both accept and
@@ -63,6 +68,9 @@ export function setConfigField(
     next[field] = value;
   } else if (field === "codeKnowledge") {
     if (!isConfigKnowledge(value)) return { ok: false, error: "settings: codeKnowledge must be one of off | on" };
+    next[field] = value;
+  } else if (field === "memoryForget") {
+    if (!isConfigForget(value)) return { ok: false, error: "settings: memoryForget must be one of off | on" };
     next[field] = value;
   } else if (typeof cur === "number") {
     const n = Number(value);
@@ -121,6 +129,11 @@ export function readGlobalConfig(agentDir: string, env: NodeJS.ProcessEnv = proc
     : isConfigKnowledge(fromFile.codeKnowledge)
       ? (fromFile.codeKnowledge as CodeKnowledgeMode)
       : DEFAULTS.codeKnowledge;
+  const memoryForget: MemoryForgetMode = isConfigForget(env.PI_QDRANT_MEMORY_FORGET)
+    ? (env.PI_QDRANT_MEMORY_FORGET as MemoryForgetMode)
+    : isConfigForget(fromFile.memoryForget)
+      ? (fromFile.memoryForget as MemoryForgetMode)
+      : DEFAULTS.memoryForget;
   return {
     qdrantUrl: env.PI_QDRANT_URL ?? fromFile.qdrantUrl ?? DEFAULTS.qdrantUrl,
     qdrantApiKey: env.PI_QDRANT_API_KEY ?? fromFile.qdrantApiKey ?? DEFAULTS.qdrantApiKey,
@@ -133,6 +146,7 @@ export function readGlobalConfig(agentDir: string, env: NodeJS.ProcessEnv = proc
     mode,
     codeKnowledge,
     codeScoreThreshold: numEnv(env.PI_QDRANT_CODE_SCORE_THRESHOLD, fromFile.codeScoreThreshold, DEFAULTS.codeScoreThreshold),
+    memoryForget,
   };
 }
 

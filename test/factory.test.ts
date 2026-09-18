@@ -10,6 +10,7 @@ import type { OutEntry } from "../src/out.ts";
 interface FakePiCommand {
   description?: string;
   handler: (args: string, ctx: unknown) => void | Promise<void>;
+  getArgumentCompletions?: (prefix: string) => Array<{ value: string; label?: string; description?: string }> | null;
 }
 
 /** Minimal fake of the real pi ExtensionAPI surface the factory adapts. */
@@ -55,7 +56,7 @@ test("factory registers tools, /qdrant commands, and lifecycle hooks", async () 
     const cmdNames = [...commands.keys()].sort();
     // qdrant-index-code is registered unconditionally (live-config guard inside;
     // spec §12's "index right away" promise) — it answers "disabled" when off.
-    assert.deepEqual(cmdNames, ["qdrant-clear", "qdrant-help", "qdrant-index-code", "qdrant-remember", "qdrant-search", "qdrant-settings", "qdrant-status"]);
+    assert.deepEqual(cmdNames, ["qdrant-clear", "qdrant-forget", "qdrant-help", "qdrant-index-code", "qdrant-remember", "qdrant-search", "qdrant-settings", "qdrant-status"]);
 
     // No pi-blackhole config in the temp agent dir → mode2 → lifecycle hooks.
     const registered = events.map((e) => e.event);
@@ -115,6 +116,36 @@ test("factory: a settings write persists and triggers a runtime config reload", 
     const onDisk2 = JSON.parse(readFileSync(configPath(dir), "utf8")) as { scoreThreshold?: unknown; maxResults?: unknown };
     assert.equal(onDisk2.scoreThreshold, 0.99);
     assert.equal(onDisk2.maxResults, 10); // unchanged default
+  } finally {
+    if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("factory: qdrant-clear provides argument completions and shows usage without args", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-factory-"));
+  mkdirSync(join(dir, "pi-qdrant-memory"), { recursive: true });
+  const prev = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  const { pi, commands, messages } = fakePi();
+  try {
+    await factory(pi);
+    const clearCmd = commands.get("qdrant-clear")!;
+    assert.ok(clearCmd, "qdrant-clear should be registered");
+
+    // Argument completions:
+    const allOptions = clearCmd.getArgumentCompletions?.("");
+    assert.deepEqual(allOptions, [{ value: "all", label: "all" }, { value: "code", label: "code" }]);
+
+    const cPrefix = clearCmd.getArgumentCompletions?.("c");
+    assert.deepEqual(cPrefix, [{ value: "code", label: "code" }]);
+
+    const none = clearCmd.getArgumentCompletions?.("xyz");
+    assert.equal(none, null);
+
+    // Bare invocation without args shows usage:
+    await clearCmd.handler("", {});
+    assert.match(messages.join("\n"), /clear: usage — \/qdrant-clear all \| code/);
   } finally {
     if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
     rmSync(dir, { recursive: true, force: true });

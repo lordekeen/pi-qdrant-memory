@@ -31,10 +31,31 @@ export class QdrantError extends Error {
   }
 }
 
+export class DimensionMismatchError extends QdrantError {
+  readonly stored?: number;
+  readonly expected: number;
+  constructor(name: string, stored: number | undefined, expected: number) {
+    super(
+      `collection ${name} dim ${String(stored)} ≠ expectedDimension ${expected} — collection left untouched; move it aside or set the matching model`,
+    );
+    this.name = "DimensionMismatchError";
+    this.stored = stored;
+    this.expected = expected;
+  }
+}
+
+export interface EnsureCollectionOptions {
+  onDimensionMismatch?: "error" | "recreate";
+}
+
 export interface QdrantPoint { id: string; vector: number[]; payload: PointPayload; }
 
 export interface QdrantLike {
-  ensureCollection(name: string, dim: number): Promise<"created" | "exists" | "recreated">;
+  ensureCollection(
+    name: string,
+    dim: number,
+    opts?: EnsureCollectionOptions,
+  ): Promise<"created" | "exists" | "recreated">;
   upsert(name: string, points: QdrantPoint[]): Promise<void>;
   search(name: string, vector: number[], opts: {
     projectId: string; type?: MemoryType; limit: number; threshold: number;
@@ -47,6 +68,12 @@ export interface QdrantLike {
   codeIndexSnapshot(name: string): Promise<Map<string, string>>;
   /** Count points matching a source_kind filter. */
   countBySourceKind(name: string, kind: string): Promise<number>;
+  /** Delete points matching a source_kind filter. */
+  deletePointsBySourceKind?(name: string, kind: string): Promise<void>;
+  /** Delete points matching source_entry_id values (Layer 1 ingest supersede). */
+  deletePointsBySourceEntryIds?(name: string, ids: string[]): Promise<void>;
+  /** Delete points by their point IDs. Returns the count of IDs deleted. */
+  deletePointsByIds?(name: string, ids: string[]): Promise<number>;
   /** Retrieve the subset of given point IDs that already exist in the collection. */
   existingPointIds?(name: string, ids: string[]): Promise<Set<string>>;
 }
@@ -107,7 +134,12 @@ export class QdrantClient implements QdrantLike {
     });
   }
 
-  async ensureCollection(name: string, dim: number): Promise<"created" | "exists" | "recreated"> {
+  async ensureCollection(
+    name: string,
+    dim: number,
+    opts?: EnsureCollectionOptions,
+  ): Promise<"created" | "exists" | "recreated"> {
+    const onMismatch = opts?.onDimensionMismatch ?? "error";
     const enc = encodeURIComponent(name);
     const getRes = await this.request("GET", `/collections/${enc}`, undefined, { notFound: true });
     const notExists = getRes === null || (getRes as { status?: string } | null)?.status === "error";
@@ -121,6 +153,9 @@ export class QdrantClient implements QdrantLike {
       // Defensive: named-vector configs have no top-level `size` — treat as a mismatch.
       const size = typeof vectors?.size === "number" ? vectors.size : undefined;
       if (size !== dim) {
+        if (onMismatch === "error") {
+          throw new DimensionMismatchError(name, size, dim);
+        }
         // Loud, deliberate data-loss guard: a dimension mismatch means the stored
         // vectors are incompatible with the configured embedding model — deleting
         // the collection wipes every memory for this project. Never silent.
@@ -197,8 +232,43 @@ export class QdrantClient implements QdrantLike {
     const json = await this.request("POST",
       `/collections/${encodeURIComponent(name)}/points/count`,
       { filter: { must: [{ key: "source_kind", match: { value: kind } }] }, exact: true },
-    ) as { result: { count: number } };
-    return json.result.count;
+      { notFound: true },
+    ) as { result?: { count: number } } | null;
+    return json?.result?.count ?? 0;
+  }
+
+  async deletePointsBySourceKind(name: string, kind: string): Promise<void> {
+    const enc = encodeURIComponent(name);
+    await this.request("POST", `/collections/${enc}/points/delete`, {
+      filter: { must: [{ key: "source_kind", match: { value: kind } }] },
+    }, { notFound: true });
+  }
+
+  async deletePointsBySourceEntryIds(name: string, ids: string[]): Promise<void> {
+    if (!ids.length) return;
+    const enc = encodeURIComponent(name);
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      await this.request("POST", `/collections/${enc}/points/delete`, {
+        filter: {
+          must: [{ key: "source_entry_id", match: { any: chunk } }],
+        },
+      }, { notFound: true });
+    }
+  }
+
+  async deletePointsByIds(name: string, ids: string[]): Promise<number> {
+    if (!ids.length) return 0;
+    const enc = encodeURIComponent(name);
+    let total = 0;
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      await this.request("POST", `/collections/${enc}/points/delete`, {
+        points: chunk,
+      }, { notFound: true });
+      total += chunk.length;
+    }
+    return total;
   }
 
   async clearCollection(name: string): Promise<void> {
@@ -264,8 +334,14 @@ export class QdrantClient implements QdrantLike {
         ids,
         with_payload: false,
         with_vector: false,
-      }) as { result?: Array<{ id: string | number }> };
-      return new Set((json.result ?? []).map((p) => String(p.id)));
+      }, { notFound: true }) as { result?: Array<{ id: string | number }> } | null;
+      const found = new Set<string>();
+      for (const p of json?.result ?? []) {
+        const strId = String(p.id);
+        found.add(strId);
+        found.add(strId.replace(/-/g, ""));
+      }
+      return found;
     } catch {
       return new Set();
     }

@@ -128,6 +128,14 @@ test("codeKnowledge and codeScoreThreshold: defaults, env, and validation", () =
     const thr = setConfigField(base, "codeScoreThreshold", "0.3");
     assert.equal(thr.ok, true);
     if (thr.ok) assert.equal(thr.next.codeScoreThreshold, 0.3);
+
+    assert.equal(cfg.memoryForget, "off");
+    const envForget = loadConfig(dir, { PI_QDRANT_MEMORY_FORGET: "on" });
+    assert.equal(envForget.memoryForget, "on");
+    assert.equal(setConfigField(base, "memoryForget", "maybe").ok, false);
+    const forgetOn = setConfigField(base, "memoryForget", "on");
+    assert.equal(forgetOn.ok, true);
+    if (forgetOn.ok) assert.equal(forgetOn.next.memoryForget, "on");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

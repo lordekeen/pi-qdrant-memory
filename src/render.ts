@@ -28,15 +28,25 @@ export function sourcePointer(payload: PointPayload): string {
   return "no source pointer";
 }
 
-export function renderHits(hits: SearchHit[]): string {
-  if (!hits.length) return "No relevant memory found.";
+export function renderHits(hits: SearchHit[], totalCount?: number): string {
+  const count = totalCount ?? (hits as { totalCount?: number }).totalCount;
+  if (!hits.length) {
+    if (count === 0) return "No memories stored yet for this project.";
+    if (count !== undefined && count > 0) {
+      return `No memories matched query above scoreThreshold (total stored: ${count}).`;
+    }
+    return "No relevant memory found.";
+  }
   const lines = hits.map((h) => {
     // Defensive: a stored point written by another client may lack text — never
     // let one malformed payload turn a valid search into a thrown error.
     const text = typeof h.payload.text === "string" ? h.payload.text : "";
     const source = sourcePointer(h.payload);
-    const preview = truncatePreview(text);
-    return `[${h.payload.type}] score=${h.score.toFixed(2)} (${source})\n${preview}`;
+    const tsStr = typeof h.payload.ts === "number" && !Number.isNaN(h.payload.ts)
+      ? new Date(h.payload.ts).toISOString()
+      : "";
+    const tsPart = tsStr ? ` (${tsStr})` : "";
+    return `[${h.payload.type}] score=${h.score.toFixed(2)}${tsPart} (${source})\n${text}`;
   });
   return lines.join("\n\n");
 }

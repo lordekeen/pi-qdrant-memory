@@ -13,6 +13,7 @@ const base: Config = {
   mode: "auto",
   codeKnowledge: "off",
   codeScoreThreshold: 0.4,
+  memoryForget: "off",
 };
 
 test("blackholeConfigPath nests under pi-blackhole", () => {

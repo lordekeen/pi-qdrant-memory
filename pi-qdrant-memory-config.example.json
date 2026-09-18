@@ -9,5 +9,6 @@
   "maxResults": 10,
   "mode": "auto",
   "codeKnowledge": "off",
-  "codeScoreThreshold": 0.55
+  "codeScoreThreshold": 0.55,
+  "memoryForget": "off"
 }

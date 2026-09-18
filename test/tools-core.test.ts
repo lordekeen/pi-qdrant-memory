@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { rememberLogic, memorySearchLogic } from "../src/tools-core.ts";
+import { rememberLogic, memorySearchLogic, forgetLogic } from "../src/tools-core.ts";
 import { pointId } from "../src/ids.ts";
-import type { QdrantLike, QdrantPoint } from "../src/qdrant.ts";
+import { DimensionMismatchError, type EnsureCollectionOptions, type QdrantLike, type QdrantPoint } from "../src/qdrant.ts";
 import type { MemoryType, PointPayload, RuntimeDeps, SearchHit } from "../src/types.ts";
 
 function deps(over: Partial<RuntimeDeps> = {}): RuntimeDeps & { q: { upserted: QdrantPoint[][] }; embeds: string[] } {
@@ -75,6 +75,67 @@ test("rememberLogic returns a bare error reason (no throw) when embed fails", as
   assert.equal((res as { error: string }).error, "Error: down");
 });
 
+test("rememberLogic embeds before ensureCollection so a failed embed leaves collection untouched (OI-001)", async () => {
+  let ensureCalled = false;
+  const q: QdrantLike = {
+    async ensureCollection() { ensureCalled = true; return "exists"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+  };
+  const d = deps({
+    qdrant: q,
+    embed: async () => { throw new Error("embed down"); },
+  });
+  const res = await rememberLogic(d, "important fact");
+  assert.ok(!res.ok);
+  assert.equal(ensureCalled, false);
+});
+
+test("rememberLogic passes onDimensionMismatch: 'recreate' to ensureCollection (OI-001)", async () => {
+  let passedOpts: EnsureCollectionOptions | undefined;
+  const q: QdrantLike = {
+    async ensureCollection(_n, _d, opts) { passedOpts = opts; return "recreated"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+  };
+  const d = deps({ qdrant: q });
+  const res = await rememberLogic(d, "recreate on write");
+  assert.ok(res.ok);
+  assert.deepEqual(passedOpts, { onDimensionMismatch: "recreate" });
+});
+
+test("memorySearchLogic returns error and leaves collection untouched on dimension mismatch (OI-001)", async () => {
+  let passedOpts: EnsureCollectionOptions | undefined;
+  const q: QdrantLike = {
+    async ensureCollection(n, d, opts) {
+      passedOpts = opts;
+      throw new DimensionMismatchError(n, 384, d);
+    },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+  };
+  const d = deps({ qdrant: q });
+  const res = await memorySearchLogic(d, "search query");
+  assert.ok(!res.ok);
+  assert.deepEqual(passedOpts, { onDimensionMismatch: "error" });
+  assert.match((res as { error: string }).error, /collection .* dim 384 ≠ expectedDimension 768/);
+});
+
 test("memorySearchLogic rejects an empty query with a bare reason", async () => {
   const res = await memorySearchLogic(deps(), "   ");
   assert.ok(!res.ok);
@@ -143,6 +204,7 @@ test("memory_search uses codeScoreThreshold for code queries, scoreThreshold oth
       embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text",
       embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10,
       mode: "auto", codeKnowledge: "on", codeScoreThreshold: 0.4,
+      memoryForget: "off",
     },
     qdrant: {
       async ensureCollection() { return "exists" as const; },
@@ -163,4 +225,191 @@ test("memory_search uses codeScoreThreshold for code queries, scoreThreshold oth
   assert.equal(seen[0]!.threshold, 0.18);
   assert.equal(seen[1]!.threshold, 0.4);
   assert.equal(seen[1]!.type, "code");
+});
+
+test("rememberLogic skips embed and upsert when point already exists (Shape C)", async () => {
+  let embedCalls = 0;
+  let ensureCalls = 0;
+  let upsertCalls = 0;
+  const targetId = pointId("already remembered fact", "remember_tool", "");
+
+  const q: QdrantLike = {
+    async ensureCollection() { ensureCalls++; return "exists"; },
+    async upsert() { upsertCalls++; },
+    async search() { return []; },
+    async count() { return 1; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+    async existingPointIds(_name, ids) {
+      return new Set(ids.filter((id) => id === targetId));
+    },
+  };
+
+  const d = deps({
+    qdrant: q,
+    embed: async () => {
+      embedCalls++;
+      return new Array(768).fill(0.1);
+    },
+  });
+
+  const res = await rememberLogic(d, "already remembered fact", "fact");
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.value.skipped, true);
+    assert.equal(res.value.text, "already remembered fact");
+  }
+  assert.equal(embedCalls, 0, "embed must not be called when point already exists");
+  assert.equal(ensureCalls, 0, "ensureCollection must not be called when point already exists");
+  assert.equal(upsertCalls, 0, "upsert must not be called when point already exists");
+});
+
+test("rememberLogic proceeds to embed and upsert when point does not exist (Shape C)", async () => {
+  let embedCalls = 0;
+  let upsertCalls = 0;
+
+  const q: QdrantLike = {
+    async ensureCollection() { return "exists"; },
+    async upsert() { upsertCalls++; },
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+    async existingPointIds() { return new Set(); },
+  };
+
+  const d = deps({
+    qdrant: q,
+    embed: async () => {
+      embedCalls++;
+      return new Array(768).fill(0.1);
+    },
+  });
+
+  const res = await rememberLogic(d, "brand new fact", "fact");
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.value.skipped, undefined);
+    assert.equal(res.value.text, "brand new fact");
+  }
+  assert.equal(embedCalls, 1);
+  assert.equal(upsertCalls, 1);
+});
+
+test("forgetLogic rejects empty text with bare reason", async () => {
+  const d = deps();
+  const res = await forgetLogic(d, "   ");
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error, "text cannot be empty");
+});
+
+test("forgetLogic rejects over-long text with bare reason", async () => {
+  const d = deps();
+  const res = await forgetLogic(d, "x".repeat(4001));
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error, "text exceeds 4000 characters");
+});
+
+test("forgetLogic rejects non-existing memory with bare reason", async () => {
+  const q: QdrantLike = {
+    async ensureCollection() { return "exists"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+    async existingPointIds() { return new Set(); },
+  };
+  const d = deps({ qdrant: q });
+  const res = await forgetLogic(d, "fact not saved");
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error, "no memory_save point with that exact text");
+});
+
+test("forgetLogic deletes existing point without calling embed or ensureCollection", async () => {
+  let embedCalls = 0;
+  let ensureCalls = 0;
+  const deleted: string[] = [];
+  const text = "we use Postgres";
+  const id = pointId(text, "remember_tool", "");
+  const q: QdrantLike = {
+    async ensureCollection() { ensureCalls++; return "exists"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+    async existingPointIds() { return new Set([id]); },
+    async deletePointsByIds(_n, ids) { deleted.push(...ids); return ids.length; },
+  };
+  const d = deps({
+    qdrant: q,
+    embed: async () => { embedCalls++; return []; },
+  });
+  const res = await forgetLogic(d, text);
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.value.text, text);
+    assert.equal(res.value.removed, 1);
+  }
+  assert.deepEqual(deleted, [id]);
+  assert.equal(embedCalls, 0, "forgetLogic must never call embed");
+  assert.equal(ensureCalls, 0, "forgetLogic must never call ensureCollection");
+});
+
+test("ensureCollection is memoized across multiple calls when collectionReady is provided (OI-010)", async () => {
+  let ensureCalls = 0;
+  const q: QdrantLike = {
+    async ensureCollection() { ensureCalls++; return "exists"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+  };
+  const collectionReady = new Set<string>();
+  const d = deps({ qdrant: q, collectionReady });
+  await rememberLogic(d, "fact 1");
+  await rememberLogic(d, "fact 2");
+  await memorySearchLogic(d, "query 1");
+  await memorySearchLogic(d, "query 2");
+  assert.equal(ensureCalls, 1, "ensureCollection should only be called once when memoized");
+  assert.ok(collectionReady.has(d.projectId));
+});
+
+test("memorySearchLogic queries count and attaches totalCount when hits are empty (OI-018)", async () => {
+  const q: QdrantLike = {
+    async ensureCollection() { return "exists"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 42; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 10; },
+  };
+  const d = deps({ qdrant: q });
+  const res = await memorySearchLogic(d, "find something");
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.value.length, 0);
+    assert.equal((res.value as unknown as { totalCount?: number }).totalCount, 42);
+  }
+
+  const codeRes = await memorySearchLogic(d, "find code", "code");
+  assert.equal(codeRes.ok, true);
+  if (codeRes.ok) {
+    assert.equal(codeRes.value.length, 0);
+    assert.equal((codeRes.value as unknown as { totalCount?: number }).totalCount, 10);
+  }
 });

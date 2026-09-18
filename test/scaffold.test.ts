@@ -15,6 +15,7 @@ test("node type-stripping runs TS and type-only imports work", () => {
     mode: "auto",
     codeKnowledge: "off",
     codeScoreThreshold: 0.4,
+    memoryForget: "off",
   };
   assert.equal(cfg.expectedDimension, 768);
 });

@@ -1,22 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler, runSettingsForm,
+  statusHandler, settingsHandler, rememberHandler, searchHandler, forgetHandler, clearHandler, helpHandler, runSettingsForm,
 } from "../src/handlers.ts";
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
 import type { HandlerIO, SettingsUI } from "../src/handlers.ts";
 import type { ProjectOverridableField, ProjectSettings } from "../src/project-settings.ts";
 import { isConfigKnowledge } from "../src/config.ts";
-import type { QdrantLike } from "../src/qdrant.ts";
-import { QdrantError } from "../src/qdrant.ts";
+import { DimensionMismatchError, QdrantError, type QdrantLike } from "../src/qdrant.ts";
+import { pointId } from "../src/ids.ts";
 import type { Config } from "../src/types.ts";
 
 const cfg: Config = {
   qdrantUrl: "http://localhost:6333", qdrantApiKey: null,
   embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text",
   embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10, mode: "auto",
-  codeKnowledge: "off", codeScoreThreshold: 0.4,
+  codeKnowledge: "off", codeScoreThreshold: 0.4, memoryForget: "off",
 };
 
 type FakeIO = HandlerIO & {
@@ -27,6 +27,8 @@ type FakeIO = HandlerIO & {
   cleared: ProjectOverridableField[];
   applied: Config[];
   qdrantClears: number;
+  codeKindDeletes: number;
+  deletedIds: string[];
   /** Live model of the global file (mutate to seed a scenario). */
   globalState: Config;
   /** Live model of the project store (mutate to seed a scenario). */
@@ -52,6 +54,8 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
   const storeState: ProjectSettings = {};
   const envState: NodeJS.ProcessEnv = {};
   let qdrantClears = 0;
+  let codeKindDeletes = 0;
+  const deletedIds: string[] = [];
   const effective = (): Config => {
     const c: Config = { ...globalState };
     if (!isConfigKnowledge(envState.PI_QDRANT_CODE_KNOWLEDGE) && storeState.codeKnowledge !== undefined) {
@@ -73,6 +77,8 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async deletePointsBySourceKind() { codeKindDeletes++; },
+    async deletePointsByIds(_name, ids) { deletedIds.push(...ids); return ids.length; },
   };
   return {
     get cfg() { return effective(); },
@@ -93,6 +99,8 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
     cleared,
     applied,
     get qdrantClears() { return qdrantClears; },
+    get codeKindDeletes() { return codeKindDeletes; },
+    deletedIds,
     globalState,
     storeState,
     envState,
@@ -171,17 +179,59 @@ test("rememberHandler prints success and upserts", async () => {
   assert.doesNotMatch(all, /remember_tool/);
 });
 
+test("rememberHandler prints already saved when point already exists (Shape C)", async () => {
+  const d = io();
+  const targetId = pointId("use REST", "remember_tool", "");
+  d.qdrant.existingPointIds = async (_name, ids) => new Set(ids.filter((id) => id === targetId));
+  await rememberHandler(d, "use REST", "decision");
+  const all = d.printed.join("\n");
+  assert.match(all, /already saved: use REST/);
+});
+
 test("searchHandler prints no-relevant-memory message on empty", async () => {
   const d = io();
   await searchHandler(d, "anything");
   assert.match(d.printed.join("\n"), /No relevant memory/);
 });
 
-test("clearHandler calls clearCollection and prints confirmation", async () => {
+test("clearHandler with 'all' calls clearCollection and prints confirmation", async () => {
+  const d = io();
+  await clearHandler(d, "all");
+  assert.equal(d.qdrantClears, 1);
+  assert.match(d.printed.join("\n"), /cleared: collection pi-mem-abc reset/i);
+});
+
+test("clearHandler without arguments prints usage guidance without clearing", async () => {
   const d = io();
   await clearHandler(d);
-  assert.equal(d.qdrantClears, 1);
-  assert.match(d.printed.join("\n"), /cleared|reset/i);
+  assert.equal(d.qdrantClears, 0);
+  assert.match(d.printed.join("\n"), /clear: usage — \/qdrant-clear all \| code/);
+});
+
+test("clearHandler with invalid modifier prints usage guidance without clearing", async () => {
+  const d = io();
+  await clearHandler(d, "nonsense");
+  assert.equal(d.qdrantClears, 0);
+  assert.match(d.printed.join("\n"), /clear: usage — \/qdrant-clear all \| code/);
+});
+
+test("clearHandler with 'code' when points exist deletes them and prints count", async () => {
+  let codeCount = 5;
+  const d = io();
+  d.qdrant.countBySourceKind = async () => codeCount;
+  d.qdrant.deletePointsBySourceKind = async () => { codeCount = 0; };
+  await clearHandler(d, "code");
+  assert.equal(d.qdrantClears, 0);
+  assert.equal(codeCount, 0);
+  assert.match(d.printed.join("\n"), /cleared: 5 code memory points removed/);
+});
+
+test("clearHandler with 'code' when 0 points exist reports no points indexed", async () => {
+  const d = io();
+  d.qdrant.countBySourceKind = async () => 0;
+  await clearHandler(d, "code");
+  assert.equal(d.qdrantClears, 0);
+  assert.match(d.printed.join("\n"), /clear: no code points indexed/);
 });
 
 test("runSettingsForm edits a numeric field after confirm", async () => {
@@ -358,6 +408,25 @@ test("searchHandler emits an error entry when the search fails", async () => {
   assert.equal(d.printed.join("\n"), "error: search failed: Error: connection refused");
   assert.doesNotMatch(d.printed.join("\n"), /memory_search failed/);
   assert.doesNotMatch(d.printed.join("\n"), /search failed: search failed/);
+});
+
+test("searchHandler emits an error entry on dimension mismatch (OI-001)", async () => {
+  const qdrantMismatch: QdrantLike = {
+    async ensureCollection(n, d) {
+      throw new DimensionMismatchError(n, 384, d);
+    },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+  };
+  const d = io({ qdrant: qdrantMismatch });
+  await searchHandler(d, "query");
+  assert.equal(d.emitted[0].kind, "error");
+  assert.match(d.printed.join("\n"), /error: search failed: .* dim 384 ≠ expectedDimension 768/);
 });
 
 test("searchHandler names the command once when the query is empty", async () => {
@@ -824,5 +893,100 @@ test("help row names the scope rule and adds no second command", async () => {
   const all = d.printed.join("\n");
   assert.match(all, /persist a config field — codeKnowledge\/codeScoreThreshold apply to this project, other keys are global/);
   assert.match(all, /\/qdrant-settings <key> <value>/);
+  assert.match(all, /\/qdrant-forget <query>/);
   assert.doesNotMatch(all, /qdrant-project-settings/);
+});
+
+test("forgetHandler validates query and requires arguments", async () => {
+  const d = io();
+  await forgetHandler(d, "   ");
+  assert.equal(d.emitted.length, 1);
+  assert.equal(d.emitted[0].kind, "message");
+  assert.match(d.printed[0], /usage: \/qdrant-forget <search query>/);
+});
+
+test("forgetHandler emits message when no memories match query", async () => {
+  const d = io();
+  await forgetHandler(d, "nonexistent");
+  assert.equal(d.emitted.length, 1);
+  assert.equal(d.emitted[0].kind, "message");
+  assert.match(d.printed[0], /forget: no memories matched "nonexistent"/);
+});
+
+test("forgetHandler emits error when search fails", async () => {
+  const d = io({
+    qdrant: {
+      async ensureCollection() { return "exists"; },
+      async search() { throw new Error("qdrant down"); },
+    } as unknown as QdrantLike,
+  });
+  await forgetHandler(d, "test");
+  assert.equal(d.emitted.length, 1);
+  assert.equal(d.emitted[0].kind, "error");
+  assert.match(d.printed[0], /error: forget failed: Error: qdrant down/);
+});
+
+test("forgetHandler requires interactive UI when hits match", async () => {
+  const hit = { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } };
+  const d = io({
+    qdrant: {
+      async ensureCollection() { return "exists"; },
+      async search() { return [hit]; },
+    } as unknown as QdrantLike,
+  });
+  await forgetHandler(d, "auth");
+  assert.equal(d.emitted.length, 1);
+  assert.equal(d.emitted[0].kind, "error");
+  assert.match(d.printed[0], /error: \/qdrant-forget requires interactive UI confirmation/);
+});
+
+test("forgetHandler cancels when user declines confirmation", async () => {
+  const hit = { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } };
+  const d = io({
+    qdrant: {
+      async ensureCollection() { return "exists"; },
+      async search() { return [hit]; },
+      async deletePointsByIds(_n: string, ids: string[]) { d.deletedIds.push(...ids); return ids.length; },
+    } as unknown as QdrantLike,
+  });
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { return false; },
+  };
+  await forgetHandler(d, "auth", ui);
+  assert.equal(d.emitted.length, 2);
+  assert.equal(d.emitted[0].kind, "search");
+  assert.equal(d.emitted[1].kind, "message");
+  assert.match(d.printed[1], /forget: unchanged \(cancelled\)/);
+  assert.equal(d.deletedIds.length, 0);
+});
+
+test("forgetHandler deletes points and emits confirmation when confirmed", async () => {
+  const hits = [
+    { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } },
+    { id: "pt-2", score: 0.85, payload: { type: "decision" as const, text: "session tokens expire in 1h", project_id: "p", ts: 2, source_kind: "remember_tool" as const } },
+  ];
+  const d = io({
+    qdrant: {
+      async ensureCollection() { return "exists"; },
+      async search() { return hits; },
+      async deletePointsByIds(_n: string, ids: string[]) { d.deletedIds.push(...ids); return ids.length; },
+    } as unknown as QdrantLike,
+  });
+  let confirmTitle = "";
+  let confirmMessage = "";
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm(t, m) { confirmTitle = t; confirmMessage = m; return true; },
+  };
+  await forgetHandler(d, "auth", ui);
+  assert.equal(confirmTitle, "Remove memories?");
+  assert.match(confirmMessage, /Delete 2 matching memories/);
+  assert.equal(d.emitted.length, 2);
+  assert.equal(d.emitted[0].kind, "search");
+  assert.equal(d.emitted[1].kind, "message");
+  assert.match(d.printed[1], /forgotten: 2 memories removed/);
+  assert.deepEqual(d.deletedIds, ["pt-1", "pt-2"]);
 });

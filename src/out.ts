@@ -122,6 +122,15 @@ export function settingsUsageText(p: { projectPath: string; globalPath: string; 
   ].join("\n");
 }
 
+/** Bare or invalid `/qdrant-clear` usage: explains all vs code modifiers. */
+export function clearUsageText(): string {
+  return [
+    "clear: usage — /qdrant-clear all | code",
+    "       all  — reset the current project's entire memory collection (irreversible)",
+    "       code — remove all indexed code summaries for this project",
+  ].join("\n");
+}
+
 /** Allowlisted set confirmation (names this project and the global fallback). */
 export function settingsUpdatedText(
   field: string,

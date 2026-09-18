@@ -21,8 +21,7 @@ const fakeQdrant: QdrantLike = {
   async countBySourceKind() { return 0; },
 };
 
-/** Fake clients only: assert on `rt.cfg`, never on the swapped embed/qdrant
- * clients (a reload detaches them). */
+/** Injected fake clients: preserved across reloads (OI-002). */
 function fakeIO(agentDir: string) {
   return {
     readGlobalConfig: () => readGlobalConfig(agentDir, {}),
@@ -44,7 +43,7 @@ test("makeRuntime resolves mode2 and project id when no blackhole", async () => 
   mkdirSync(join(dir, "repo", ".git"));
   try {
     const rt = await makeRuntime(dir, join(dir, "repo"), {}, {
-      readGlobalConfig: () => ({ qdrantUrl: "http://localhost:6333", qdrantApiKey: null, embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text", embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10, mode: "auto", codeKnowledge: "off", codeScoreThreshold: 0.4 }),
+      readGlobalConfig: () => ({ qdrantUrl: "http://localhost:6333", qdrantApiKey: null, embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text", embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10, mode: "auto", codeKnowledge: "off", codeScoreThreshold: 0.4, memoryForget: "off" }),
       writeGlobalConfig: () => {},
       print: () => {},
       qdrant: fakeQdrant,
@@ -129,5 +128,39 @@ test("depsToIO project writes persist the store and reload the effective config"
     io.clearProjectSetting("codeKnowledge");
     assert.equal(existsSync(projectSettingsPath(dir, rt.projectId)), false);   // file gone
     assert.equal(rt.cfg.codeKnowledge, "on");                                  // back to the global value
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("injected embed and qdrant clients survive reloadEffectiveConfig and writeGlobalConfigAndReload (OI-002)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-deps-"));
+  try {
+    const repo = gitRepo(dir, "repo");
+    const fakeEmbed = async (_t: string) => [0.1, 0.2];
+    const rt = await makeRuntime(dir, repo, {}, {
+      ...fakeIO(dir),
+      embed: fakeEmbed,
+    });
+    assert.equal(rt.qdrant, fakeQdrant);
+    assert.equal(rt.embed, fakeEmbed);
+
+    rt.reloadEffectiveConfig();
+    assert.equal(rt.qdrant, fakeQdrant);
+    assert.equal(rt.embed, fakeEmbed);
+
+    writeGlobalConfigAndReload(rt, dir, { ...readGlobalConfig(dir, {}), scoreThreshold: 0.3 });
+    assert.equal(rt.qdrant, fakeQdrant);
+    assert.equal(rt.embed, fakeEmbed);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("depsToIO respects the runtime environment (OI-003)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-deps-"));
+  try {
+    const repo = gitRepo(dir, "repo");
+    const customEnv = { PI_QDRANT_CODE_KNOWLEDGE: "on" };
+    const rt = await makeRuntime(dir, repo, customEnv, fakeIO(dir));
+    assert.equal(rt.env, customEnv);
+    const io = depsToIO(rt);
+    assert.equal(io.env, customEnv);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

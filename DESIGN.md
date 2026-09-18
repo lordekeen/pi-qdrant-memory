@@ -198,7 +198,7 @@ gesture.
 One entry, the same minimal block shape. Opens with the shared memory header,
 then a bold `commands` title and aligned rows — command in plain text,
 description dim, column aligned to the longest command + 2. The row list is
-conditional: `/qdrant-index-code` appears (between `/qdrant-clear` and
+conditional: `/qdrant-index-code` appears (between `/qdrant-clear all | code` and
 `/qdrant-help`) only while `codeKnowledge: on` was active at registration.
 
 ```
@@ -206,6 +206,11 @@ conditional: `/qdrant-index-code` appears (between `/qdrant-clear` and
 commands
 /qdrant-status                 connection health + active mode + collection status
 /qdrant-settings <key> <value> persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global
+/qdrant-remember <text>        save durable knowledge now
+/qdrant-search <query>         semantic search of durable knowledge
+/qdrant-forget <query>         search and remove memories interactively
+/qdrant-clear all | code       reset entire collection (all) or purge code summaries (code)
+/qdrant-help                   this list
 ```
 
 ### search-results (`/qdrant-search`)
@@ -244,16 +249,30 @@ a preview of the top hit's text:
 
 ### message (confirmations)
 
-One plain one-line entry each — `/qdrant-remember`, `/qdrant-clear`, and
-`/qdrant-settings` writes/declines. No icons, no color beyond default text (the
-leading label may be dimmed):
+One plain one-line entry each — `/qdrant-remember`, `/qdrant-clear all`,
+`/qdrant-clear code`, and `/qdrant-settings` writes/declines. No icons, no color
+beyond default text (the leading label may be dimmed):
 
 ```
 remembered: <verbatim text>
+already saved: <verbatim text>
 cleared: collection pi-mem-… reset
+cleared: 14 code memory points removed
+clear: no code points indexed
+forgotten: <n> memories removed
+forget: no memories matched "<query>"
+forget: unchanged (cancelled)
 settings: qdrantUrl updated (global config; reloaded at runtime)
 settings: scoreThreshold unchanged (cancelled)
 code memory: takes effect at the next session start — the code_memory tool registers on reload. Run /qdrant-index-code to index the current session's code right away.
+```
+
+Bare `/qdrant-clear` (or unrecognized modifier) prints usage guidance:
+
+```
+clear: usage — /qdrant-clear all | code
+       all  — reset the current project's entire memory collection (irreversible)
+       code — remove all indexed code summaries for this project
 ```
 
 Bare `/qdrant-settings` (no key/value) prints one multi-line usage message naming
@@ -314,6 +333,7 @@ Fixed flow, Esc cancels at any step:
    key, `qdrantUrl = http://localhost:6333 (global)` when the global layer is the
    one in effect.
 2. **edit** — type-aware: `mode` → nested select over `auto | blackhole | own`;
+   `memoryForget` → nested select over `off | on`;
    `codeKnowledge` → nested select over `off | on | default (inherit global:
    <g>)`; numeric allowlisted fields → text input titled `<key> (number;
    "default" inherits global: <g>)`; other numeric fields → text input titled
@@ -321,14 +341,14 @@ Fixed flow, Esc cancels at any step:
    in each case with the current value as placeholder.
 3. **confirm** — `Save <key>?` with a destination-naming message. Allowlisted
    keys: `<key> = <new> → this project's settings file (global: <g>) (was <old>;
-   run /qdrant-settings again to edit another field)`. The nine other keys:
+   run /qdrant-settings again to edit another field)`. The other keys:
    `<key> = <new> → the global config file (was <old>; run /qdrant-settings again
    to edit another field)`.
 
 Reset-to-inherited exists **only** for the two allowlisted fields: the enum
 select's `default (inherit global: <g>)` option and a typed `default` at the
 numeric prompt both clear this project's override (confirm title `Clear the
-project override?`, message `<key> returns to the global value (<g>)`); the nine
+project override?`, message `<key> returns to the global value (<g>)`); the
 non-allowlisted fields expose **no** clear affordance.
 
 Rules: an empty input cancels that step; invalid values print the same error a
@@ -340,15 +360,24 @@ chrome owns all dialog visuals.
 
 ### agent-tool-results
 
-`memory_save`, `memory_search`, and `code_memory` return plain text to the model:
-`remembered (remember_tool): <text>` or `<tool> failed: <reason>` on errors
+`memory_save`, `memory_search`, `code_memory`, and `memory_forget` return plain text to the model:
+`remembered (remember_tool): <text>`, `already saved: <text>`, `forgotten: <text>`, or `<tool> failed: <reason>` on errors
 (`<reason>` is a **bare** reason — the tool name and `failed:` lead appear exactly
-once), and for searches the same plain hit-block format as today. Code-memory hits carry a
-`file:line` source pointer (`[code] 0.81 (src/render.ts:15)`); file-level
-summaries with no line carry the bare path (`[code] 0.64 (src/qdrant.ts)`) — either
+once), and for searches the hit-block format:
+```
+[fact] score=0.84 (2026-09-18T14:20:00.000Z) (source_entry_id=abc)
+<full text, verbatim without truncation>
+```
+Code-memory hits carry a `file:line` source pointer (`[code] score=0.81 (2026-09-18T14:20:00.000Z) (src/render.ts:15)`);
+file-level summaries with no line carry the bare path (`[code] score=0.64 (2026-09-18T14:20:00.000Z) (src/qdrant.ts)`) — either
 way the model can open the file; `code_memory` covers structure only — its
-guidelines pair it with
-`memory_search` for rationale. These strings feed the LLM (not the human TUI) and are
+guidelines pair it with `memory_search` for rationale.
+
+When 0 hits match, `memory_search` distinguishes store state:
+`No memories stored yet for this project.` when total count is 0, or
+`No memories matched query above scoreThreshold (total stored: <count>).` when memories exist but did not clear the threshold.
+
+These strings feed the LLM (not the human TUI) and are
 deliberately **not** chrome-styled; they are out of scope of the entry UI above. The
 human-visible search formatting lives in the `search-results` entry, not in tool return
 text.

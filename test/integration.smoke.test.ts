@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QdrantClient } from "../src/qdrant.ts";
 import { EmbeddingClient } from "../src/embeddings.ts";
-import { rememberLogic, memorySearchLogic } from "../src/tools-core.ts";
+import { rememberLogic, memorySearchLogic, forgetLogic } from "../src/tools-core.ts";
 import { syncCodeKnowledge } from "../src/code-sync.ts";
 import type { PointPayload, RuntimeDeps } from "../src/types.ts";
 
@@ -56,6 +56,7 @@ test("end-to-end remember then search against real servers", o, async () => {
       qdrantUrl: QDRANT_URL, qdrantApiKey: null,
       embeddingBaseURL: EMBED_URL, embeddingModel: EMBED_MODEL,
       embeddingApiKey: null, expectedDimension: EMBED_DIM, scoreThreshold: 0.15, maxResults: 5, mode: "own", codeKnowledge: "off", codeScoreThreshold: 0.4,
+      memoryForget: "off",
     },
     agentDir: "/tmp/agent", cwd: "/repo", projectId,
     embed: (t) => embedder.embed(t),
@@ -114,6 +115,7 @@ test("code-memory sync populates, converges, edits and deletes against real serv
       qdrantUrl: QDRANT_URL, qdrantApiKey: null,
       embeddingBaseURL: EMBED_URL, embeddingModel: EMBED_MODEL,
       embeddingApiKey: null, expectedDimension: EMBED_DIM, scoreThreshold: 0.15, maxResults: 10, mode: "own", codeKnowledge: "on", codeScoreThreshold: 0.4,
+      memoryForget: "off",
     },
     agentDir: "/tmp/agent", cwd: repoRoot, projectId,
     embed: (t) => embedder.embed(t),
@@ -193,5 +195,120 @@ test("code-memory sync populates, converges, edits and deletes against real serv
   } finally {
     await qdrant.clearCollection(projectId).catch(() => {});
     rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("live code purge via deletePointsBySourceKind removes code points and leaves memories intact", o, async () => {
+  const qdrant = new QdrantClient(QDRANT_URL, null);
+  const embedder = new EmbeddingClient(EMBED_URL, EMBED_MODEL, null, EMBED_DIM);
+  const embedBatch = (texts: string[]): Promise<number[][]> => embedder.embedBatch(texts);
+  const projectId = `pi-mem-smoke-purge-${Date.now().toString(36)}`;
+  const repoRoot = mkdtempSync(join(tmpdir(), "pi-mem-smoke-purge-repo-"));
+  const rt: RuntimeDeps = {
+    cfg: {
+      qdrantUrl: QDRANT_URL, qdrantApiKey: null,
+      embeddingBaseURL: EMBED_URL, embeddingModel: EMBED_MODEL,
+      embeddingApiKey: null, expectedDimension: EMBED_DIM, scoreThreshold: 0.15, maxResults: 10, mode: "own", codeKnowledge: "on", codeScoreThreshold: 0.4,
+      memoryForget: "off",
+    },
+    agentDir: "/tmp/agent", cwd: repoRoot, projectId,
+    embed: (t) => embedder.embed(t),
+    embedBatch,
+    qdrant, readGlobalConfig: () => rt.cfg, writeGlobalConfig: () => {}, reloadEffectiveConfig: () => {}, print: () => {},
+  };
+
+  try {
+    // 1. Save a conversation memory
+    const saved = await rememberLogic(rt, "architectural decision: zero runtime dependencies", "decision");
+    assert.ok(saved.ok);
+
+    // 2. Index a code file
+    mkdirSync(join(repoRoot, "src"), { recursive: true });
+    writeFileSync(join(repoRoot, "src", "widget.ts"), FIXTURE_WIDGET);
+    const syncRes = await syncCodeKnowledge({ embedBatch, qdrant, projectId, expectedDimension: EMBED_DIM, repoRoot });
+    assert.ok(syncRes.ok);
+
+    // 3. Verify both exist
+    const codeCountBefore = await qdrant.countBySourceKind(projectId, "code_summary");
+    assert.ok(codeCountBefore > 0, "code points exist before purge");
+    const totalBefore = await qdrant.count(projectId);
+    assert.equal(totalBefore, codeCountBefore + 1, "total count equals code count + 1 conversation memory");
+
+    // 4. Purge code points via deletePointsBySourceKind
+    await qdrant.deletePointsBySourceKind(projectId, "code_summary");
+
+    // 5. Verify code points are gone
+    const codeCountAfter = await qdrant.countBySourceKind(projectId, "code_summary");
+    assert.equal(codeCountAfter, 0, "code points purged");
+
+    // 6. Verify conversation memory is still there and searchable
+    const totalAfter = await qdrant.count(projectId);
+    assert.equal(totalAfter, 1, "conversation memory remains");
+    const searchRes = await memorySearchLogic(rt, "what is our policy on runtime dependencies?");
+    assert.ok(searchRes.ok);
+    assert.equal(searchRes.value.length, 1);
+    assert.match(searchRes.value[0].payload.text, /zero runtime dependencies/);
+  } finally {
+    await qdrant.clearCollection(projectId).catch(() => {});
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("end-to-end exact retraction against real servers (forgetLogic)", o, async () => {
+  const qdrant = new QdrantClient(QDRANT_URL, null);
+  const embedder = new EmbeddingClient(EMBED_URL, EMBED_MODEL, null, EMBED_DIM);
+  const projectId = `pi-mem-smoke-forget-${Date.now().toString(36)}`;
+  const rt: RuntimeDeps = {
+    cfg: {
+      qdrantUrl: QDRANT_URL, qdrantApiKey: null,
+      embeddingBaseURL: EMBED_URL, embeddingModel: EMBED_MODEL,
+      embeddingApiKey: null, expectedDimension: EMBED_DIM, scoreThreshold: 0.15, maxResults: 5, mode: "own", codeKnowledge: "off", codeScoreThreshold: 0.4,
+      memoryForget: "on",
+    },
+    agentDir: "/tmp/agent", cwd: "/repo", projectId,
+    embed: (t) => embedder.embed(t),
+    qdrant, readGlobalConfig: () => rt.cfg, writeGlobalConfig: () => {}, reloadEffectiveConfig: () => {}, print: () => {},
+  };
+  try {
+    const s1 = await rememberLogic(rt, "Database is Postgres 16", "fact");
+    assert.ok(s1.ok);
+    const s2 = await rememberLogic(rt, "Backend uses gRPC for inter-service RPC", "decision");
+    assert.ok(s2.ok);
+
+    const countBefore = await qdrant.count(projectId);
+    assert.equal(countBefore, 2);
+
+    // Retract s1
+    const f1 = await forgetLogic(rt, "Database is Postgres 16");
+    assert.ok(f1.ok, !f1.ok ? f1.error : undefined);
+    if (f1.ok) {
+      assert.equal(f1.value.text, "Database is Postgres 16");
+      assert.equal(f1.value.removed, 1);
+    }
+
+    const countAfter = await qdrant.count(projectId);
+    assert.equal(countAfter, 1);
+
+    // Retracting nonexistent fails
+    const fFail = await forgetLogic(rt, "Database is Postgres 16");
+    assert.equal(fFail.ok, false);
+    if (!fFail.ok) {
+      assert.equal(fFail.error, "no memory_save point with that exact text");
+    }
+
+    // Retracted memory is no longer found
+    const searchRes = await memorySearchLogic(rt, "what database do we use?");
+    assert.ok(searchRes.ok);
+    // Since only gRPC remains, Postgres query should return 0 hits
+    const pgHits = searchRes.value.filter((h) => h.payload.text.includes("Postgres"));
+    assert.equal(pgHits.length, 0);
+
+    // Remaining memory is still found
+    const grpcSearch = await memorySearchLogic(rt, "what protocol do services use?");
+    assert.ok(grpcSearch.ok);
+    assert.equal(grpcSearch.value.length, 1);
+    assert.match(grpcSearch.value[0].payload.text, /gRPC/);
+  } finally {
+    await qdrant.clearCollection(projectId).catch(() => {});
   }
 });

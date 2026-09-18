@@ -3,7 +3,7 @@ import type { MakeRuntimeIO } from "./deps.ts";
 import { readGlobalConfig, writeConfigFile } from "./config.ts";
 import { agentDirFromEnv, detectBlackhole } from "./mode.ts";
 import { resolveMode } from "./mode.ts";
-import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
+import { rememberLogic, memorySearchLogic, forgetLogic } from "./tools-core.ts";
 import { renderHits } from "./render.ts";
 import { readPendingArtifacts } from "./blackhole.ts";
 import { artifactToIngestItem, ingestItems } from "./ingest.ts";
@@ -11,7 +11,7 @@ import { captureAtCompaction } from "./capture.ts";
 import { projectIdFrom, findGitRoot } from "./project.ts";
 import { syncCodeKnowledge } from "./code-sync.ts";
 import type { SyncResult } from "./code-sync.ts";
-import { statusHandler, settingsHandler, rememberHandler, searchHandler, clearHandler, helpHandler, depsToIO } from "./handlers.ts";
+import { statusHandler, settingsHandler, rememberHandler, searchHandler, forgetHandler, clearHandler, helpHandler, depsToIO } from "./handlers.ts";
 import type { HandlerIO, SettingsUI } from "./handlers.ts";
 import { runSettingsForm } from "./handlers.ts";
 import { errorEntry, memoryHeaderText, message, codeMemorySyncMessage } from "./out.ts";
@@ -48,6 +48,7 @@ interface CommandDef {
   description: string;
   /** Receives the raw argument string — everything after the command token. */
   execute: (args: string) => Promise<void>;
+  getArgumentCompletions?: (prefix: string) => Array<{ value: string; label?: string; description?: string }> | null;
 }
 
 /** Extract a durable summary text from an event payload when one is present. */
@@ -180,8 +181,12 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     },
     execute: async (_toolCallId: string, params: { text: string; type?: "decision" | "fact" | "constraint" | "preference" }) => {
       const res = await rememberLogic(rt, params.text, params.type);
-      if (res.ok) void refreshStatus(); // footer count, best-effort
-      return res.ok ? OK(`remembered (${res.value.source_kind}): ${res.value.text}`) : ERR(`remember failed: ${res.error}`);
+      if (res.ok) {
+        void refreshStatus(); // footer count, best-effort
+        if (res.value.skipped) return OK(`already saved: ${res.value.text}`);
+        return OK(`remembered (${res.value.source_kind}): ${res.value.text}`);
+      }
+      return ERR(`remember failed: ${res.error}`);
     },
   });
 
@@ -243,6 +248,39 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     });
   }
 
+  // Opt-in model exact-match retraction (spec Layer 4): gated on memoryForget: on.
+  if (rt.cfg.memoryForget === "on") {
+    api.registerTool({
+      name: "memory_forget",
+      label: "memory_forget",
+      description:
+        "Retract a previously saved memory that is now obsolete or contradicted by the user. Requires the exact verbatim text as returned by memory_search.",
+      promptSnippet: "memory_forget(text) — retract an obsolete memory previously saved with memory_save.",
+      promptGuidelines: [
+        "When the user explicitly contradicts or deprecates a previous decision or fact, query memory_search first to get the exact saved text, then call memory_forget with that verbatim text.",
+        "memory_forget operates only on exact text matches saved by memory_save; it will not delete auto-captured summaries or partial matches.",
+      ],
+      parameters: {
+        type: "object",
+        properties: {
+          text: {
+            type: "string",
+            description: "The exact verbatim text of the memory to retract, as returned by memory_search.",
+          },
+        },
+        required: ["text"],
+      },
+      execute: async (_toolCallId: string, params: { text: string }) => {
+        const res = await forgetLogic(rt, params.text);
+        if (res.ok) {
+          void refreshStatus();
+          return OK(`forgotten: ${res.value.text}`);
+        }
+        return ERR(`memory_forget failed: ${res.error}`);
+      },
+    });
+  }
+
   // ── /qdrant command family ─────────────────────────────────────────────────
   // One pi command per unique single-token name: pi resolves "/qdrant-status" as
   // the command "qdrant-status" with everything after the first space as its raw
@@ -268,7 +306,25 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     },
     { name: "qdrant-remember", description: "Save durable knowledge now: /qdrant-remember <text>", execute: async (args) => { await rememberHandler(io, args.trim()); void refreshStatus(); } },
     { name: "qdrant-search", description: "Semantic search: /qdrant-search <query>", execute: async (args) => { await searchHandler(io, args.trim()); } },
-    { name: "qdrant-clear", description: "Reset the current project's collection", execute: async () => { await clearHandler(io); void refreshStatus(); } },
+    {
+      name: "qdrant-forget",
+      description: "Search and remove memories interactively: /qdrant-forget <query>",
+      execute: async (args) => {
+        const ui = api.requestUI?.();
+        await forgetHandler(io, args.trim(), ui);
+        void refreshStatus();
+      },
+    },
+    {
+      name: "qdrant-clear",
+      description: "Reset entire collection or purge code points: /qdrant-clear all | code",
+      execute: async (args) => { await clearHandler(io, args.trim()); void refreshStatus(); },
+      getArgumentCompletions: (prefix) => {
+        const options = ["all", "code"];
+        const filtered = options.filter((o) => o.startsWith(prefix.trim().toLowerCase()));
+        return filtered.length > 0 ? filtered.map((o) => ({ value: o, label: o })) : null;
+      },
+    },
     { name: "qdrant-help", description: "List /qdrant commands", execute: async () => { await helpHandler(io); } },
     {
       name: "qdrant-index-code",
@@ -294,7 +350,14 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
       },
     },
   ];
-  for (const c of commands) api.registerCommand({ name: c.name, description: c.description, execute: c.execute });
+  for (const c of commands) {
+    api.registerCommand({
+      name: c.name,
+      description: c.description,
+      execute: c.execute,
+      getArgumentCompletions: c.getArgumentCompletions,
+    });
+  }
 
   // ── Lifecycle handlers ─────────────────────────────────────────────────────
   const ingestPending = async (): Promise<void> => {
@@ -422,7 +485,11 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
 
 interface PiSurface {
   registerTool(def: unknown): void;
-  registerCommand(name: string, options: { description?: string; handler(args: string, ctx: unknown): void | Promise<void> }): void;
+  registerCommand(name: string, options: {
+    description?: string;
+    handler(args: string, ctx: unknown): void | Promise<void>;
+    getArgumentCompletions?: (prefix: string) => Array<{ value: string; label?: string; description?: string }> | null;
+  }): void;
   on(event: string, handler: (payload: unknown, ctx: unknown) => void | Promise<void>): void;
   appendEntry(customType: string, data?: unknown): void;
   registerEntryRenderer(customType: string, renderer: (entry: { customType?: string; data?: unknown }, options?: unknown, theme?: unknown) => unknown): void;
@@ -487,10 +554,16 @@ export default async function factory(api: unknown): Promise<void> {
       // "qdrant-status" and passes everything after the first space as the raw
       // `args` string, so each def runs directly on its own argument text — no
       // family coalescing or subcommand dispatch in the adapter.
-      const d = def as { name?: string; description?: string; execute?: (args: string) => Promise<void> };
+      const d = def as {
+        name?: string;
+        description?: string;
+        execute?: (args: string) => Promise<void>;
+        getArgumentCompletions?: (prefix: string) => Array<{ value: string; label?: string; description?: string }> | null;
+      };
       if (!d.name) return;
       pi.registerCommand(d.name, {
         description: d.description,
+        getArgumentCompletions: d.getArgumentCompletions,
         handler: async (args: string, ctx: unknown) => {
           const ui = (ctx as { ui?: unknown } | undefined)?.ui as typeof currentUi;
           if (ui) currentUi = ui;

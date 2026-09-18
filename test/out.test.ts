@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   message, errorEntry, helpEntry, statusEntry, searchEntry, searchHitView,
   renderOut, outText, typeRole, memoryHeaderText, codeMemoryReloadNotice, codeMemorySyncMessage,
-  displayValue, settingsScopeLabel, settingsUsageText, settingsUpdatedText, settingsGlobalUpdatedText,
+  displayValue, settingsScopeLabel, settingsUsageText, clearUsageText, settingsUpdatedText, settingsGlobalUpdatedText,
   settingsOverrideClearedText, resetOptionLabel, formNumericPrompt, formSaveMessage, formClearMessage,
 } from "../src/out.ts";
 import type { OutEntry, OutLine, Span } from "../src/out.ts";
@@ -328,4 +328,11 @@ test("form builders produce the destination-naming strings", () => {
     "qdrantUrl = http://x:6333 → the global config file (was http://localhost:6333; run /qdrant-settings again to edit another field)",
   );
   assert.equal(formClearMessage("codeScoreThreshold", 0.55), "codeScoreThreshold returns to the global value (0.55)");
+});
+
+test("clearUsageText returns multi-line usage guidance", () => {
+  const text = clearUsageText();
+  assert.match(text, /^clear: usage — \/qdrant-clear all \| code/);
+  assert.match(text, /all {2}— reset the current project's entire memory collection/);
+  assert.match(text, /code — remove all indexed code summaries for this project/);
 });

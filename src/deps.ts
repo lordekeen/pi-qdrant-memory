@@ -35,9 +35,16 @@ export async function makeRuntime(
     agentDir,
     cwd,
     projectId,
+    env,
+    resolvedIO: {
+      embed: io.embed,
+      embedBatch: io.embedBatch,
+      qdrant: io.qdrant,
+    },
     embed: embedder,
     embedBatch: io.embedBatch ?? ((texts: string[]) => embeddingClient.embedBatch(texts)),
     qdrant,
+    collectionReady: new Set<string>(),
     readGlobalConfig: io.readGlobalConfig,
     writeGlobalConfig: io.writeGlobalConfig,
     print: io.print,
@@ -60,15 +67,17 @@ export function writeGlobalConfigAndReload(rt: RuntimeDeps, agentDir: string, ne
 /**
  * Swap a runtime onto a new config at runtime (reload-on-save): replaces `cfg`
  * and rebuilds the embedding/Qdrant clients so a `/qdrant settings` write takes
- * effect immediately instead of at the next session.
+ * effect immediately instead of at the next session. Respects injected test
+ * seams (resolvedIO) when present.
  */
 export function applyConfig(rt: RuntimeDeps, cfg: Config): void {
   rt.cfg = cfg;
+  rt.collectionReady?.clear();
   const embeddingClient = new EmbeddingClient(
     cfg.embeddingBaseURL, cfg.embeddingModel, cfg.embeddingApiKey, cfg.expectedDimension);
-  rt.embed = (text: string) => embeddingClient.embed(text);
+  rt.embed = rt.resolvedIO?.embed ?? ((text: string) => embeddingClient.embed(text));
   // Rebind the batch variant too, or a hot config reload would leave it
   // submitting to the previous (stale) embedding client.
-  rt.embedBatch = (texts: string[]) => embeddingClient.embedBatch(texts);
-  rt.qdrant = new QdrantClient(cfg.qdrantUrl, cfg.qdrantApiKey);
+  rt.embedBatch = rt.resolvedIO?.embedBatch ?? ((texts: string[]) => embeddingClient.embedBatch(texts));
+  rt.qdrant = rt.resolvedIO?.qdrant ?? new QdrantClient(cfg.qdrantUrl, cfg.qdrantApiKey);
 }

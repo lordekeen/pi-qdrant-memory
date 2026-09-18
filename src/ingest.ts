@@ -99,6 +99,20 @@ export async function ingestItems(
   }
 
   if (points.length) {
+    if (deps.qdrant.deletePointsBySourceEntryIds) {
+      const sourceEntryIds = Array.from(new Set(
+        points
+          .map((p) => p.payload.source_entry_id)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ));
+      if (sourceEntryIds.length > 0) {
+        try {
+          await deps.qdrant.deletePointsBySourceEntryIds(deps.projectId, sourceEntryIds);
+        } catch (err) {
+          console.error(`pi-qdrant-memory: supersede delete failed (non-fatal): ${String(err)}`);
+        }
+      }
+    }
     try {
       await deps.qdrant.upsert(deps.projectId, points);
     } catch (err) {

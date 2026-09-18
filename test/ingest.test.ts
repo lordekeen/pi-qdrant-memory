@@ -108,3 +108,110 @@ test("ingestItems uses embedBatch when available for pending items (#17)", async
   assert.equal(q.upserted[0]!.length, 2);
 });
 
+test("ingestItems calls deletePointsBySourceEntryIds before upserting new points (OI-004)", async () => {
+  const q = fakeQdrant();
+  const timeline: string[] = [];
+  const deletedSourceEntryIds: string[][] = [];
+
+  q.deletePointsBySourceEntryIds = async (_name, ids) => {
+    timeline.push("delete");
+    deletedSourceEntryIds.push(ids);
+  };
+  const origUpsert = q.upsert;
+  q.upsert = async (name, points) => {
+    timeline.push("upsert");
+    await origUpsert(name, points);
+  };
+
+  const deps = {
+    embed: async () => {
+      timeline.push("embed");
+      return new Array(768).fill(0.1);
+    },
+    qdrant: q,
+    projectId: "pi-mem-abc",
+  };
+
+  const res = await ingestItems(deps, 768, [
+    {
+      text: "revised observation text",
+      sourceKind: "blackhole_observation" as const,
+      contextId: "obs-1",
+      payload: {
+        type: "fact" as const,
+        project_id: "pi-mem-abc",
+        ts: 2,
+        source_kind: "blackhole_observation" as const,
+        source_entry_id: "obs-1",
+      },
+    },
+  ]);
+
+  assert.equal(res.ingested, 1);
+  assert.deepEqual(timeline, ["embed", "delete", "upsert"]);
+  assert.deepEqual(deletedSourceEntryIds, [["obs-1"]]);
+  assert.equal(q.upserted.length, 1);
+});
+
+test("ingestItems does not call deletePointsBySourceEntryIds if embed fails", async () => {
+  const q = fakeQdrant();
+  let deleteCalled = false;
+  q.deletePointsBySourceEntryIds = async () => { deleteCalled = true; };
+
+  const deps = {
+    embed: async () => { throw new Error("embed failed"); },
+    qdrant: q,
+    projectId: "pi-mem-abc",
+  };
+
+  const res = await ingestItems(deps, 768, [
+    {
+      text: "observation text",
+      sourceKind: "blackhole_observation" as const,
+      contextId: "obs-1",
+      payload: {
+        type: "fact" as const,
+        project_id: "pi-mem-abc",
+        ts: 1,
+        source_kind: "blackhole_observation" as const,
+        source_entry_id: "obs-1",
+      },
+    },
+  ]);
+
+  assert.equal(res.ingested, 0);
+  assert.equal(deleteCalled, false, "delete must not be called if embed fails");
+  assert.equal(q.upserted.length, 0);
+});
+
+test("ingestItems skips deletePointsBySourceEntryIds for items without source_entry_id", async () => {
+  const q = fakeQdrant();
+  let deleteCalled = false;
+  q.deletePointsBySourceEntryIds = async () => { deleteCalled = true; };
+
+  const deps = {
+    embed: async () => new Array(768).fill(0.1),
+    qdrant: q,
+    projectId: "pi-mem-abc",
+  };
+
+  const res = await ingestItems(deps, 768, [
+    {
+      text: "compaction summary text",
+      sourceKind: "own_capture" as const,
+      contextId: "sess-1",
+      payload: {
+        type: "session_summary" as const,
+        project_id: "pi-mem-abc",
+        ts: 1,
+        source_kind: "own_capture" as const,
+        // no source_entry_id
+      },
+    },
+  ]);
+
+  assert.equal(res.ingested, 1);
+  assert.equal(deleteCalled, false, "items without source_entry_id must not trigger delete");
+  assert.equal(q.upserted.length, 1);
+});
+

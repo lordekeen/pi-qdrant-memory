@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { QdrantClient, QdrantError, redactUrl } from "../src/qdrant.ts";
+import { DimensionMismatchError, QdrantClient, QdrantError, redactUrl } from "../src/qdrant.ts";
 import type { PointPayload } from "../src/types.ts";
 
 function jsonRes(body: unknown, status = 200) {
@@ -48,7 +48,7 @@ test("ensureCollection creates on 404", async () => {
   }
 });
 
-test("ensureCollection recreates on dimension mismatch", async () => {
+test("ensureCollection recreates on dimension mismatch when opted in", async () => {
   const routes = new Map<string, (u: string, i: RequestInit) => Response>();
   const indexed: Array<{ field: string; body: { field_name: string; field_schema: string } }> = [];
   routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () =>
@@ -57,8 +57,30 @@ test("ensureCollection recreates on dimension mismatch", async () => {
   routes.set("PUT http://qdrant:6333/collections/pi-mem-abc", () => jsonRes({ result: true }));
   addIndexRoutes(routes, indexed);
   const client = makeClient(routes);
-  assert.equal(await client.ensureCollection("pi-mem-abc", 768), "recreated");
+  assert.equal(await client.ensureCollection("pi-mem-abc", 768, { onDimensionMismatch: "recreate" }), "recreated");
   assert.equal(indexed.length, 2);
+});
+
+test("ensureCollection throws DimensionMismatchError on mismatch by default and issues no DELETE", async () => {
+  let deleted = false;
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () =>
+    jsonRes({ result: { config: { params: { vectors: { size: 384 } } } } }));
+  routes.set("DELETE http://qdrant:6333/collections/pi-mem-abc", () => {
+    deleted = true;
+    return jsonRes({ result: true });
+  });
+  const client = makeClient(routes);
+  await assert.rejects(
+    () => client.ensureCollection("pi-mem-abc", 768),
+    (err: unknown) => {
+      assert.ok(err instanceof DimensionMismatchError);
+      assert.equal((err as DimensionMismatchError).stored, 384);
+      assert.equal((err as DimensionMismatchError).expected, 768);
+      return true;
+    },
+  );
+  assert.equal(deleted, false);
 });
 
 test("payload index failures are non-fatal", async () => {
@@ -179,6 +201,65 @@ test("deletePointsByFiles chunks above 50 paths and survives errors", async () =
   await client.deletePointsByFiles("pi-mem-abc", paths);
   assert.equal(calls, 2); // 50 + 10
   assert.equal(failed, 1); // first chunk's error did not abort the second
+});
+
+test("deletePointsBySourceKind sends filter for source_kind", async () => {
+  const bodies: unknown[] = [];
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points/delete", (_u, i) => {
+    bodies.push(JSON.parse(String(i.body)));
+    return jsonRes({ result: { status: "completed" } });
+  });
+  const client = makeClient(routes);
+  await client.deletePointsBySourceKind("pi-mem-abc", "code_summary");
+  assert.equal(bodies.length, 1);
+  assert.deepEqual(bodies[0], {
+    filter: { must: [{ key: "source_kind", match: { value: "code_summary" } }] },
+  });
+});
+
+test("deletePointsBySourceEntryIds sends match any filter and chunks by 50", async () => {
+  const bodies: unknown[] = [];
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points/delete", (_u, i) => {
+    bodies.push(JSON.parse(String(i.body)));
+    return jsonRes({ result: { status: "completed" } });
+  });
+  const client = makeClient(routes);
+  await client.deletePointsBySourceEntryIds("pi-mem-abc", []);
+  assert.equal(bodies.length, 0);
+
+  const ids = Array.from({ length: 65 }, (_, i) => `entry-${i}`);
+  await client.deletePointsBySourceEntryIds("pi-mem-abc", ids);
+  assert.equal(bodies.length, 2);
+  assert.deepEqual((bodies[0] as { filter: { must: Array<{ key: string; match: { any: string[] } }> } }).filter.must[0], {
+    key: "source_entry_id",
+    match: { any: ids.slice(0, 50) },
+  });
+  assert.deepEqual((bodies[1] as { filter: { must: Array<{ key: string; match: { any: string[] } }> } }).filter.must[0], {
+    key: "source_entry_id",
+    match: { any: ids.slice(50) },
+  });
+});
+
+test("deletePointsByIds sends point list, chunks by 50, and returns deleted count", async () => {
+  const bodies: unknown[] = [];
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points/delete", (_u, i) => {
+    bodies.push(JSON.parse(String(i.body)));
+    return jsonRes({ result: { status: "completed" } });
+  });
+  const client = makeClient(routes);
+  const count0 = await client.deletePointsByIds("pi-mem-abc", []);
+  assert.equal(count0, 0);
+  assert.equal(bodies.length, 0);
+
+  const ids = Array.from({ length: 55 }, (_, i) => `pt-${i}`);
+  const count = await client.deletePointsByIds("pi-mem-abc", ids);
+  assert.equal(count, 55);
+  assert.equal(bodies.length, 2);
+  assert.deepEqual((bodies[0] as { points: string[] }).points, ids.slice(0, 50));
+  assert.deepEqual((bodies[1] as { points: string[] }).points, ids.slice(50));
 });
 
 test("codeIndexSnapshot pages through scroll results and skips malformed payloads", async () => {

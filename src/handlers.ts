@@ -11,6 +11,7 @@ import {
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
 import {
   EMPTY_SEARCH_TEXT,
+  clearUsageText,
   codeMemoryReloadNotice,
   displayValue,
   errorEntry,
@@ -55,6 +56,8 @@ export interface HandlerIO {
   codeMemory?: CodeMemoryHealth;
   /** Environment variables; defaults to process.env. */
   env?: NodeJS.ProcessEnv;
+  /** Memoized verified collection existence set (OI-010). */
+  collectionReady?: Set<string>;
 }
 
 export interface DepsToIOOptions { emit?: (e: OutEntry) => void; codeMemory?: CodeMemoryHealth; }
@@ -74,7 +77,8 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
     get projectId() { return deps.projectId; },
     get embed() { return deps.embed; },
     get qdrant() { return deps.qdrant; },
-    get env() { return process.env; },
+    get env() { return deps.env ?? process.env; },
+    get collectionReady() { return deps.collectionReady; },
     readGlobalConfig: deps.readGlobalConfig,
     writeGlobalConfig: deps.writeGlobalConfig,
     readProjectSettings: () => loadProjectSettings(deps.agentDir, deps.projectId),
@@ -207,6 +211,7 @@ export interface SettingsUI {
 const SETTING_FIELDS = [
   "mode",
   "codeKnowledge",
+  "memoryForget",
   "embeddingBaseURL",
   "embeddingModel",
   "expectedDimension",
@@ -262,6 +267,8 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   let raw: string | undefined;
   if (key === "mode") {
     raw = await ui.select(`mode — currently ${displayValue(cur)}`, ["auto", "blackhole", "own"]);
+  } else if (key === "memoryForget") {
+    raw = await ui.select(`memoryForget — currently ${displayValue(cur)}`, ["off", "on"]);
   } else if (key === "codeKnowledge") {
     // The select offers a reset option labelled e.g. `default (inherit global:
     // off)`; normalize it back to the reserved token `default` so the clear
@@ -329,8 +336,12 @@ export async function rememberHandler(io: HandlerIO, text: string, type?: Memory
   // point's source_kind ("remember_tool") is provenance data that drives the
   // deterministic point id — it is never echoed to the human; only the
   // LLM-facing memory_save return names it (DESIGN.md agent-tool-results).
-  if (res.ok) io.emit(message(`remembered: ${res.value.text}`));
-  else io.emit(errorEntry(`error: remember failed: ${res.error}`));
+  if (res.ok) {
+    if (res.value.skipped) io.emit(message(`already saved: ${res.value.text}`));
+    else io.emit(message(`remembered: ${res.value.text}`));
+  } else {
+    io.emit(errorEntry(`error: remember failed: ${res.error}`));
+  }
   return { exit: false };
 }
 
@@ -349,13 +360,64 @@ export async function searchHandler(io: HandlerIO, query: string, type?: MemoryT
   return { exit: false };
 }
 
-export async function clearHandler(io: HandlerIO): Promise<HandlerResult> {
-  try {
-    await io.qdrant.clearCollection(io.projectId);
-    io.emit(message(`cleared: collection ${io.projectId} reset`));
-  } catch (err) {
-    io.emit(errorEntry(`error: clear failed: ${String(err)}`));
+export async function clearHandler(io: HandlerIO, target?: string): Promise<HandlerResult> {
+  const normalized = target?.trim().toLowerCase();
+  if (normalized === "all") {
+    try {
+      await io.qdrant.clearCollection(io.projectId);
+      io.collectionReady?.delete(io.projectId);
+      io.emit(message(`cleared: collection ${io.projectId} reset`));
+    } catch (err) {
+      io.emit(errorEntry(`error: clear failed: ${String(err)}`));
+    }
+    return { exit: false };
   }
+  if (normalized === "code") {
+    try {
+      const count = await io.qdrant.countBySourceKind(io.projectId, "code_summary");
+      if (count === 0) {
+        io.emit(message("clear: no code points indexed"));
+        return { exit: false };
+      }
+      await io.qdrant.deletePointsBySourceKind?.(io.projectId, "code_summary");
+      io.emit(message(`cleared: ${count} code memory point${count === 1 ? "" : "s"} removed`));
+    } catch (err) {
+      io.emit(errorEntry(`error: clear failed: ${String(err)}`));
+    }
+    return { exit: false };
+  }
+  io.emit(message(clearUsageText()));
+  return { exit: false };
+}
+
+export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsUI): Promise<HandlerResult> {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    io.emit(message("usage: /qdrant-forget <search query>"));
+    return { exit: false };
+  }
+  const res = await memorySearchLogic(io, trimmed, undefined, 5);
+  if (!res.ok) {
+    io.emit(errorEntry(`error: forget failed: ${res.error}`));
+    return { exit: false };
+  }
+  if (res.value.length === 0) {
+    io.emit(message(`forget: no memories matched "${trimmed}"`));
+    return { exit: false };
+  }
+  if (!ui) {
+    io.emit(errorEntry("error: /qdrant-forget requires interactive UI confirmation"));
+    return { exit: false };
+  }
+  io.emit(searchEntry(res.value.map(searchHitView)));
+  const confirmed = await ui.confirm("Remove memories?", `Delete ${res.value.length} matching memories from project collection?`);
+  if (!confirmed) {
+    io.emit(message("forget: unchanged (cancelled)"));
+    return { exit: false };
+  }
+  const hitIds = res.value.map((h) => h.id);
+  const count = await io.qdrant.deletePointsByIds?.(io.projectId, hitIds) ?? hitIds.length;
+  io.emit(message(`forgotten: ${count} memories removed`));
   return { exit: false };
 }
 
@@ -368,11 +430,12 @@ export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {
     { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global" },
     { cmd: "/qdrant-remember <text>", desc: "save durable knowledge now" },
     { cmd: "/qdrant-search <query>", desc: "semantic search of durable knowledge" },
-    { cmd: "/qdrant-clear", desc: "reset the current project's collection" },
+    { cmd: "/qdrant-forget <query>", desc: "search and remove memories interactively" },
+    { cmd: "/qdrant-clear all | code", desc: "reset entire collection (all) or purge code summaries (code)" },
     { cmd: "/qdrant-help", desc: "this list" },
   ];
   if (io.cfg.codeKnowledge === "on") {
-    rows.splice(5, 0, { cmd: "/qdrant-index-code", desc: "re-index code summaries now" });
+    rows.splice(6, 0, { cmd: "/qdrant-index-code", desc: "re-index code summaries now" });
   }
   io.emit(helpEntry(rows, { mode, collection: io.projectId }));
   return { exit: false };

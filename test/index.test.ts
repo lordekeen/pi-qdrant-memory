@@ -11,6 +11,7 @@ import type { QdrantLike } from "../src/qdrant.ts";
 import { QdrantError } from "../src/qdrant.ts";
 import { readEffectiveConfig, saveProjectSettings } from "../src/project-settings.ts";
 import { projectIdFrom } from "../src/project.ts";
+import { pointId } from "../src/ids.ts";
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
 
@@ -46,7 +47,7 @@ const qdrant: QdrantLike = {
 };
 
 const rt: RuntimeDeps = {
-  cfg: { qdrantUrl: "http://localhost:6333", qdrantApiKey: null, embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text", embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10, mode: "own", codeKnowledge: "off", codeScoreThreshold: 0.4 },
+  cfg: { qdrantUrl: "http://localhost:6333", qdrantApiKey: null, embeddingBaseURL: "http://localhost:8080/v1", embeddingModel: "nomic-embed-text", embeddingApiKey: null, expectedDimension: 768, scoreThreshold: 0.18, maxResults: 10, mode: "own", codeKnowledge: "off", codeScoreThreshold: 0.4, memoryForget: "off" },
   agentDir: "/tmp/agent", cwd: "/repo", projectId: "pi-mem-abc",
   embed: async () => new Array(768).fill(0.1), qdrant,
   readGlobalConfig: () => rt.cfg, writeGlobalConfig: () => {}, reloadEffectiveConfig: () => {}, print: () => {},
@@ -67,7 +68,7 @@ test("wireApi registers the /qdrant command set", () => {
   const cleanup = wireApi(api, rt);
   try {
     const names = (api.commands as Array<{ name: string }>).map((c) => c.name);
-    for (const n of ["qdrant-status", "qdrant-settings", "qdrant-remember", "qdrant-search", "qdrant-clear", "qdrant-help"]) {
+    for (const n of ["qdrant-status", "qdrant-settings", "qdrant-remember", "qdrant-search", "qdrant-forget", "qdrant-clear", "qdrant-help"]) {
       assert.ok(names.includes(n), `missing command ${n}`);
     }
   } finally { cleanup(); }
@@ -202,7 +203,7 @@ test("code_memory executes a code-typed search", async () => {
     const tool = (api.tools as Array<{ name: string; execute: (id: string, p: { query: string }) => Promise<{ content: Array<{ text: string }> }> }>)
       .find((t) => t.name === "code_memory")!;
     const res = await tool.execute("t1", { query: "how does X work" });
-    assert.match(res.content[0]!.text, /No relevant memory found/);
+    assert.match(res.content[0]!.text, /No memories stored yet/);
   } finally { cleanup(); }
 });
 
@@ -500,5 +501,60 @@ test("runCodeSync sets codeMemoryState to syncing while in-flight", async () => 
       assert.equal(stateDuringSnapshot, "syncing");
     } finally { cleanup(); }
   } finally { rmSync(agentDir, { recursive: true, force: true }); }
+});
+
+test("wireApi registers memory_forget tool only when memoryForget is 'on'", () => {
+  const apiOff = fakeApi();
+  const cleanupOff = wireApi(apiOff, rt);
+  try {
+    const namesOff = (apiOff.tools as Array<{ name: string }>).map((t) => t.name);
+    assert.ok(!namesOff.includes("memory_forget"));
+  } finally { cleanupOff(); }
+
+  const apiOn = fakeApi();
+  const onRtForget: RuntimeDeps = {
+    ...rt,
+    cfg: { ...rt.cfg, memoryForget: "on" },
+  };
+  const cleanupOn = wireApi(apiOn, onRtForget);
+  try {
+    const namesOn = (apiOn.tools as Array<{ name: string }>).map((t) => t.name);
+    assert.ok(namesOn.includes("memory_forget"));
+  } finally { cleanupOn(); }
+});
+
+test("memory_forget tool executes forgetLogic and retracts memory", async () => {
+  const text = "we chose redis for caching";
+  const id = pointId(text, "remember_tool", "");
+  const deleted: string[] = [];
+  const q: QdrantLike = {
+    async ensureCollection() { return "exists"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 1; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+    async existingPointIds() { return new Set([id]); },
+    async deletePointsByIds(_n, ids) { deleted.push(...ids); return ids.length; },
+  };
+  const api = fakeApi();
+  const forgetRt: RuntimeDeps = {
+    ...rt,
+    cfg: { ...rt.cfg, memoryForget: "on" },
+    qdrant: q,
+  };
+  const cleanup = wireApi(api, forgetRt);
+  try {
+    const tool = (api.tools as Array<{ name: string; execute: (id: string, p: { text: string }) => Promise<{ content: Array<{ text: string }> }> }>)
+      .find((t) => t.name === "memory_forget")!;
+    const res = await tool.execute("t1", { text });
+    assert.equal(res.content[0]!.text, `forgotten: ${text}`);
+    assert.deepEqual(deleted, [id]);
+
+    const resFail = await tool.execute("t2", { text: "unknown fact" });
+    assert.match(resFail.content[0]!.text, /memory_forget failed: no memory_save point with that exact text/);
+  } finally { cleanup(); }
 });
 

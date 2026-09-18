@@ -51,17 +51,19 @@ The nine keys below always live in the global file and are edited with `/qdrant-
 | `embeddingBaseURL` | `http://localhost:8080/v1` | OpenAI-compatible `/embeddings` endpoint |
 | `embeddingModel` | `nomic-embed-text` | Embedding model id |
 | `embeddingApiKey` | `null` | Optional key for hosted embedding APIs |
-| `expectedDimension` | `768` | Embedding dimension (positive integer); dimension drift recreates the collection |
+| `expectedDimension` | `768` | Embedding dimension (positive integer); dimension drift recreates on write (after successful embed) and fails safely on read |
 | `scoreThreshold` | `0.18` | Search score threshold, 0–1 (per-model; nomic ≈ 0.15–0.2) |
 | `maxResults` | `10` | Default `memory_search` limit |
 | `mode` | `auto` | `auto` detect \| `blackhole` force Mode 1 \| `own` force Mode 2 |
 | `codeKnowledge` | `off` | `on` enables structural code summaries + the `code_memory` tool (next session) |
 | `codeScoreThreshold` | `0.55` | Score threshold for `code_memory` searches, 0–1 (per-model; see [Code memory](#code-memory-opt-in)) |
+| `memoryForget` | `off` | `on` enables model exact-match memory retraction via `memory_forget` tool (next session) |
 
 Env overrides (highest precedence, above the project and file layers):
 `PI_QDRANT_URL`, `PI_QDRANT_API_KEY`, `PI_QDRANT_EMBEDDING_BASE_URL`, `PI_QDRANT_EMBEDDING_MODEL`,
 `PI_QDRANT_EMBEDDING_API_KEY`, `PI_QDRANT_EXPECTED_DIMENSION`, `PI_QDRANT_SCORE_THRESHOLD`,
-`PI_QDRANT_MAX_RESULTS`, `PI_QDRANT_MODE`, `PI_QDRANT_CODE_KNOWLEDGE`, `PI_QDRANT_CODE_SCORE_THRESHOLD`.
+`PI_QDRANT_MAX_RESULTS`, `PI_QDRANT_MODE`, `PI_QDRANT_CODE_KNOWLEDGE`, `PI_QDRANT_CODE_SCORE_THRESHOLD`,
+`PI_QDRANT_MEMORY_FORGET`.
 
 The global file stores API keys and is written with owner-only permissions (`0600`);
 a previously loosened file is tightened on the next save.
@@ -87,11 +89,12 @@ those keys, keyed by the same `projectId` as the collection.
 ## Commands
 
 - `/qdrant-status` — connection health + active mode + collection point count.
-- `/qdrant-settings <key> <value>` — persist a config field. `codeKnowledge` and `codeScoreThreshold` apply to this project (an override); every other key (`mode`, `embeddingBaseURL`, `embeddingModel`, `expectedDimension`, `scoreThreshold`, `maxResults`, …) writes the global config file. `<key> default` clears an allowlisted override; for the other keys `default` is an ordinary value. Bare `/qdrant-settings` prints usage.
+- `/qdrant-settings <key> <value>` — persist a config field. `codeKnowledge` and `codeScoreThreshold` apply to this project (an override); every other key (`mode`, `embeddingBaseURL`, `embeddingModel`, `expectedDimension`, `scoreThreshold`, `maxResults`, `memoryForget`, …) writes the global config file. `<key> default` clears an allowlisted override; for the other keys `default` is an ordinary value. Bare `/qdrant-settings` prints usage.
 - `/qdrant-remember <text>` — manual durable save.
 - `/qdrant-search <query>` — manual semantic search.
+- `/qdrant-forget <query>` — search matching memories and delete them interactively with confirmation.
 - `/qdrant-index-code` — re-index code summaries now (only when `codeKnowledge: on`).
-- `/qdrant-clear` — reset the current project's collection.
+- `/qdrant-clear all | code` — reset the current project's entire memory collection (`all`) or purge indexed code summaries (`code`). Bare `/qdrant-clear` displays usage guidance.
 - `/qdrant-help` — list all commands available.
 
 ## Statusline
@@ -103,6 +106,7 @@ While a session is active the extension shows a footer status entry: `🧠 Memor
 - `memory_save(text, type?)` — persist a durable decision/constraint/preference. Type defaults to `decision`.
 - `memory_search(query, type?, limit?)` — semantic search of prior durable knowledge (limit capped by `maxResults`).
 - `code_memory(query, limit?)` *(opt-in)* — semantic search of indexed code-structure summaries.
+- `memory_forget(text)` *(opt-in)* — retract a previously saved memory by exact verbatim text (gated on `memoryForget: "on"`).
 
 The tools carry always-on prompt guidance (via `promptSnippet`/`promptGuidelines`): the model is nudged to call `memory_save` when a decision/constraint/preference settles (with concise, self-contained statements, without re-recording what auto-capture covers) and to call `memory_search` when resuming prior work or before re-deciding. When code memory is on, `code_memory` likewise carries guidance to reach for it on "how/where does X work" questions and to open the returned `file:line` pointers.
 

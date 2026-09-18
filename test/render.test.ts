@@ -47,3 +47,23 @@ test("sourcePointer falls through to 'no source pointer' only without a file_pat
   } as PointPayload }];
   assert.match(renderHits(hits), /\(no source pointer\)/);
 });
+
+test("renderHits renders ISO timestamp from payload.ts (OI-016)", () => {
+  const ts = new Date("2026-09-18T14:20:00Z").getTime();
+  const payload: PointPayload = { type: "fact", text: "Postgres 16", project_id: "p", ts, source_kind: "remember_tool" };
+  const out = renderHits([{ id: "x", score: 0.84, payload }]);
+  assert.match(out, /\(2026-09-18T14:20:00\.000Z\)/);
+});
+
+test("renderHits does not truncate text longer than 200 chars (OI-017)", () => {
+  const longText = "A".repeat(300);
+  const payload: PointPayload = { type: "decision", text: longText, project_id: "p", ts: 1, source_kind: "remember_tool" };
+  const out = renderHits([{ id: "x", score: 0.9, payload }]);
+  assert.ok(out.includes(longText), "expected full text without truncation");
+  assert.doesNotMatch(out, /…/);
+});
+
+test("renderHits distinguishes zero stored vs zero matched count (OI-018)", () => {
+  assert.equal(renderHits([], 0), "No memories stored yet for this project.");
+  assert.equal(renderHits([], 5), "No memories matched query above scoreThreshold (total stored: 5).");
+});
