@@ -9,6 +9,4 @@ node_modules/
 *.log
 
 # Local-only design docs (specs + implementation plans)
-docs/specs/
-docs/research/
-docs/handoffs/
+docs/
