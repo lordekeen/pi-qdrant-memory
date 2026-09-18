@@ -7,7 +7,7 @@
  * directly under plain node.
  */
 import type { MemoryType, PointPayload, SearchHit } from "./types.ts";
-import { sourcePointer, truncatePreview } from "./render.ts";
+import { PREVIEW_MAX, sourcePointer, truncatePreview } from "./render.ts";
 
 // ── Entry model ──────────────────────────────────────────────────────────────
 
@@ -231,7 +231,6 @@ export function codeMemorySyncMessage(r: { files: number; symbols: number; delet
   return `code memory: ${String(r.files)} files · ${String(r.symbols)} symbols indexed (${String(r.deleted)} points replaced)`;
 }
 
-const PREVIEW_MAX = 200;
 /** The one width this extension ever chooses (DESIGN.md Layout + search-results). */
 function previewText(text: string): string {
   return truncatePreview(text, PREVIEW_MAX);

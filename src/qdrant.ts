@@ -90,6 +90,7 @@ export class QdrantClient implements QdrantLike {
   private readonly apiKey: string | null;
   private readonly fetchFn: FetchLike;
   private readonly timeoutMs: number;
+  private readonly ensured = new Map<string, number>();
 
   constructor(baseURL: string, apiKey: string | null, fetchFn: FetchLike = globalThis.fetch as FetchLike, timeoutMs: number = DEFAULT_TIMEOUT_MS) {
     this.base = baseURL.replace(/\/+$/, "");
@@ -139,6 +140,7 @@ export class QdrantClient implements QdrantLike {
     dim: number,
     opts?: EnsureCollectionOptions,
   ): Promise<"created" | "exists" | "recreated"> {
+    if (this.ensured.get(name) === dim) return "exists";
     const onMismatch = opts?.onDimensionMismatch ?? "error";
     const enc = encodeURIComponent(name);
     const getRes = await this.request("GET", `/collections/${enc}`, undefined, { notFound: true });
@@ -169,6 +171,7 @@ export class QdrantClient implements QdrantLike {
       }
     }
     await this.createPayloadIndexes(enc, name);
+    this.ensured.set(name, dim);
     return outcome;
   }
 
@@ -208,24 +211,31 @@ export class QdrantClient implements QdrantLike {
     }
     if (opts.type !== "code") {
       // Code-summary points belong to the code_memory surface — every non-code
-      // query (typed or untyped) excludes them (spec §13 / D8).
+      // query excludes them so durable memory stays pure conversation knowledge.
       mustNot.push({ key: "type", match: { value: "code" } });
     }
-    // The query API takes the vector under `query` (score_threshold is rejected for
-    // a top-level `vector` in current Qdrant versions).
     const json = await this.request("POST", `/collections/${encodeURIComponent(name)}/points/query`, {
       query: vector,
+      filter: { must, must_not: mustNot },
       limit: opts.limit,
       score_threshold: opts.threshold,
       with_payload: true,
-      filter: { must, must_not: mustNot },
+      with_vector: false,
     }) as { result: { points: Array<{ id: string; score: number; payload: PointPayload }> } };
-    return json.result.points.map((p) => ({ id: p.id, score: p.score, payload: p.payload }));
+    return (json.result.points ?? []).map((p) => ({
+      id: p.id,
+      score: p.score,
+      payload: p.payload,
+    }));
   }
 
   async count(name: string): Promise<number> {
-    const json = await this.request("POST", `/collections/${encodeURIComponent(name)}/points/count`, { exact: true }) as { result: { count: number } };
-    return json.result.count;
+    const json = await this.request("POST",
+      `/collections/${encodeURIComponent(name)}/points/count`,
+      { exact: true },
+      { notFound: true },
+    ) as { result?: { count: number } } | null;
+    return json?.result?.count ?? 0;
   }
 
   async countBySourceKind(name: string, kind: string): Promise<number> {
@@ -273,6 +283,7 @@ export class QdrantClient implements QdrantLike {
 
   async clearCollection(name: string): Promise<void> {
     await this.request("DELETE", `/collections/${encodeURIComponent(name)}`);
+    this.ensured.delete(name);
   }
 
   /** Delete all code-summary points for the given file paths (spec §8.2).

@@ -83,6 +83,35 @@ test("ensureCollection throws DimensionMismatchError on mismatch by default and 
   assert.equal(deleted, false);
 });
 
+test("ensureCollection memoizes verified collection on QdrantClient instance (OI-010)", async () => {
+  let requests = 0;
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () => {
+    requests++;
+    return jsonRes({ result: { config: { params: { vectors: { size: 768 } } } } });
+  });
+  routes.set("PUT http://qdrant:6333/collections/pi-mem-abc/index", () => {
+    requests++;
+    return jsonRes({ result: true });
+  });
+  routes.set("DELETE http://qdrant:6333/collections/pi-mem-abc", () => {
+    requests++;
+    return jsonRes({ result: true });
+  });
+  const client = makeClient(routes);
+  assert.equal(await client.ensureCollection("pi-mem-abc", 768), "exists");
+  const initialRequests = requests;
+  assert.ok(initialRequests > 0);
+  // Second call: memoized, zero additional requests
+  assert.equal(await client.ensureCollection("pi-mem-abc", 768), "exists");
+  assert.equal(requests, initialRequests);
+
+  // Clear collection invalidates the memo
+  await client.clearCollection("pi-mem-abc");
+  assert.equal(await client.ensureCollection("pi-mem-abc", 768), "exists");
+  assert.ok(requests > initialRequests + 1);
+});
+
 test("payload index failures are non-fatal", async () => {
   const routes = new Map<string, (u: string, i: RequestInit) => Response>();
   routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () => jsonRes({ status: "error" }, 404));
