@@ -127,8 +127,9 @@ The statusline entry shown while a session is active.
 - `{points}` is the number of memories currently stored in the project
   collection — total points, not a per-session delta. It is resolved from
   Qdrant on `session_start` (after any mode1 catch-up ingest) and repainted
-  after every successful write (`memory_save`, `/qdrant-remember`, the mode2
-  compaction capture) and after `/qdrant-clear`. When the collection does not
+  after every successful write or retraction (`memory_save`, `memory_forget`,
+  `/qdrant-remember`, `/qdrant-forget`, the mode2 compaction capture) and after
+  `/qdrant-clear`. When the collection does not
   exist yet the count is `0`; when Qdrant is unreachable the header drops the
   `({points})` segment entirely — the statusline is best-effort and never
   blocks a tool result, command, or lifecycle handler.
@@ -287,12 +288,12 @@ settings: usage — /qdrant-settings opens the form; /qdrant-settings <key> <val
 ```
 
 The two allowlisted keys (`codeKnowledge`, `codeScoreThreshold`) are the only ones
-that write this project's store; the nine other keys keep writing the global
+that write this project's store; the ten other keys keep writing the global
 config file. A set against an allowlisted key confirms both layers —
 `settings: codeKnowledge = on (this project; global: off)` or `settings:
 codeScoreThreshold = 0.6 (this project; global: 0.55)` — and a clear reads
 `settings: <key> override cleared (now using global: <g>)` (e.g. `settings:
-codeKnowledge override cleared (now using global: off)`). The nine
+codeKnowledge override cleared (now using global: off)`). The ten
 non-allowlisted keys keep the single-layer clause `settings: <key> updated
 (global config; reloaded at runtime)`.
 
@@ -401,7 +402,8 @@ duplicating it.
   knowledge is the product.
 - Do resolve every color/glyph through the host theme's semantic slots (the
   Colors list); never invent a palette, ANSI code, or emoji color. The 🧠 glyph
-  belongs to the footer statusline only.
+  belongs to the footer statusline and the `/qdrant-status` / `/qdrant-help` block
+  headers only.
 - Do draw no self-chrome at all: no borders, frames, rules, panels, or
   background fills anywhere, ever. Entries are unboxed text.
 - Do use glyphs `✓ ✗ !` to carry state and color to refine; do not put icons on

@@ -26,7 +26,7 @@ test talks to real services.
 ## Setting up
 
 ```bash
-git clone <repo-url> pi-qdrant-memory && cd pi-qdrant-memory
+git clone https://github.com/lordekeen/pi-qdrant-memory.git && cd pi-qdrant-memory
 npm ci
 npm run typecheck
 npm test
@@ -47,9 +47,11 @@ Then in a pi session:
 - `/qdrant-settings` — interactive settings form (bare) or
   `/qdrant-settings <key> <value>` (direct write)
 - `/qdrant-remember <text>` / `/qdrant-search <query>` — manual store/search
-- `/qdrant-clear` — reset the current project's collection
+- `/qdrant-forget <query>` — interactive memory search and removal
+- `/qdrant-clear all | code` — reset the project collection or purge code summaries
+- `/qdrant-index-code` — trigger immediate code re-indexing (when `codeKnowledge: on`)
 
-The agent tools `memory_save` and `memory_search` are what most users exercise.
+The agent tools `memory_save` and `memory_search` are what most users exercise (with `code_memory` and `memory_forget` available as opt-in tools).
 
 Notes for live testing:
 
@@ -58,7 +60,7 @@ Notes for live testing:
   output is *not* sent via `sendMessage`.
 - If your pi setup routes tool approvals through a permission system, the new
   tools will prompt for approval until allowlisted there (e.g. an
-  `"allow"` entry for `memory_search` / `memory_save` in its config).
+  `"allow"` entry for `memory_search` / `memory_save` / `code_memory` / `memory_forget` in its config).
 - Keep an eye on the footer: `🧠 Memory: mode1 (pi-mem-…)` means pi-blackhole was
   detected (Mode 1); `mode2` means own compaction capture.
 
@@ -119,16 +121,10 @@ Full detail in `AGENTS.md`. The rules that matter most:
 
 ## Reporting issues / asking questions
 
-This repository is developed locally and not yet published to a public forge.
-Until it has a canonical home:
-
-- File issues against the repository where this checkout lives (or wherever the
-  maintainer points you).
+- File issues on GitHub: [https://github.com/lordekeen/pi-qdrant-memory/issues](https://github.com/lordekeen/pi-qdrant-memory/issues).
 - Good issues include: reproduction steps, expected vs actual behavior, the
   `/qdrant-status` output, and the pi version (`pi --version`).
 
 ## License
 
-The project is MIT-licensed in intent; a `LICENSE` file will be added when the
-repository gets its public home. Until then, ask the maintainer before
-redistributing code outside this checkout.
+The project is licensed under the MIT License — see the [LICENSE](./LICENSE) file for details.

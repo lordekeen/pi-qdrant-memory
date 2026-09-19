@@ -11,9 +11,10 @@ Tools available:
 - **`memory_save`** (agent tool) — persist a durable decision/constraint/preference.
 - **`memory_search`** (agent tool) — semantic search of prior durable knowledge.
 - **`code_memory`** (agent tool, opt-in) — semantic search of indexed code-structure summaries (enabled via `codeKnowledge: "on"`; see [Code memory](#code-memory-opt-in)).
+- **`memory_forget`** (agent tool, opt-in) — retract a previously saved memory by exact verbatim text (enabled via `memoryForget: "on"`).
 
 Commands:
-- **`/qdrant-*`** command set — `qdrant-status`, `qdrant-settings`, `qdrant-remember`, `qdrant-search`, `qdrant-clear`, `qdrant-help`,
+- **`/qdrant-*`** command set — `qdrant-status`, `qdrant-settings`, `qdrant-remember`, `qdrant-search`, `qdrant-forget`, `qdrant-clear`, `qdrant-help`,
   plus `qdrant-index-code` when code memory is on. Each is a unique pi command (no subcommand parsing).
 - Mode-aware: detects when pi-blackhole is installed and ingests blackhole's durable artifacts; without it, it captures pi's own compaction summary as a `session_summary`.
 
@@ -37,12 +38,12 @@ Runtime is in-process; no background resources are started by the factory (all l
 
 ## Config
 
-The global config file lives at `~/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json` (honors `PI_CODING_AGENT_DIR`). It holds all eleven keys and is the layer that applies where no project override exists. A copyable template of the shipped defaults ships at `pi-qdrant-memory-config.example.json` (repo root, listed in `package.json` `files`) — copy it onto the path above to materialize the file. The template equals the built-in `DEFAULTS` in `src/config.ts`, which remains the real layer-4 default: a missing global file is not an error, the built-in defaults apply (zero-config run).
+The global config file lives at `~/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json` (honors `PI_CODING_AGENT_DIR`). It holds all twelve keys and is the layer that applies where no project override exists. A copyable template of the shipped defaults ships at `pi-qdrant-memory-config.example.json` (repo root, listed in `package.json` `files`) — copy it onto the path above to materialize the file. The template equals the built-in `DEFAULTS` in `src/config.ts`, which remains the real layer-4 default: a missing global file is not an error, the built-in defaults apply (zero-config run).
 
 Storage layout — `~/.pi/agent/pi-qdrant-memory/` holds the global config file and a `projects/` directory with one `<projectId>.json` override per project (~100 B each).
 
 Precedence, per field, highest first: **env → project override → global file → `DEFAULTS`** (see [Project overrides](#project-overrides)).
-The nine keys below always live in the global file and are edited with `/qdrant-settings`; the two allowlisted keys' *defaults* are edited by hand using the template.
+The ten keys below always live in the global file and are edited with `/qdrant-settings`; the two allowlisted keys' *defaults* are edited by hand using the template.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -99,7 +100,7 @@ those keys, keyed by the same `projectId` as the collection.
 
 ## Statusline
 
-While a session is active the extension shows a footer status entry: `🧠 Memory (N): <mode> (<collection>)` — Where `N` is the number of memories stored in the project collection (code + project knowledge), refreshed at session start and after every successful save/clear. When Qdrant is unreachable the count is omitted.
+While a session is active the extension shows a footer status entry: `🧠 Memory (N): <mode> (<collection>)` — Where `N` is the number of memories stored in the project collection (code + project knowledge), refreshed at session start and after every successful save/clear/forget (and code sync). When Qdrant is unreachable the count is omitted.
 
 ## Agent tools
 

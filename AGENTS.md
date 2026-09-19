@@ -11,8 +11,9 @@ clone) for the original intent and decision log.
 A **pi.dev extension** (TypeScript, no build step) giving the pi agent semantic,
 cross-session/cross-project retrieval over durable conversation knowledge. It
 embeds knowledge text into a per-project Qdrant collection and exposes it to the
-agent via two tools (`memory_save`, `memory_search`) plus the opt-in `code_memory`
-tool, and to the human via the `/qdrant-*` command set.
+agent via two core tools (`memory_save`, `memory_search`) plus the opt-in
+`code_memory` and `memory_forget` tools, and to the human via the `/qdrant-*`
+command set.
 
 ## Commands (run these before claiming anything works)
 
@@ -58,8 +59,8 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 
 | File | Role |
 | --- | --- |
-| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, `/qdrant-*` commands, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). | |
-| `src/handlers.ts` | Slash-command handlers (status/settings/remember/search/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. |
+| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, `/qdrant-*` commands, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). |
+| `src/handlers.ts` | Slash-command handlers (status/settings/remember/search/forget/clear/index-code/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. |
 | `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested. |
 | `src/config.ts` | `DEFAULTS`, `readGlobalConfig` (the global layer: defaults → file → env; `loadConfig` is its historical alias), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form). Knows nothing about projects. |
 | `src/project-settings.ts` | Per-project override store (allowlisted keys only): `PROJECT_OVERRIDABLE_FIELDS`, `loadProjectSettings` / `saveProjectSettings` / `clearProjectField`, and `readEffectiveConfig` (env → project → global → `DEFAULTS`). Lives here, not `config.ts`, to keep imports one-directional (`config.ts` ← `project-settings.ts`, no ESM cycle). |
@@ -70,7 +71,7 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | `src/ids.ts` | `normalizeText`, `contentHash`, `pointId` (deterministic ids). |
 | `src/blackhole.ts` | Read pi-blackhole pending artifacts (Mode 1) — `parseOmEntry`, `readPendingArtifacts`. |
 | `src/ingest.ts` | `ingestItems` batch upsert + `artifactToIngestItem`. |
-| `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
+| `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic`, `forgetLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
 | `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point). |
 | `src/codescan.ts` | Standalone structural code extractor (opt-in, zero-dep): repo walk + per-language line matchers → deterministic per-symbol/per-file summaries. |
 | `src/code-sync.ts` | `syncCodeKnowledge` — scan → Qdrant snapshot (file_path→file_sha) → per-file diff → per whole-file batch: embed → delete-by-file_path → upsert. Batches are built from whole files so each file is replaced atomically and a failed embed never deletes. Never throws; Qdrant is the cache. |
@@ -88,10 +89,10 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 - **Adding a tool**: define it in `wireApi` (`src/index.ts`) with plain
   JSON-Schema `parameters`, `promptSnippet`, and `promptGuidelines`; put the logic
   in `tools-core.ts` (typed against `ToolDeps` — never the full `RuntimeDeps`) so
-  tools and commands share it. Feature-gated tools (`code_memory`, gated on
-  `cfg.codeKnowledge`) register conditionally and are session-fixed exactly like
-  lifecycle hooks — a mid-session settings flip takes effect on reload, and the
-  settings output says so.
+  tools and commands share it. Feature-gated tools (`code_memory` gated on
+  `cfg.codeKnowledge`, `memory_forget` gated on `cfg.memoryForget`) register
+  conditionally and are session-fixed exactly like lifecycle hooks — a mid-session
+  settings flip takes effect on reload, and the settings output says so.
 - **Adding a command**: add a single-token def to the `commands` array in
   `wireApi` (name `qdrant-<verb>`, `execute(args: string)`), implement the
   handler in `handlers.ts`, emit one structured entry through `io.emit(...)`
@@ -123,7 +124,8 @@ Env overrides (highest precedence): `PI_QDRANT_URL`,
 `PI_QDRANT_API_KEY`, `PI_QDRANT_EMBEDDING_BASE_URL`, `PI_QDRANT_EMBEDDING_MODEL`,
 `PI_QDRANT_EMBEDDING_API_KEY`, `PI_QDRANT_EXPECTED_DIMENSION`,
 `PI_QDRANT_SCORE_THRESHOLD`, `PI_QDRANT_MAX_RESULTS`, `PI_QDRANT_MODE`,
-`PI_QDRANT_CODE_KNOWLEDGE`, `PI_QDRANT_CODE_SCORE_THRESHOLD`.
+`PI_QDRANT_CODE_KNOWLEDGE`, `PI_QDRANT_CODE_SCORE_THRESHOLD`,
+`PI_QDRANT_MEMORY_FORGET`.
 
 Unit tests never need servers: they inject fake `embed`/`QdrantLike` and a fake
 `WireApi`. Only the smoke test needs real Qdrant (default `:6333`) and an
