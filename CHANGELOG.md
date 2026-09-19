@@ -5,6 +5,13 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.4.1](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.4.0...v0.4.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* resolve tracker issues [#48](https://github.com/lordekeen/pi-qdrant-memory/issues/48) through [#51](https://github.com/lordekeen/pi-qdrant-memory/issues/51) ([1b9cfb9](https://github.com/lordekeen/pi-qdrant-memory/commit/1b9cfb9fd6d0cce8692769855948cce462660e10)), closes [#49](https://github.com/lordekeen/pi-qdrant-memory/issues/49) [#50](https://github.com/lordekeen/pi-qdrant-memory/issues/50)
+
 ## [0.4.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.3...v0.4.0) (2026-09-19)
 
 
