@@ -17,6 +17,7 @@ interface StoredPoint {
   file_sha?: string;
   source_kind: string;
   type: string;
+  symbol?: string;
 }
 
 interface Recorded {
@@ -60,6 +61,10 @@ function fakeQdrant() {
       if (rec.failCount) throw new Error("count boom");
       return [...rec.store.values()].filter((p) => p.source_kind === kind).length;
     },
+    async countCodeSymbols(_n: string) {
+      if (rec.failCount) throw new Error("count boom");
+      return [...rec.store.values()].filter((p) => p.source_kind === "code_summary" && p.symbol !== undefined).length;
+    },
   };
   return { rec, qdrant };
 }
@@ -97,7 +102,7 @@ test("first sync indexes everything: no deletes, node + file points per file", a
     assert.deepEqual(rec.deleted, [["src/a.ts"]]);
     assert.equal(res.deleted, 1);
     assert.equal(res.files, 1);
-    assert.equal(res.symbols, 2); // node summary + file summary
+    assert.equal(res.symbols, 1); // node summary only — the file anchor is not a symbol (#49)
     assert.equal(res.skipped, 0);
     const points = rec.upserts[0]!;
     assert.equal(points.length, 2);
@@ -106,6 +111,9 @@ test("first sync indexes everything: no deletes, node + file points per file", a
       assert.equal(p.payload.type, "code");
       assert.equal(p.payload.file_path, "src/a.ts");
     }
+    // Node summary carries a symbol; the file anchor does not.
+    assert.equal(points[0]!.payload.symbol, "alpha");
+    assert.equal(points[1]!.payload.symbol, undefined);
     // The freshly upserted points must survive the pass (delete precedes upsert).
     assert.equal(rec.store.size, 2);
     const deleteAt = rec.ops.findIndex((o) => o.op === "delete");
@@ -170,7 +178,7 @@ test("embed batches are capped at SYNC_BATCH_SIZE and a failed batch skips witho
     const res = await syncCodeKnowledge(d);
     // 33 files × 2 summaries (node + file) = 66 → 3 batches (32+32+2)
     assert.equal(calls, 3); // first failed, the other two succeeded
-    assert.equal(res.symbols, 34);
+    assert.equal(res.symbols, 17); // 17 files' node summaries; their anchors are files
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -244,7 +252,7 @@ test("fresh sync leaves a populated index (regression: upserts are not wiped by 
     const first = await syncCodeKnowledge(deps(root, qdrant));
     assert.equal(first.ok, true);
     assert.equal(first.files, 1);
-    assert.equal(first.symbols, 3); // 2 node summaries + 1 file summary
+    assert.equal(first.symbols, 2); // 2 node summaries; the file anchor is not a symbol
     // The collection must actually hold the freshly written points — the bug
     // left it empty after every sync.
     assert.equal(rec.store.size, 3, "index must not be empty after a fresh sync");
@@ -307,7 +315,7 @@ test("a file larger than SYNC_BATCH_SIZE is replaced atomically (never half-inde
     // is fully replaced, never left half-indexed.
     const bigPoints = [...rec.store.values()].filter((p) => p.file_path === "src/big.ts");
     assert.equal(bigPoints.length, SYNC_BATCH_SIZE + 2);
-    assert.equal(res.symbols, SYNC_BATCH_SIZE + 2);
+    assert.equal(res.symbols, SYNC_BATCH_SIZE + 1); // node summaries only
     assert.equal(res.files, 1);
     // The failed batch's file keeps its old points: an embed failure never deletes.
     assert.equal(rec.deleted.flat().includes("src/small.ts"), false);
@@ -341,7 +349,7 @@ test("delete failures are non-fatal and reported in counts", async () => {
       async (_n: string, _paths: string[]) => { throw new Error("delete boom"); };
     const res = await syncCodeKnowledge(deps(root, qdrant));
     assert.equal(res.ok, true);
-    assert.equal(res.symbols, 2); // embed+upsert still succeeded
+    assert.equal(res.symbols, 1); // embed+upsert still succeeded (node summary only)
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -377,9 +385,9 @@ test("collection totals: cold start, converged resync, edit, vanish, and count f
     const cold = await syncCodeKnowledge(deps(root, qdrant));
     assert.equal(cold.ok, true);
     assert.equal(cold.files, 3);
-    assert.equal(cold.symbols, 6); // 3 node + 3 file summaries
+    assert.equal(cold.symbols, 3); // 3 node summaries (file anchors are files, not symbols)
     assert.equal(cold.totalFiles, 3);
-    assert.equal(cold.totalSymbols, 6);
+    assert.equal(cold.totalSymbols, 3);
 
     // Update snapshot to advertise what is stored in rec.store
     for (const p of rec.store.values()) {
@@ -392,7 +400,7 @@ test("collection totals: cold start, converged resync, edit, vanish, and count f
     assert.equal(converged.files, 0); // delta
     assert.equal(converged.symbols, 0); // delta
     assert.equal(converged.totalFiles, 3); // collection total
-    assert.equal(converged.totalSymbols, 6); // collection total
+    assert.equal(converged.totalSymbols, 3); // collection total
 
     // 3. Partial sync: edit a.ts to have 2 definitions (3 summaries total for a.ts)
     const aNewContent = "export function alphaOne() {}\nexport function alphaTwo() {}\n";
@@ -400,9 +408,9 @@ test("collection totals: cold start, converged resync, edit, vanish, and count f
     const edited = await syncCodeKnowledge(deps(root, qdrant));
     assert.equal(edited.ok, true);
     assert.equal(edited.files, 1); // delta: only a.ts reindexed
-    assert.equal(edited.symbols, 3); // delta: 2 nodes + 1 file summary for a.ts
+    assert.equal(edited.symbols, 2); // delta: 2 node summaries for a.ts
     assert.equal(edited.totalFiles, 3); // total files still 3
-    assert.equal(edited.totalSymbols, 7); // 3 for a.ts + 2 for b.ts + 2 for c.ts
+    assert.equal(edited.totalSymbols, 4); // 2 for a.ts + 1 for b.ts + 1 for c.ts
 
     for (const p of rec.store.values()) {
       if (p.file_path && p.file_sha) rec.snapshot.set(p.file_path, p.file_sha);
@@ -415,13 +423,13 @@ test("collection totals: cold start, converged resync, edit, vanish, and count f
     assert.equal(vanished.files, 0); // delta
     assert.equal(vanished.deleted, 1); // c.ts deleted
     assert.equal(vanished.totalFiles, 2); // only a.ts and b.ts remain
-    assert.equal(vanished.totalSymbols, 5); // 7 - 2 = 5
+    assert.equal(vanished.totalSymbols, 3); // 4 - 1 = 3
 
     for (const p of rec.store.values()) {
       if (p.file_path && p.file_sha) rec.snapshot.set(p.file_path, p.file_sha);
     }
 
-    // 5. countBySourceKind failure degrades gracefully to undefined symbols
+    // 5. countCodeSymbols failure degrades gracefully to undefined symbols
     rec.failCount = true;
     const degraded = await syncCodeKnowledge(deps(root, qdrant));
     assert.equal(degraded.ok, true);
@@ -456,7 +464,7 @@ test("large file definitions are chunked so embedBatch never exceeds SYNC_BATCH_
     const res = await syncCodeKnowledge(d);
     assert.equal(res.ok, true);
     assert.equal(res.files, 1);
-    assert.equal(res.symbols, 71);
+    assert.equal(res.symbols, 70); // 70 node summaries; the file anchor is not a symbol
     // Verified: every call was <= SYNC_BATCH_SIZE (32, 32, 7)
     assert.deepEqual(batchSizes, [32, 32, 7]);
     for (const size of batchSizes) {

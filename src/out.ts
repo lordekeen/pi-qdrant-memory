@@ -20,6 +20,8 @@ export interface HelpEntry { kind: "help"; header: MemoryHeader; rows: HelpRow[]
 export type StatusState = "ok" | "warn" | "err";
 export interface StatusHealth {
   mode: string;
+  /** mode=own forced while pi-blackhole is operational — a contradictory config (#50). */
+  modeConflict?: boolean;
   qdrant:
     | { state: "ok"; collection: string; points: number }
     | { state: "warn"; collection: string }
@@ -71,6 +73,15 @@ export function memoryHeaderText(h: MemoryHeader): string {
     : `🧠 Memory (${h.points}): ${h.mode} (${h.collection})`;
 }
 
+/** /qdrant-status warning row when mode=own is forced while pi-blackhole is
+ * operational: both extensions claim session_before_compact (#50). */
+export const MODE_OWN_CONFLICT_ROW = "own while pi-blackhole is installed — both extensions claim session_before_compact; if pi-blackhole cancels compaction, no mode-2 capture happens";
+
+/** Warning entry after a settings write sets mode=own with pi-blackhole present (#50). */
+export function modeOwnConflictNotice(): string {
+  return `warning: mode = own while pi-blackhole is installed — both extensions claim session_before_compact; if pi-blackhole cancels compaction, no mode-2 capture happens. mode = auto (or removing pi-blackhole) avoids the conflict.`;
+}
+
 export function helpEntry(rows: HelpRow[], header: MemoryHeader): HelpEntry { return { kind: "help", header, rows }; }
 export function statusEntry(health: StatusHealth): StatusEntry { return { kind: "status", health }; }
 export function searchEntry(hits: SearchHitView[]): SearchEntry { return { kind: "search", hits }; }
@@ -83,6 +94,28 @@ export function searchHitView(hit: SearchHit): SearchHitView {
   // let one malformed payload turn a valid search into a thrown error.
   const text = typeof hit.payload.text === "string" ? hit.payload.text : "";
   return { type: hit.payload.type, score: hit.score, pointer: hitPointer(hit.payload), text };
+}
+
+/** Per-hit preview width inside the /qdrant-forget confirmation dialog. Short on
+ * purpose: the dialog identifies the memories; the entry above renders them in full. */
+const FORGET_PREVIEW_MAX = 60;
+
+/**
+ * Confirm-dialog body for `/qdrant-forget` (#48): names the count and lists
+ * exactly the memories a Yes deletes (type + 2-decimal score + one flattened
+ * preview line each). When `capped`, the hit cap hid further matches — say so,
+ * because those are left untouched. Never used for entry output.
+ */
+export function forgetConfirmMessage(targets: SearchHitView[], capped: boolean): string {
+  const lines = [
+    `Delete ${String(targets.length)} matching memor${targets.length === 1 ? "y" : "ies"} from the project collection?`,
+    ...targets.map((h, i) =>
+      `${String(i + 1)}. [${h.type}] ${h.score.toFixed(2)} — "${truncatePreview(h.text.replace(/\s+/g, " ").trim(), FORGET_PREVIEW_MAX)}"`),
+  ];
+  if (capped) {
+    lines.push(`Only these ${String(targets.length)} closest matches are deleted; other matches above the threshold are left untouched.`);
+  }
+  return lines.join("\n");
 }
 
 // ── Settings scope surfacing ─────────────────────────────────────────────────
@@ -227,9 +260,10 @@ export function codeMemoryReloadNotice(next: "off" | "on"): string {
     : "code memory: turns off at the next session start — the code_memory tool unregisters on reload.";
 }
 
-/** /qdrant-index-code result line (spec §10.1). */
+/** /qdrant-index-code result line (spec §10.1). `symbols` counts symbol
+ * summaries only — file anchors are represented by the `files` count (#49). */
 export function codeMemorySyncMessage(r: { files: number; symbols: number; deleted: number }): string {
-  return `code memory: ${String(r.files)} files · ${String(r.symbols)} symbols indexed (${String(r.deleted)} points replaced)`;
+  return `code memory: ${String(r.files)} files · ${String(r.symbols)} symbols indexed (${String(r.deleted)} file${r.deleted === 1 ? "" : "s"} replaced)`;
 }
 
 /** The one width this extension ever chooses (DESIGN.md Layout + search-results). */
@@ -246,6 +280,10 @@ function statusLines(health: StatusHealth): OutLine[] {
   // Header mirrors the footer statusline (DESIGN.md footer-status) — mode and
   // collection live here; there is no separate `memory:` label row.
   out.push({ spans: [s(memoryHeaderText({ mode: health.mode, collection: health.detail.collection }))] });
+  if (health.modeConflict) {
+    // Mode is in the header; the caveat sits right under it, in the warn slot.
+    out.push({ spans: [s("mode: "), s(`${GLYPH.warn} ${MODE_OWN_CONFLICT_ROW}`, STATE_ROLE.warn)] });
+  }
   const q = health.qdrant;
   if (q.state === "ok") {
     out.push({ spans: [s("qdrant: "), s(`${GLYPH.ok} `, STATE_ROLE.ok), s(`reachable · ${q.points} points`)] });

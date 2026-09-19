@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   message, errorEntry, helpEntry, statusEntry, searchEntry, searchHitView,
   renderOut, outText, typeRole, memoryHeaderText, codeMemoryReloadNotice, codeMemorySyncMessage,
+  modeOwnConflictNotice,
   displayValue, settingsScopeLabel, settingsUsageText, clearUsageText, settingsUpdatedText, settingsGlobalUpdatedText,
   settingsOverrideClearedText, resetOptionLabel, formNumericPrompt, formSaveMessage, formClearMessage,
+  forgetConfirmMessage,
 } from "../src/out.ts";
 import type { OutEntry, OutLine, Span } from "../src/out.ts";
 import type { PointPayload, SearchHit } from "../src/types.ts";
@@ -269,11 +271,47 @@ test("status lines render code-memory rows in all three states", () => {
   assert.match(failed, /code memory: ✗ sync failed/);
 });
 
+test("status renders the mode=own/blackhole conflict as a warning row (#50)", () => {
+  const base = {
+    mode: "mode2", modeConflict: true,
+    qdrant: { state: "ok" as const, collection: "pi-mem-abc", points: 1 },
+    embeddings: { state: "ok" as const },
+    detail: { collection: "pi-mem-abc", qdrantUrl: "http://x", model: "m", dimension: 768, threshold: 0.18, maxResults: 10 },
+  };
+  const text = outText(statusEntry(base));
+  assert.match(text, /mode: ! own while pi-blackhole is installed/);
+  const quiet = outText(statusEntry({ ...base, modeConflict: undefined }));
+  assert.doesNotMatch(quiet, /pi-blackhole/);
+  assert.equal(modeOwnConflictNotice(),
+    "warning: mode = own while pi-blackhole is installed — both extensions claim session_before_compact; if pi-blackhole cancels compaction, no mode-2 capture happens. mode = auto (or removing pi-blackhole) avoids the conflict.");
+});
+
 test("codeMemoryReloadNotice is direction-aware", () => {
   assert.match(codeMemoryReloadNotice("on"), /registers on reload/);
   assert.match(codeMemoryReloadNotice("off"), /unregisters on reload/);
   assert.equal(codeMemorySyncMessage({ files: 2, symbols: 9, deleted: 1 }),
-    "code memory: 2 files · 9 symbols indexed (1 points replaced)");
+    "code memory: 2 files · 9 symbols indexed (1 file replaced)");
+  assert.equal(codeMemorySyncMessage({ files: 2, symbols: 9, deleted: 2 }),
+    "code memory: 2 files · 9 symbols indexed (2 files replaced)");
+});
+
+test("forgetConfirmMessage lists exact targets with one flat preview line each (#48)", () => {
+  const views = [
+    { type: "fact" as const, score: 0.9, pointer: "no source pointer", text: "auth uses JWT\nand rotates" },
+    { type: "decision" as const, score: 0.812, pointer: "no source pointer", text: "x".repeat(80) },
+  ];
+  const text = forgetConfirmMessage(views, false);
+  assert.equal(text.split("\n").length, 3);
+  assert.equal(text.split("\n")[0], "Delete 2 matching memories from the project collection?");
+  assert.equal(text.split("\n")[1], '1. [fact] 0.90 — "auth uses JWT and rotates"');
+  assert.match(text.split("\n")[2]!, /^2\. \[decision\] 0\.81 — "x{60}…"$/);
+});
+
+test("forgetConfirmMessage singularizes one hit and names the cap when capped (#48)", () => {
+  const one = [{ type: "fact" as const, score: 0.7, pointer: "no source pointer", text: "only one" }];
+  assert.match(forgetConfirmMessage(one, false), /^Delete 1 matching memory from the project collection\?/);
+  const capped = forgetConfirmMessage(one, true);
+  assert.match(capped, /Only these 1 closest matches are deleted; other matches above the threshold are left untouched\.$/);
 });
 
 // ── settings scope builders ──────────────────────────────────────────────────

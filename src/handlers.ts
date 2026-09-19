@@ -15,11 +15,13 @@ import {
   codeMemoryReloadNotice,
   displayValue,
   errorEntry,
+  forgetConfirmMessage,
   formClearMessage,
   formNumericPrompt,
   formSaveMessage,
   helpEntry,
   message,
+  modeOwnConflictNotice,
   outText,
   resetOptionLabel,
   searchEntry,
@@ -137,7 +139,8 @@ export async function probeEmbedding(
 }
 
 export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
-  const mode = resolveMode(io.cfg, detectBlackhole(io.agentDir));
+  const blackhole = detectBlackhole(io.agentDir);
+  const mode = resolveMode(io.cfg, blackhole);
   let count = -1;
   let qdrantOk = true;
   let collectionMissing = false;
@@ -168,6 +171,8 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
   }
   const health: StatusHealth = {
     mode,
+    // Explicit own + operational blackhole is the contradictory config #50 warns about.
+    modeConflict: io.cfg.mode === "own" && blackhole,
     qdrant,
     embeddings: embedOk ? { state: "ok" } : { state: "err" },
     ...(io.codeMemory ? { codeMemory: io.codeMemory } : {}),
@@ -215,6 +220,12 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
     if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return { exit: false }; }
     io.writeGlobalConfig(applied.next);
     io.emit(message(settingsGlobalUpdatedText(field)));
+    // #50: forcing own while pi-blackhole is operational makes both extensions
+    // claim session_before_compact — pi-blackhole can cancel compaction, so no
+    // mode-2 capture happens. Warn without blocking the write.
+    if (field === "mode" && applied.next.mode === "own" && detectBlackhole(io.agentDir)) {
+      io.emit(message(modeOwnConflictNotice()));
+    }
     return { exit: false };
   }
   const overrides = io.readProjectSettings();
@@ -368,6 +379,10 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
   } else {
     io.writeGlobalConfig(applied.next);
     io.emit(message(settingsGlobalUpdatedText(key)));
+    // Same contradictory-config warning as the CLI path (#50).
+    if (key === "mode" && applied.next.mode === "own" && detectBlackhole(io.agentDir)) {
+      io.emit(message(modeOwnConflictNotice()));
+    }
   }
   // Both paths: the notice follows the live EFFECTIVE codeKnowledge change.
   if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
@@ -447,13 +462,18 @@ export async function clearHandler(io: HandlerIO, target?: string): Promise<Hand
   return { exit: false };
 }
 
+export const FORGET_MAX_HITS = 5;
+
 export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsUI): Promise<HandlerResult> {
   const trimmed = query.trim();
   if (!trimmed) {
     io.emit(message("usage: /qdrant-forget <search query>"));
     return { exit: false };
   }
-  const res = await memorySearchLogic(io, trimmed, undefined, 5);
+  // Probe one hit beyond the cap: a hit at index FORGET_MAX_HITS proves more
+  // matches exist above the threshold, so the dialog can say they are left
+  // untouched. Only `targets` are ever shown or deleted (#48).
+  const res = await memorySearchLogic(io, trimmed, undefined, FORGET_MAX_HITS + 1);
   if (!res.ok) {
     io.emit(errorEntry(`error: forget failed: ${res.error}`));
     return { exit: false };
@@ -466,13 +486,16 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
     io.emit(errorEntry("error: /qdrant-forget requires interactive UI confirmation"));
     return { exit: false };
   }
-  io.emit(searchEntry(res.value.map(searchHitView)));
-  const confirmed = await ui.confirm("Remove memories?", `Delete ${res.value.length} matching memories from project collection?`);
+  const capped = res.value.length > FORGET_MAX_HITS;
+  const targets = res.value.slice(0, FORGET_MAX_HITS);
+  const views = targets.map(searchHitView);
+  io.emit(searchEntry(views));
+  const confirmed = await ui.confirm("Remove memories?", forgetConfirmMessage(views, capped));
   if (!confirmed) {
     io.emit(message("forget: unchanged (cancelled)"));
     return { exit: false };
   }
-  const hitIds = res.value.map((h) => h.id);
+  const hitIds = targets.map((h) => h.id);
   if (!io.qdrant.deletePointsByIds) {
     io.emit(errorEntry("error: forget failed: client does not support point deletion by id"));
     return { exit: false };

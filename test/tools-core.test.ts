@@ -18,6 +18,7 @@ function deps(over: Partial<RuntimeDeps> = {}): RuntimeDeps & { q: { upserted: Q
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   return {
     cfg: {
@@ -86,6 +87,7 @@ test("rememberLogic embeds before ensureCollection so a failed embed leaves coll
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const d = deps({
     qdrant: q,
@@ -107,6 +109,7 @@ test("rememberLogic passes onDimensionMismatch: 'recreate' to ensureCollection (
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const d = deps({ qdrant: q });
   const res = await rememberLogic(d, "recreate on write");
@@ -128,6 +131,7 @@ test("memorySearchLogic returns error and leaves collection untouched on dimensi
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const d = deps({ qdrant: q });
   const res = await memorySearchLogic(d, "search query");
@@ -152,6 +156,7 @@ test("memorySearchLogic returns a bare error reason when the search fails", asyn
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const res = await memorySearchLogic(deps({ qdrant: q }), "q");
   assert.ok(!res.ok);
@@ -170,6 +175,7 @@ test("memorySearchLogic embeds query and searches with type filter and capped li
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const d = deps({ qdrant: q });
   const res = await memorySearchLogic(d, "what did we decide about transport", "decision", 3);
@@ -190,6 +196,7 @@ test("memorySearchLogic caps limit at maxResults", async () => {
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const d = deps({ qdrant: q });
   await memorySearchLogic(d, "q", undefined, 1000);
@@ -218,6 +225,7 @@ test("memory_search uses codeScoreThreshold for code queries, scoreThreshold oth
       async deletePointsByFiles() {},
       async codeIndexSnapshot() { return new Map<string, string>(); },
       async countBySourceKind() { return 0; },
+      async countCodeSymbols() { return 0; },
     } as unknown as RuntimeDeps["qdrant"],
   });
   await memorySearchLogic(d, "why is auth like this");
@@ -242,6 +250,7 @@ test("rememberLogic skips embed and upsert when point already exists (Shape C)",
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
     async existingPointIds(_name, ids) {
       return new Set(ids.filter((id) => id === targetId));
     },
@@ -279,6 +288,7 @@ test("rememberLogic proceeds to embed and upsert when point does not exist (Shap
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
     async existingPointIds() { return new Set(); },
   };
 
@@ -324,6 +334,7 @@ test("forgetLogic rejects non-existing memory with bare reason", async () => {
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
     async existingPointIds() { return new Set(); },
   };
   const d = deps({ qdrant: q });
@@ -347,6 +358,7 @@ test("forgetLogic deletes existing point without calling embed or ensureCollecti
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
     async existingPointIds() { return new Set([id]); },
     async deletePointsByIds(_n, ids) { deleted.push(...ids); return ids.length; },
   };
@@ -376,6 +388,7 @@ test("ensureCollection is memoized across multiple calls when collectionReady is
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const collectionReady = new Set<string>();
   const d = deps({ qdrant: q, collectionReady });
@@ -397,6 +410,7 @@ test("memorySearchLogic queries count and attaches totalCount when hits are empt
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 10; },
+    async countCodeSymbols() { return 0; },
   };
   const d = deps({ qdrant: q });
   const res = await memorySearchLogic(d, "find something");
@@ -424,6 +438,7 @@ test("forgetLogic propagates error when existingPointIds fails", async () => {
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
     async existingPointIds() {
       throw new Error("Qdrant connection refused");
     },
@@ -448,6 +463,7 @@ test("forgetLogic fails cleanly when deletePointsByIds is absent", async () => {
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
     async existingPointIds() { return new Set([id]); },
     // deletePointsByIds omitted
   };
@@ -474,6 +490,7 @@ test("forgetLogic with stateful fake actually removes the memory", async () => {
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
     async existingPointIds(_n, ids) {
       return new Set(ids.filter((i) => store.has(i)));
     },

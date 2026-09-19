@@ -297,7 +297,11 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
         if (!field) {
           const ui = api.requestUI?.();
           if (ui) { await runSettingsForm(ui, io); return; }
-          await settingsHandler(io); // no interactive UI (headless tests / rpc): print usage
+          // No dialog-capable ui (print/headless harnesses): print usage. NOT an
+          // rpc fallback — rpc sets ctx.hasUI = true and implements the dialog
+          // trio over extension_ui_request/response, so requestUI() returns a ui
+          // there and the form path above runs (issue #51).
+          await settingsHandler(io);
           return;
         }
         const value = trimmed.slice(trimmed.indexOf(field) + field.length).trim();
@@ -594,7 +598,10 @@ export default async function factory(api: unknown): Promise<void> {
     },
     requestUI: () => {
       // Only expose the interactive dialogs when the current ui context really
-      // has them (interactive TUI does; rpc/print contexts may not).
+      // has them. The interactive TUI and rpc both provide the trio (rpc
+      // translates select/input/confirm into extension_ui_request/response and
+      // sets ctx.hasUI = true, per pi docs/rpc.md); print/headless contexts may
+      // not (issue #51).
       const u = currentUi;
       if (!u || typeof u.select !== "function" || typeof u.input !== "function" || typeof u.confirm !== "function") {
         return undefined;

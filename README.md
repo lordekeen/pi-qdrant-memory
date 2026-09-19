@@ -93,7 +93,7 @@ those keys, keyed by the same `projectId` as the collection.
 - `/qdrant-settings <key> <value>` — persist a config field. `codeKnowledge` and `codeScoreThreshold` apply to this project (an override); every other key (`mode`, `embeddingBaseURL`, `embeddingModel`, `expectedDimension`, `scoreThreshold`, `maxResults`, `memoryForget`, …) writes the global config file. `<key> default` clears an allowlisted override; for the other keys `default` is an ordinary value. Bare `/qdrant-settings` prints usage.
 - `/qdrant-remember <text>` — manual durable save.
 - `/qdrant-search <query>` — manual semantic search.
-- `/qdrant-forget <query>` — search matching memories and delete them interactively with confirmation.
+- `/qdrant-forget <query>` — search matching memories and delete them interactively with confirmation. The dialog lists the matches (type, score, 60-char preview) and one confirmation deletes at most the 5 closest matches.
 - `/qdrant-index-code` — re-index code summaries now (only when `codeKnowledge: on`).
 - `/qdrant-clear all | code` — reset the current project's entire memory collection (`all`) or purge indexed code summaries (`code`). Bare `/qdrant-clear` displays usage guidance.
 - `/qdrant-help` — list all commands available.
@@ -115,7 +115,7 @@ No companion skill is needed for the core loop — the guidance ships with the t
 
 ## Code memory (optional)
 
-With `codeKnowledge: "on"`, the extension scans the repo at `session_start` (fire-and-forget) and indexes **structural summaries** of top-level definitions — exported functions/classes/types, Python defs, per-file anchors — as `code` points in the same collection. Zero dependencies: the extractor is built in; no external indexer is used.
+With `codeKnowledge: "on"`, the extension scans the repo at `session_start` (fire-and-forget) and indexes **structural summaries** of top-level definitions — exported functions/classes/types, Python defs, per-file anchors — as `code` points in the same collection. Zero dependencies: the extractor is built in; no external indexer is used. The status row counts `{symbols}` as per-definition summaries only; the one anchor point per file is represented by the `files` count, not as a symbol.
 
 - **Freshness:** payloads carry `file_path` + `file_sha`; unchanged files are skipped, changed files are deleted-and-replaced, vanished files are cleaned up. `/qdrant-index-code` forces a resync.
 - **Retrieval:** the `code_memory` tool (registered only while enabled) searches code summaries at `codeScoreThreshold`; `memory_search` never returns code hits.
@@ -127,6 +127,8 @@ With `codeKnowledge: "on"`, the extension scans the repo at `session_start` (fir
 
 - **Mode 1 (pi-blackhole present, autodetects):** reads pi-blackhole's pending durable artifacts (`<agent-dir>/pi-blackhole/*-pending.json`) and ingests them at `session_start` (catch-up) and `session_shutdown`. It **never** claims the `session_before_compact` hook, pi-blackhole owns it.
 - **Mode 2 (pi-blackhole absent):** claims `session_before_compact` and captures pi's own compaction summary (from the `session_compact` event) as a `session_summary` point — fire-and-forget so capture can never stall compaction. `/qdrant-remember` is the manual safety net.
+
+Forcing `mode: own` while pi-blackhole is operational is an explicitly contradictory configuration: both extensions claim `session_before_compact`, and if pi-blackhole cancels compaction (its live-message guard), no mode-2 capture happens. The settings write and `/qdrant-status` both warn; `auto` avoids the conflict.
 
 An early-session auto snapshot is not yet wired: it needs mid-session content distillation access this extension does not currently have, so Mode 2's safety nets are the compaction capture and `/qdrant-remember`.
 

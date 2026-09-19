@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   statusHandler, settingsHandler, rememberHandler, searchHandler, forgetHandler, clearHandler, helpHandler, runSettingsForm,
+  FORGET_MAX_HITS,
 } from "../src/handlers.ts";
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
@@ -77,6 +81,7 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
     async deletePointsBySourceKind() { codeKindDeletes++; },
     async deletePointsByIds(_name, ids) { deletedIds.push(...ids); return ids.length; },
   };
@@ -106,6 +111,19 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
     envState,
     ...over,
   } as FakeIO;
+}
+
+/** Temp agent dir with an operational pi-blackhole config (#50). */
+function blackholeAgentDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-bh-"));
+  mkdirSync(join(dir, "pi-blackhole"), { recursive: true });
+  writeFileSync(join(dir, "pi-blackhole", "pi-blackhole-config.json"), JSON.stringify({ enabled: true }));
+  return dir;
+}
+
+/** Temp agent dir without any blackhole config. */
+function plainAgentDir(): string {
+  return mkdtempSync(join(tmpdir(), "pi-qm-nobh-"));
 }
 
 test("statusHandler prints mode and collection health", async () => {
@@ -141,6 +159,27 @@ test("settingsHandler persists field=value and prints confirmation", async () =>
   assert.match(d.printed.join("\n"), /scoreThreshold/);
 });
 
+test("settingsHandler warns when mode=own is written with pi-blackhole operational (#50)", async () => {
+  const agentDir = blackholeAgentDir();
+  const noBh = plainAgentDir();
+  try {
+    const d = io({ agentDir });
+    await settingsHandler(d, "mode", "own");
+    assert.equal(d.globalWrites.length, 1);
+    assert.equal(d.globalWrites[0].mode, "own");
+    assert.equal(d.printed.length, 2);
+    assert.match(d.printed[0]!, /settings: mode updated/);
+    assert.match(d.printed[1]!, /^warning: mode = own while pi-blackhole is installed/);
+
+    const clean = io({ agentDir: noBh });
+    await settingsHandler(clean, "mode", "own");
+    assert.equal(clean.printed.length, 1, "no warning when pi-blackhole is absent");
+  } finally {
+    rmSync(agentDir, { recursive: true, force: true });
+    rmSync(noBh, { recursive: true, force: true });
+  }
+});
+
 test("settingsHandler rejects invalid mode and non-positive numerics", async () => {
   const d = io();
   await settingsHandler(d, "mode", "bogus");
@@ -160,12 +199,29 @@ test("statusHandler distinguishes a missing collection from an unreachable serve
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const d = io({ qdrant: qdrant404 });
   await statusHandler(d);
   const all = d.printed.join("\n");
   assert.doesNotMatch(all, /NOT reachable/);
   assert.match(all, /does not exist yet/);
+});
+
+test("statusHandler warns when mode=own conflicts with an operational pi-blackhole (#50)", async () => {
+  const agentDir = blackholeAgentDir();
+  try {
+    const own = io({ agentDir });
+    own.globalState.mode = "own";
+    await statusHandler(own);
+    assert.match(own.printed.join("\n"), /mode: ! own while pi-blackhole is installed/);
+
+    const auto = io({ agentDir });
+    auto.globalState.mode = "auto";
+    await statusHandler(auto);
+    assert.match(auto.printed.join("\n"), /🧠 Memory: mode1/);
+    assert.doesNotMatch(auto.printed.join("\n"), /both extensions claim session_before_compact/);
+  } finally { rmSync(agentDir, { recursive: true, force: true }); }
 });
 
 test("statusHandler with real QdrantClient reports collection does not exist yet on 404", async () => {
@@ -467,6 +523,25 @@ test("runSettingsForm mode field uses a nested select", async () => {
   assert.equal(d.globalWrites[0].mode, "own");
 });
 
+test("runSettingsForm warns when saving mode=own with pi-blackhole operational (#50)", async () => {
+  const agentDir = blackholeAgentDir();
+  try {
+    const d = io({ agentDir });
+    const ui: SettingsUI = {
+      async select(title, options) {
+        if (title.startsWith("Qdrant Memory")) return options.find((o) => o.startsWith("mode ="));
+        return "own";
+      },
+      async input() { throw new Error("mode must not open a text input"); },
+      async confirm() { return true; },
+    };
+    await runSettingsForm(ui, d);
+    assert.equal(d.globalWrites.length, 1);
+    assert.equal(d.globalWrites[0].mode, "own");
+    assert.match(d.printed.join("\n"), /warning: mode = own while pi-blackhole is installed/);
+  } finally { rmSync(agentDir, { recursive: true, force: true }); }
+});
+
 test("helpHandler prints the command list", async () => {
   const d = io();
   await helpHandler(d);
@@ -500,6 +575,7 @@ test("searchHandler emits an error entry when the search fails", async () => {
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const d = io({ qdrant: qdrantErr });
   await searchHandler(d, "query");
@@ -525,6 +601,7 @@ test("searchHandler emits an error entry on dimension mismatch (OI-001)", async 
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
   const d = io({ qdrant: qdrantMismatch });
   await searchHandler(d, "query");
@@ -1090,11 +1167,46 @@ test("forgetHandler deletes points and emits confirmation when confirmed", async
   await forgetHandler(d, "auth", ui);
   assert.equal(confirmTitle, "Remove memories?");
   assert.match(confirmMessage, /Delete 2 matching memories/);
+  // The dialog names exactly which memories the Yes deletes (#48).
+  assert.match(confirmMessage, /1\. \[fact\] 0\.90 — "auth uses JWT"/);
+  assert.match(confirmMessage, /2\. \[decision\] 0\.85 — "session tokens expire in 1h"/);
   assert.equal(d.emitted.length, 2);
   assert.equal(d.emitted[0].kind, "search");
   assert.equal(d.emitted[1].kind, "message");
   assert.match(d.printed[1], /forgotten: 2 memories removed/);
   assert.deepEqual(d.deletedIds, ["pt-1", "pt-2"]);
+});
+
+test("forgetHandler caps at FORGET_MAX_HITS and says further matches are untouched (#48)", async () => {
+  const hits = Array.from({ length: FORGET_MAX_HITS + 1 }, (_v, i) => ({
+    id: `pt-${String(i + 1)}`,
+    score: 0.9 - i * 0.01,
+    payload: { type: "fact" as const, text: `match ${String(i + 1)}`, project_id: "p", ts: i, source_kind: "remember_tool" as const },
+  }));
+  const d = io({
+    qdrant: {
+      async ensureCollection() { return "exists"; },
+      async search() { return hits; },
+      async deletePointsByIds(_n: string, ids: string[]) { d.deletedIds.push(...ids); return ids.length; },
+    } as unknown as QdrantLike,
+  });
+  let confirmMessage = "";
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm(_t, m) { confirmMessage = m; return true; },
+  };
+  await forgetHandler(d, "fact", ui);
+  const searchEntry = d.emitted[0] as { kind: string; hits: unknown[] };
+  assert.equal(searchEntry.kind, "search");
+  assert.equal(searchEntry.hits.length, FORGET_MAX_HITS, "the probe hit is never shown");
+  assert.match(confirmMessage, /Delete 5 matching memories/);
+  assert.match(confirmMessage, /1\. \[fact\] 0\.90 — "match 1"/);
+  assert.match(confirmMessage, /5\. \[fact\] 0\.86 — "match 5"/);
+  assert.doesNotMatch(confirmMessage, /match 6/);
+  assert.match(confirmMessage, /Only these 5 closest matches are deleted; other matches above the threshold are left untouched\./);
+  assert.deepEqual(d.deletedIds, ["pt-1", "pt-2", "pt-3", "pt-4", "pt-5"]);
+  assert.equal(d.printed.at(-1), "forgotten: 5 memories removed");
 });
 
 test("forgetHandler emits error when deletePointsByIds throws", async () => {

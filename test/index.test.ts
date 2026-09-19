@@ -48,6 +48,7 @@ const qdrant: QdrantLike = {
   deletePointsByFiles: async () => {},
   codeIndexSnapshot: async () => new Map(),
   countBySourceKind: async () => 0,
+  countCodeSymbols: async () => 0,
 };
 
 const rt: RuntimeDeps = {
@@ -186,7 +187,7 @@ test("/qdrant-index-code emits the count message on success and an error entry o
         .find((c) => c.name === "qdrant-index-code")!;
       await cmd.execute("");
       const texts = (api.entries as Array<{ text?: string }>).map((e) => e.text ?? "");
-      assert.ok(texts.some((t) => /^code memory: 1 files · 2 symbols indexed \(1 points replaced\)$/.test(t)), JSON.stringify(texts));
+      assert.ok(texts.some((t) => /^code memory: 1 files · 1 symbols indexed \(1 file replaced\)$/.test(t)), JSON.stringify(texts));
 
       // Failure path: sync reports ok:false → error entry (spec §10.1).
       const brokenRt: RuntimeDeps = {
@@ -416,7 +417,8 @@ test("qdrant-status reflects collection totals from codeMemoryState after sync",
     const recording: QdrantLike = {
       ...qdrant,
       async codeIndexSnapshot() { return snapshot; },
-      async countBySourceKind() { return 18; },
+      // countCodeSymbols (not countBySourceKind): file anchors are excluded (#49).
+      async countCodeSymbols() { return 18; },
     };
     const localRt = runtimeWith(
       agentDir,
@@ -556,6 +558,7 @@ test("memory_forget tool executes forgetLogic and retracts memory", async () => 
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
     async existingPointIds() { return new Set([id]); },
     async deletePointsByIds(_n, ids) { deleted.push(...ids); return ids.length; },
   };

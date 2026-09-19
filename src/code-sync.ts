@@ -40,7 +40,8 @@ export interface SyncResult {
   error?: string;
   /** Files (re)indexed in this pass. */
   files: number;
-  /** Summaries embedded (node + file points). */
+  /** Symbol summaries (points carrying a `symbol`) upserted in this pass; file
+   * anchors are represented by `files`. */
   symbols: number;
   /** Files skipped because their sha was unchanged. */
   skipped: number;
@@ -48,7 +49,7 @@ export interface SyncResult {
   deleted: number;
   /** Total distinct code files indexed in the collection after sync. */
   totalFiles?: number;
-  /** Total code-summary points in the collection after sync. */
+  /** Total code-symbol points in the collection after sync (file anchors excluded). */
   totalSymbols?: number;
 }
 
@@ -174,7 +175,9 @@ export async function syncCodeKnowledge(deps: SyncDeps): Promise<SyncResult> {
       });
       try {
         await deps.qdrant.upsert(deps.projectId, points);
-        symbols += points.length;
+        // Symbols, not points: a file's anchor point carries no `symbol` and is
+        // represented by the file itself (issue #49).
+        symbols += batch.filter((s) => s.symbol !== undefined).length;
         for (const s of batch) embeddedFiles.add(s.file.filePath);
       } catch (err) {
         console.error(`pi-qdrant-memory: code sync upsert failed (non-fatal, will retry next sync): ${String(err)}`);
@@ -211,9 +214,10 @@ export async function syncCodeKnowledge(deps: SyncDeps): Promise<SyncResult> {
 
     let totalSymbols: number | undefined;
     try {
-      totalSymbols = await deps.qdrant.countBySourceKind(deps.projectId, "code_summary");
+      // Only points with a `symbol`: file anchors must not read as symbols (#49).
+      totalSymbols = await deps.qdrant.countCodeSymbols(deps.projectId);
     } catch (err) {
-      console.error(`pi-qdrant-memory: code sync countBySourceKind failed (non-fatal): ${String(err)}`);
+      console.error(`pi-qdrant-memory: code sync countCodeSymbols failed (non-fatal): ${String(err)}`);
     }
 
     return {

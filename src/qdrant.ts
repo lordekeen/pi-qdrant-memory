@@ -68,6 +68,8 @@ export interface QdrantLike {
   codeIndexSnapshot(name: string): Promise<Map<string, string>>;
   /** Count points matching a source_kind filter. */
   countBySourceKind(name: string, kind: string): Promise<number>;
+  /** Count code-summary points that carry a `symbol` (per-file anchors carry none). */
+  countCodeSymbols(name: string): Promise<number>;
   /** Delete points matching a source_kind filter. */
   deletePointsBySourceKind?(name: string, kind: string): Promise<void>;
   /** Delete points matching source_entry_id values (Layer 1 ingest supersede). */
@@ -255,6 +257,23 @@ export class QdrantClient implements QdrantLike {
     const json = await this.request("POST",
       `/collections/${encodeURIComponent(name)}/points/count`,
       { filter: { must: [{ key: "source_kind", match: { value: kind } }] }, exact: true },
+      { notFound: true },
+    ) as { result?: { count: number } } | null;
+    return json?.result?.count ?? 0;
+  }
+
+  async countCodeSymbols(name: string): Promise<number> {
+    const json = await this.request("POST",
+      `/collections/${encodeURIComponent(name)}/points/count`,
+      {
+        filter: {
+          must: [{ key: "source_kind", match: { value: "code_summary" } }],
+          // File-level anchors carry no `symbol` payload — they belong to the
+          // `files` count, never to `symbols` (issue #49).
+          must_not: [{ is_empty: { key: "symbol" } }],
+        },
+        exact: true,
+      },
       { notFound: true },
     ) as { result?: { count: number } } | null;
     return json?.result?.count ?? 0;

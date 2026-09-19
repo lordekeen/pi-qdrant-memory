@@ -19,6 +19,7 @@ const fakeQdrant: QdrantLike = {
   async deletePointsByFiles() {},
   async codeIndexSnapshot() { return new Map(); },
   async countBySourceKind() { return 0; },
+  async countCodeSymbols() { return 0; },
 };
 
 /** Injected fake clients: preserved across reloads (OI-002). */

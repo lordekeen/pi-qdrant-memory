@@ -16,6 +16,7 @@ function fakeQdrant(): QdrantLike & { upserted: QdrantPoint[][] } {
     async deletePointsByFiles() {},
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
+    async countCodeSymbols() { return 0; },
   };
 }
 

@@ -166,7 +166,7 @@ project settings: codeKnowledge = on (global: off); codeScoreThreshold = 0.6 (gl
 The `code memory:` row appears only while the feature is wired (registration-time
 `codeKnowledge: on`). When present, the `dimension:` line also reports `code threshold: <threshold>` showing the effective code-similarity cut. Variants: `code memory: off` (muted slot),
 `code memory: on (syncing…)` (dim slot, before the first sync lands),
-`code memory: ✓ {files} files · {symbols} symbols` (success slot, reporting total indexed collection inventory after a sync).
+`code memory: ✓ {files} files · {symbols} symbols` (success slot, reporting total indexed collection inventory after a sync). `{symbols}` counts only points that carry a `symbol` — per-definition summaries. The per-file anchor points carry no symbol and are represented by the `files` count, never as symbols (#49).
 
 The `project settings:` row sits in the config-detail block (after `dimension:`,
 with `qdrant url:` / `model:`) and is emitted only when this project has ≥ 1
@@ -189,6 +189,10 @@ refines it:
 - `✗ NOT reachable` — error slot (subsystem down/unreachable).
 - `! collection pi-mem-… does not exist yet` — warning slot (fresh project or
   after `/qdrant-clear`).
+- `mode: ! own while pi-blackhole is installed — …` — warning slot, present only
+  when `mode = own` is configured while pi-blackhole is operational (#50): both
+  extensions claim `session_before_compact`, and a pi-blackhole cancellation
+  means no mode-2 capture. The row sits directly under the header.
 
 Never display API keys or imply their presence. Status shows the same rows
 whether or not the host marks the entry expanded — nothing is hidden behind a
@@ -302,9 +306,24 @@ notice (spec §12): switching **on** ends `…the code_memory tool registers on
 reload. Run /qdrant-index-code to index the current session's code right away.`;
 switching **off** ends `…the code_memory tool unregisters on reload.`
 
+Writing `mode = own` while pi-blackhole is operational additionally emits one
+warning entry — from both the CLI write and the settings form:
+
+```
+warning: mode = own while pi-blackhole is installed — both extensions claim session_before_compact; if pi-blackhole cancels compaction, no mode-2 capture happens. mode = auto (or removing pi-blackhole) avoids the conflict.
+```
+
 The `/qdrant-remember` confirmation is command voice: plain `remembered:`
 without echoing the stored point's internal source kind (the memory_save tool
 return is the one surface that names it — see agent-tool-results).
+
+The `/qdrant-forget` confirmation is never a bare count: the dialog message
+lists every memory a Yes deletes — one line per hit, `[<type>] <score> —
+"<60-char one-line preview>"` — and the search entry above it shows the same
+deletion set verbatim. At most five hits are deleted per confirmation; when
+further matches exist above the threshold the dialog appends `Only these <n>
+closest matches are deleted; other matches above the threshold are left
+untouched.` and those matches are neither listed nor touched.
 
 ### error
 
@@ -321,10 +340,14 @@ crash — commands always exit normally with the error as content.
 ### settings-form
 
 Interactive config editing. Only reachable from the `/qdrant-settings` command
-with no arguments, and only when `ctx.ui` dialogs exist (interactive TUI).
-`/qdrant-settings <key> <value>` bypasses the UI entirely. The form displays the
-**effective** value (this project's override, else the global value) and the
-pick labels also name the layer, so the destination is never ambiguous.
+with no arguments, and only when `ctx.ui` dialogs exist. That includes the
+interactive TUI **and RPC**: rpc sets `ctx.hasUI = true` and translates
+`select`/`input`/`confirm` into `extension_ui_request`/`extension_ui_response`,
+so the form runs there too. Print/headless contexts without the dialog trio fall
+back to the usage message. `/qdrant-settings <key> <value>` bypasses the UI
+entirely. The form displays the **effective** value (this project's override,
+else the global value) and the pick labels also name the layer, so the
+destination is never ambiguous.
 
 Fixed flow, Esc cancels at any step:
 
