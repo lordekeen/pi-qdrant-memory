@@ -5,6 +5,20 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.4.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.3...v0.4.0) (2026-09-19)
+
+
+### Features
+
+* memory lifecycle, retraction ladder, and pre-save verification ([e1573e9](https://github.com/lordekeen/pi-qdrant-memory/commit/e1573e9a34c1715838bae88fc5abe3658d87fba2))
+
+
+### Bug Fixes
+
+* address tracker issues [#26](https://github.com/lordekeen/pi-qdrant-memory/issues/26), [#28](https://github.com/lordekeen/pi-qdrant-memory/issues/28), [#29](https://github.com/lordekeen/pi-qdrant-memory/issues/29), and [#31](https://github.com/lordekeen/pi-qdrant-memory/issues/31) ([5e5a2b3](https://github.com/lordekeen/pi-qdrant-memory/commit/5e5a2b363965b33d76a727f12139dddb48fc2ca8))
+* deduplicate ensureCollection calls, restore count 404 behavior, and harden forget paths ([8b9372f](https://github.com/lordekeen/pi-qdrant-memory/commit/8b9372f69835517c5390c3be85909dbae9fbe0a9))
+* resolve tracker issues [#41](https://github.com/lordekeen/pi-qdrant-memory/issues/41) through [#47](https://github.com/lordekeen/pi-qdrant-memory/issues/47) ([fd3785f](https://github.com/lordekeen/pi-qdrant-memory/commit/fd3785f597dc6093bd92a1497932b1604ba25891))
+
 ## [0.3.3](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.3.2...v0.3.3) (2026-09-14)
 
 
