@@ -112,6 +112,32 @@ test("ensureCollection memoizes verified collection on QdrantClient instance (OI
   assert.ok(requests > initialRequests + 1);
 });
 
+test("ensureCollection deduplicates in-flight concurrent calls for the same collection", async () => {
+  let getCalls = 0;
+  let putCalls = 0;
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () => {
+    getCalls++;
+    return jsonRes({ status: "error" }, 404);
+  });
+  routes.set("PUT http://qdrant:6333/collections/pi-mem-abc", () => {
+    putCalls++;
+    return jsonRes({ result: true });
+  });
+  routes.set("PUT http://qdrant:6333/collections/pi-mem-abc/index", () => jsonRes({ result: true }));
+  const client = makeClient(routes);
+  const [res1, res2, res3] = await Promise.all([
+    client.ensureCollection("pi-mem-abc", 768),
+    client.ensureCollection("pi-mem-abc", 768),
+    client.ensureCollection("pi-mem-abc", 768),
+  ]);
+  assert.equal(res1, "created");
+  assert.equal(res2, "created");
+  assert.equal(res3, "created");
+  assert.equal(getCalls, 1, "only one GET request should be issued for concurrent calls");
+  assert.equal(putCalls, 1, "only one PUT request should be issued for concurrent calls");
+});
+
 test("payload index failures are non-fatal", async () => {
   const routes = new Map<string, (u: string, i: RequestInit) => Response>();
   routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () => jsonRes({ status: "error" }, 404));
@@ -175,6 +201,17 @@ test("count returns point count", async () => {
     jsonRes({ result: { count: 7 } }));
   const client = makeClient(routes);
   assert.equal(await client.count("pi-mem-abc"), 7);
+});
+
+test("count throws QdrantError with status 404 when collection does not exist", async () => {
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points/count", () =>
+    jsonRes({ status: "error", message: "Not found" }, 404));
+  const client = makeClient(routes);
+  await assert.rejects(
+    () => client.count("pi-mem-abc"),
+    (err: unknown) => err instanceof QdrantError && err.status === 404,
+  );
 });
 
 test("countBySourceKind counts points matching source_kind filter", async () => {
@@ -357,5 +394,25 @@ test("existingPointIds queries Qdrant and returns set of found point ids (#17)",
   // Empty ids returns empty set without network request
   const empty = await client.existingPointIds("pi-mem-abc", []);
   assert.equal(empty.size, 0);
+});
+
+test("existingPointIds returns empty set on 404 (missing collection)", async () => {
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points", () =>
+    jsonRes({ status: "error", message: "Not found" }, 404));
+  const client = makeClient(routes);
+  const found = await client.existingPointIds("pi-mem-abc", ["id1"]);
+  assert.equal(found.size, 0);
+});
+
+test("existingPointIds throws QdrantError on network or server failure", async () => {
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points", () =>
+    jsonRes({ status: "error", message: "Internal server error" }, 500));
+  const client = makeClient(routes);
+  await assert.rejects(
+    () => client.existingPointIds("pi-mem-abc", ["id1"]),
+    QdrantError,
+  );
 });
 

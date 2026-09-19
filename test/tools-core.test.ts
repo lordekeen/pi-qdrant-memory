@@ -413,3 +413,91 @@ test("memorySearchLogic queries count and attaches totalCount when hits are empt
     assert.equal((codeRes.value as unknown as { totalCount?: number }).totalCount, 10);
   }
 });
+
+test("forgetLogic propagates error when existingPointIds fails", async () => {
+  const q: QdrantLike = {
+    async ensureCollection() { return "exists"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+    async existingPointIds() {
+      throw new Error("Qdrant connection refused");
+    },
+  };
+  const d = deps({ qdrant: q });
+  const res = await forgetLogic(d, "some memory");
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.match(res.error, /Qdrant connection refused/);
+  }
+});
+
+test("forgetLogic fails cleanly when deletePointsByIds is absent", async () => {
+  const text = "important memory";
+  const id = pointId(text, "remember_tool", "");
+  const q: QdrantLike = {
+    async ensureCollection() { return "exists"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return 0; },
+    async clearCollection() {},
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+    async existingPointIds() { return new Set([id]); },
+    // deletePointsByIds omitted
+  };
+  const d = deps({ qdrant: q });
+  const res = await forgetLogic(d, text);
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error, "client does not support point deletion by id");
+  }
+});
+
+test("forgetLogic with stateful fake actually removes the memory", async () => {
+  const store = new Map<string, string>();
+  const text = "temp fact";
+  const id = pointId(text, "remember_tool", "");
+  store.set(id, text);
+
+  const q: QdrantLike = {
+    async ensureCollection() { return "exists"; },
+    async upsert() {},
+    async search() { return []; },
+    async count() { return store.size; },
+    async clearCollection() { store.clear(); },
+    async deletePointsByFiles() {},
+    async codeIndexSnapshot() { return new Map(); },
+    async countBySourceKind() { return 0; },
+    async existingPointIds(_n, ids) {
+      return new Set(ids.filter((i) => store.has(i)));
+    },
+    async deletePointsByIds(_n, ids) {
+      let removed = 0;
+      for (const i of ids) {
+        if (store.delete(i)) removed++;
+      }
+      return removed;
+    },
+  };
+
+  const d = deps({ qdrant: q });
+  const res = await forgetLogic(d, text);
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.value.removed, 1);
+  }
+  assert.equal(store.has(id), false, "point should be removed from store");
+
+  // Forgetting it a second time now fails because it was deleted
+  const res2 = await forgetLogic(d, text);
+  assert.equal(res2.ok, false);
+  if (!res2.ok) {
+    assert.equal(res2.error, "no memory_save point with that exact text");
+  }
+});

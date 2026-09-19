@@ -416,8 +416,12 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
     return { exit: false };
   }
   const hitIds = res.value.map((h) => h.id);
-  const count = await io.qdrant.deletePointsByIds?.(io.projectId, hitIds) ?? hitIds.length;
-  io.emit(message(`forgotten: ${count} memories removed`));
+  try {
+    const count = await io.qdrant.deletePointsByIds?.(io.projectId, hitIds) ?? hitIds.length;
+    io.emit(message(`forgotten: ${count} memories removed`));
+  } catch (err) {
+    io.emit(errorEntry(`error: forget failed: ${err instanceof Error ? err.message : String(err)}`));
+  }
   return { exit: false };
 }
 

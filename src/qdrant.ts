@@ -91,6 +91,7 @@ export class QdrantClient implements QdrantLike {
   private readonly fetchFn: FetchLike;
   private readonly timeoutMs: number;
   private readonly ensured = new Map<string, number>();
+  private readonly ensurePromises = new Map<string, Promise<"created" | "exists" | "recreated">>();
 
   constructor(baseURL: string, apiKey: string | null, fetchFn: FetchLike = globalThis.fetch as FetchLike, timeoutMs: number = DEFAULT_TIMEOUT_MS) {
     this.base = baseURL.replace(/\/+$/, "");
@@ -142,37 +143,50 @@ export class QdrantClient implements QdrantLike {
   ): Promise<"created" | "exists" | "recreated"> {
     if (this.ensured.get(name) === dim) return "exists";
     const onMismatch = opts?.onDimensionMismatch ?? "error";
-    const enc = encodeURIComponent(name);
-    const getRes = await this.request("GET", `/collections/${enc}`, undefined, { notFound: true });
-    const notExists = getRes === null || (getRes as { status?: string } | null)?.status === "error";
-    let outcome: "created" | "exists" | "recreated";
-    if (notExists) {
-      await this.createCollection(enc, dim);
-      outcome = "created";
-    } else {
-      const vectors = (getRes as { result: { config: { params: { vectors: { size?: number } } } } })
-        .result.config.params.vectors;
-      // Defensive: named-vector configs have no top-level `size` — treat as a mismatch.
-      const size = typeof vectors?.size === "number" ? vectors.size : undefined;
-      if (size !== dim) {
-        if (onMismatch === "error") {
-          throw new DimensionMismatchError(name, size, dim);
+    const key = `${name}:${dim}:${onMismatch}`;
+    const inFlight = this.ensurePromises.get(key);
+    if (inFlight) return inFlight;
+
+    const promise = (async () => {
+      try {
+        const enc = encodeURIComponent(name);
+        const getRes = await this.request("GET", `/collections/${enc}`, undefined, { notFound: true });
+        const notExists = getRes === null || (getRes as { status?: string } | null)?.status === "error";
+        let outcome: "created" | "exists" | "recreated";
+        if (notExists) {
+          await this.createCollection(enc, dim);
+          outcome = "created";
+        } else {
+          const vectors = (getRes as { result: { config: { params: { vectors: { size?: number } } } } })
+            .result.config.params.vectors;
+          // Defensive: named-vector configs have no top-level `size` — treat as a mismatch.
+          const size = typeof vectors?.size === "number" ? vectors.size : undefined;
+          if (size !== dim) {
+            if (onMismatch === "error") {
+              throw new DimensionMismatchError(name, size, dim);
+            }
+            // Loud, deliberate data-loss guard: a dimension mismatch means the stored
+            // vectors are incompatible with the configured embedding model — deleting
+            // the collection wipes every memory for this project. Never silent.
+            console.error(
+              `pi-qdrant-memory: WARNING recreating collection ${name} — vector size ${String(size)} does not match expected ${String(dim)}; all stored memories for this project are deleted`);
+            await this.request("DELETE", `/collections/${enc}`);
+            await this.createCollection(enc, dim);
+            outcome = "recreated";
+          } else {
+            outcome = "exists";
+          }
         }
-        // Loud, deliberate data-loss guard: a dimension mismatch means the stored
-        // vectors are incompatible with the configured embedding model — deleting
-        // the collection wipes every memory for this project. Never silent.
-        console.error(
-          `pi-qdrant-memory: WARNING recreating collection ${name} — vector size ${String(size)} does not match expected ${String(dim)}; all stored memories for this project are deleted`);
-        await this.request("DELETE", `/collections/${enc}`);
-        await this.createCollection(enc, dim);
-        outcome = "recreated";
-      } else {
-        outcome = "exists";
+        await this.createPayloadIndexes(enc, name);
+        this.ensured.set(name, dim);
+        return outcome;
+      } finally {
+        this.ensurePromises.delete(key);
       }
-    }
-    await this.createPayloadIndexes(enc, name);
-    this.ensured.set(name, dim);
-    return outcome;
+    })();
+
+    this.ensurePromises.set(key, promise);
+    return promise;
   }
 
   /** Payload keyword indexes accelerate the filtered deletes and scroll used by
@@ -233,9 +247,8 @@ export class QdrantClient implements QdrantLike {
     const json = await this.request("POST",
       `/collections/${encodeURIComponent(name)}/points/count`,
       { exact: true },
-      { notFound: true },
-    ) as { result?: { count: number } } | null;
-    return json?.result?.count ?? 0;
+    ) as { result: { count: number } };
+    return json.result.count;
   }
 
   async countBySourceKind(name: string, kind: string): Promise<number> {
@@ -284,6 +297,9 @@ export class QdrantClient implements QdrantLike {
   async clearCollection(name: string): Promise<void> {
     await this.request("DELETE", `/collections/${encodeURIComponent(name)}`);
     this.ensured.delete(name);
+    for (const key of this.ensurePromises.keys()) {
+      if (key.startsWith(`${name}:`)) this.ensurePromises.delete(key);
+    }
   }
 
   /** Delete all code-summary points for the given file paths (spec §8.2).
@@ -340,21 +356,19 @@ export class QdrantClient implements QdrantLike {
   async existingPointIds(name: string, ids: string[]): Promise<Set<string>> {
     if (!ids.length) return new Set();
     const enc = encodeURIComponent(name);
-    try {
-      const json = await this.request("POST", `/collections/${enc}/points`, {
-        ids,
-        with_payload: false,
-        with_vector: false,
-      }, { notFound: true }) as { result?: Array<{ id: string | number }> } | null;
-      const found = new Set<string>();
-      for (const p of json?.result ?? []) {
-        const strId = String(p.id);
-        found.add(strId);
-        found.add(strId.replace(/-/g, ""));
-      }
-      return found;
-    } catch {
-      return new Set();
+    const json = await this.request("POST", `/collections/${enc}/points`, {
+      ids,
+      with_payload: false,
+      with_vector: false,
+    }, { notFound: true }) as { result?: Array<{ id: string | number }> } | null;
+    const found = new Set<string>();
+    for (const p of json?.result ?? []) {
+      const strId = String(p.id);
+      found.add(strId);
+      // Qdrant normalizes UUIDs with hyphens even when ingested without hyphens;
+      // indexing both forms guarantees matching regardless of representation.
+      found.add(strId.replace(/-/g, ""));
     }
+    return found;
   }
 }

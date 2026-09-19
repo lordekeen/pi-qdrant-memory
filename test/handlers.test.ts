@@ -8,7 +8,7 @@ import type { OutEntry } from "../src/out.ts";
 import type { HandlerIO, SettingsUI } from "../src/handlers.ts";
 import type { ProjectOverridableField, ProjectSettings } from "../src/project-settings.ts";
 import { isConfigKnowledge } from "../src/config.ts";
-import { DimensionMismatchError, QdrantError, type QdrantLike } from "../src/qdrant.ts";
+import { DimensionMismatchError, QdrantClient, QdrantError, type QdrantLike } from "../src/qdrant.ts";
 import { pointId } from "../src/ids.ts";
 import type { Config } from "../src/types.ts";
 
@@ -162,6 +162,19 @@ test("statusHandler distinguishes a missing collection from an unreachable serve
     async countBySourceKind() { return 0; },
   };
   const d = io({ qdrant: qdrant404 });
+  await statusHandler(d);
+  const all = d.printed.join("\n");
+  assert.doesNotMatch(all, /NOT reachable/);
+  assert.match(all, /does not exist yet/);
+});
+
+test("statusHandler with real QdrantClient reports collection does not exist yet on 404", async () => {
+  const fakeFetch = async () => new Response(JSON.stringify({ status: "error", message: "Not found" }), {
+    status: 404,
+    headers: { "Content-Type": "application/json" },
+  });
+  const realClient = new QdrantClient("http://qdrant:6333", null, fakeFetch);
+  const d = io({ qdrant: realClient });
   await statusHandler(d);
   const all = d.printed.join("\n");
   assert.doesNotMatch(all, /NOT reachable/);
@@ -989,4 +1002,27 @@ test("forgetHandler deletes points and emits confirmation when confirmed", async
   assert.equal(d.emitted[1].kind, "message");
   assert.match(d.printed[1], /forgotten: 2 memories removed/);
   assert.deepEqual(d.deletedIds, ["pt-1", "pt-2"]);
+});
+
+test("forgetHandler emits error when deletePointsByIds throws", async () => {
+  const hits = [
+    { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } },
+  ];
+  const d = io({
+    qdrant: {
+      async ensureCollection() { return "exists"; },
+      async search() { return hits; },
+      async deletePointsByIds() { throw new Error("Qdrant write failed: timeout"); },
+    } as unknown as QdrantLike,
+  });
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { return true; },
+  };
+  await forgetHandler(d, "auth", ui);
+  assert.equal(d.emitted.length, 2);
+  assert.equal(d.emitted[0].kind, "search");
+  assert.equal(d.emitted[1].kind, "error");
+  assert.match(d.printed[1], /error: forget failed: Qdrant write failed: timeout/);
 });

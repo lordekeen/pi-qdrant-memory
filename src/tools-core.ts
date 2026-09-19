@@ -110,7 +110,10 @@ export async function forgetLogic(
     if (!existing || !existing.has(id)) {
       return { ok: false, error: "no memory_save point with that exact text" };
     }
-    const removed = await deps.qdrant.deletePointsByIds?.(deps.projectId, [id]) ?? 1;
+    if (!deps.qdrant.deletePointsByIds) {
+      return { ok: false, error: "client does not support point deletion by id" };
+    }
+    const removed = await deps.qdrant.deletePointsByIds(deps.projectId, [id]);
     return { ok: true, value: { text: trimmed, removed } };
   } catch (err) {
     return { ok: false, error: String(err) };
@@ -123,6 +126,5 @@ export function normalizeDepsForTools(deps: ToolDeps): { ingest: IngestDeps; dim
 
 export async function ingestViaItems(deps: ToolDeps, items: IngestItem[]): Promise<{ attempted: number; ingested: number }> {
   const { ingest, dim } = normalizeDepsForTools(deps);
-  await ensureAndGet(ingest, dim);
   return ingestItems(ingest, dim, items);
 }
