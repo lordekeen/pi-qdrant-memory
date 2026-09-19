@@ -115,9 +115,18 @@ test("status shows config detail in every render (no API keys), ignoring expande
   assert.doesNotMatch(text, /apiKey|api_key|key=/i);
   assert.doesNotMatch(text, /project settings:/); // no overrides → quiet
   // Collection id lives in the header; the old separate `collection:` row is gone.
-  assert.doesNotMatch(text, /^collection: /m);
+  assert.doesNotMatch(text, /code threshold:/);
   // No detail is hidden behind an expand gesture — expanded renders identically.
   assert.deepEqual(renderOut(e, { expanded: true }), lines);
+});
+
+test("status detail line includes code threshold when present in detail (OI-008)", () => {
+  const e = statusEntry({
+    ...health,
+    detail: { ...health.detail, codeThreshold: 0.55 },
+  });
+  const text = renderOut(e).map(spanText).join("\n");
+  assert.match(text, /dimension: 768 · threshold: 0.15 · maxResults: 10 · code threshold: 0.55/);
 });
 
 test("status renders the project-settings row for one key and for both", () => {

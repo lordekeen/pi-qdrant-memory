@@ -38,6 +38,7 @@ export interface StatusHealth {
     dimension: number;
     threshold: number;
     maxResults: number;
+    codeThreshold?: number;
   };
 }
 export interface CodeMemoryHealth { state: "off" | "syncing" | "synced" | "error"; files?: number; symbols?: number; error?: string; }
@@ -280,10 +281,18 @@ function statusLines(health: StatusHealth): OutLine[] {
 
 function statusDetailLines(d: StatusHealth["detail"], projectSettings?: ProjectSettingRow[]): OutLine[] {
   const dim = d.dimension;
+  const dimSpans: Span[] = [
+    s("dimension: "), s(String(dim)),
+    s(" · threshold: "), s(String(d.threshold)),
+    s(" · maxResults: "), s(String(d.maxResults)),
+  ];
+  if (d.codeThreshold !== undefined) {
+    dimSpans.push(s(" · code threshold: "), s(String(d.codeThreshold)));
+  }
   const out: OutLine[] = [
     { spans: [s("qdrant url: "), s(d.qdrantUrl)] },
     { spans: [s("model: "), s(d.model)] },
-    { spans: [s("dimension: "), s(String(dim)), s(" · threshold: "), s(String(d.threshold)), s(" · maxResults: "), s(String(d.maxResults))] },
+    { spans: dimSpans },
   ];
   if (projectSettings && projectSettings.length) {
     // One line, `; `-joined, values in their stored JSON form: `String(v)` for

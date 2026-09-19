@@ -1,5 +1,3 @@
-import { ingestItems, ensureAndGet } from "./ingest.ts";
-import type { IngestDeps, IngestItem } from "./ingest.ts";
 import { pointId } from "./ids.ts";
 import type { MemoryType, PointPayload, SearchHit, ToolDeps } from "./types.ts";
 
@@ -118,13 +116,4 @@ export async function forgetLogic(
   } catch (err) {
     return { ok: false, error: String(err) };
   }
-}
-
-export function normalizeDepsForTools(deps: ToolDeps): { ingest: IngestDeps; dim: number } {
-  return { ingest: { embed: deps.embed, qdrant: deps.qdrant, projectId: deps.projectId }, dim: deps.cfg.expectedDimension };
-}
-
-export async function ingestViaItems(deps: ToolDeps, items: IngestItem[]): Promise<{ attempted: number; ingested: number }> {
-  const { ingest, dim } = normalizeDepsForTools(deps);
-  return ingestItems(ingest, dim, items);
 }

@@ -73,6 +73,16 @@ export interface RuntimeDeps {
   reloadEffectiveConfig(): void;
   /** Memoized verified collection existence set (OI-010). */
   collectionReady?: Set<string>;
+  /** Cached embedding probe result (OI-011). */
+  embedProbeCache?: EmbedProbeCacheEntry;
+  /** Injectable clock for probe TTL (tests). */
+  now?: () => number;
+}
+
+export interface EmbedProbeCacheEntry {
+  key: string;
+  ok: boolean;
+  at: number;
 }
 
 /** The runtime slice remember/search tool logic needs — no output channel. */

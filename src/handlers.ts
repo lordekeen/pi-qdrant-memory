@@ -36,7 +36,11 @@ import type { QdrantLike } from "./qdrant.ts";
 import { QdrantError, redactUrl } from "./qdrant.ts";
 import { maskNote } from "./project-settings.ts";
 import type { ProjectOverridableField, ProjectSettings } from "./project-settings.ts";
-import type { Config, MemoryType, RuntimeDeps } from "./types.ts";
+import type { Config, EmbedProbeCacheEntry, MemoryType, RuntimeDeps } from "./types.ts";
+
+export const EMBED_PROBE_SUCCESS_TTL_MS = 30_000;
+export const EMBED_PROBE_FAILURE_TTL_MS = 5_000;
+export const EMBED_PROBE_TIMEOUT_MS = 5_000;
 
 export interface HandlerIO {
   cfg: Config;
@@ -58,6 +62,12 @@ export interface HandlerIO {
   env?: NodeJS.ProcessEnv;
   /** Memoized verified collection existence set (OI-010). */
   collectionReady?: Set<string>;
+  /** Cached embedding probe result (OI-011). */
+  embedProbeCache?: EmbedProbeCacheEntry;
+  /** Timeout budget for the status probe (OI-011, defaults to 5000ms). */
+  embedProbeTimeoutMs?: number;
+  /** Injectable clock for probe TTL (tests). */
+  now?: () => number;
 }
 
 export interface DepsToIOOptions { emit?: (e: OutEntry) => void; codeMemory?: CodeMemoryHealth; }
@@ -79,6 +89,9 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
     get qdrant() { return deps.qdrant; },
     get env() { return deps.env ?? process.env; },
     get collectionReady() { return deps.collectionReady; },
+    get embedProbeCache() { return deps.embedProbeCache; },
+    set embedProbeCache(v) { deps.embedProbeCache = v; },
+    get now() { return deps.now; },
     readGlobalConfig: deps.readGlobalConfig,
     writeGlobalConfig: deps.writeGlobalConfig,
     readProjectSettings: () => loadProjectSettings(deps.agentDir, deps.projectId),
@@ -90,6 +103,38 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
 }
 
 export interface HandlerResult { exit: boolean; }
+
+export async function probeEmbedding(
+  io: HandlerIO,
+  timeoutMs: number = io.embedProbeTimeoutMs ?? EMBED_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
+  const now = (io.now ?? Date.now)();
+  const key = `${io.cfg.embeddingBaseURL}:${io.cfg.embeddingModel}:${io.cfg.embeddingApiKey ?? ""}`;
+  const cached = io.embedProbeCache;
+  if (cached && cached.key === key) {
+    const ttl = cached.ok ? EMBED_PROBE_SUCCESS_TTL_MS : EMBED_PROBE_FAILURE_TTL_MS;
+    if (now - cached.at < ttl) {
+      return cached.ok;
+    }
+  }
+
+  let ok = false;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("embedding probe timed out")), timeoutMs);
+    });
+    await Promise.race([io.embed("probe"), timeoutPromise]);
+    ok = true;
+  } catch {
+    ok = false;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+
+  io.embedProbeCache = { key, ok, at: now };
+  return ok;
+}
 
 export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
   const mode = resolveMode(io.cfg, detectBlackhole(io.agentDir));
@@ -103,8 +148,7 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
     // via the error's HTTP status, never by matching message text.
     if (err instanceof QdrantError && err.status === 404) { qdrantOk = true; collectionMissing = true; }
   }
-  let embedOk = true;
-  try { await io.embed("probe"); } catch { embedOk = false; }
+  const embedOk = await probeEmbedding(io);
 
   const qdrant: StatusHealth["qdrant"] = !qdrantOk
     ? { state: "err" }
@@ -135,6 +179,7 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
       dimension: io.cfg.expectedDimension,
       threshold: io.cfg.scoreThreshold,
       maxResults: io.cfg.maxResults,
+      ...(io.codeMemory ? { codeThreshold: io.cfg.codeScoreThreshold } : {}),
     },
   };
   io.emit(statusEntry(health));
@@ -425,22 +470,31 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
   return { exit: false };
 }
 
+export interface CommandRow {
+  name: string;
+  cmd: string;
+  desc: string;
+  gated?: "codeKnowledge";
+}
+
+export const COMMAND_ROWS: readonly CommandRow[] = [
+  { name: "qdrant-status", cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
+  { name: "qdrant-settings", cmd: "/qdrant-settings <key> <value>", desc: "persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global" },
+  { name: "qdrant-remember", cmd: "/qdrant-remember <text>", desc: "save durable knowledge now" },
+  { name: "qdrant-search", cmd: "/qdrant-search <query>", desc: "semantic search of durable knowledge" },
+  { name: "qdrant-forget", cmd: "/qdrant-forget <query>", desc: "search and remove memories interactively" },
+  { name: "qdrant-clear", cmd: "/qdrant-clear all | code", desc: "reset entire collection (all) or purge code summaries (code)" },
+  { name: "qdrant-index-code", cmd: "/qdrant-index-code", desc: "re-index code summaries now", gated: "codeKnowledge" },
+  { name: "qdrant-help", cmd: "/qdrant-help", desc: "this list" },
+];
+
 export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {
   // Brand the help block with the same header the footer statusline carries
   // (DESIGN.md footer-status) so the active mode + collection are visible here too.
   const mode = resolveMode(io.cfg, detectBlackhole(io.agentDir));
-  const rows: HelpRow[] = [
-    { cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
-    { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global" },
-    { cmd: "/qdrant-remember <text>", desc: "save durable knowledge now" },
-    { cmd: "/qdrant-search <query>", desc: "semantic search of durable knowledge" },
-    { cmd: "/qdrant-forget <query>", desc: "search and remove memories interactively" },
-    { cmd: "/qdrant-clear all | code", desc: "reset entire collection (all) or purge code summaries (code)" },
-    { cmd: "/qdrant-help", desc: "this list" },
-  ];
-  if (io.cfg.codeKnowledge === "on") {
-    rows.splice(6, 0, { cmd: "/qdrant-index-code", desc: "re-index code summaries now" });
-  }
+  const rows: HelpRow[] = COMMAND_ROWS
+    .filter((r) => !r.gated || (r.gated === "codeKnowledge" && io.cfg.codeKnowledge === "on"))
+    .map(({ cmd, desc }) => ({ cmd, desc }));
   io.emit(helpEntry(rows, { mode, collection: io.projectId }));
   return { exit: false };
 }

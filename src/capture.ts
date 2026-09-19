@@ -38,22 +38,3 @@ export async function captureAtCompaction(
     return { attempted: 1, ingested: 0 };
   }
 }
-
-export async function autoSnapshot(
-  deps: CaptureDeps,
-  dim: number,
-  snapshotText: string,
-  sessionId: string,
-  ts: number,
-): Promise<void> {
-  const trimmed = snapshotText.trim();
-  if (!trimmed) return;
-  const p = summaryPayload(trimmed, deps.projectId, sessionId, ts);
-  try {
-    await ingestItems(deps, dim, [{
-      text: p.text, sourceKind: p.source_kind, contextId: sessionId, payload: p,
-    }]);
-  } catch (err) {
-    console.error(`pi-qdrant-memory: auto snapshot failed (non-fatal): ${String(err)}`);
-  }
-}

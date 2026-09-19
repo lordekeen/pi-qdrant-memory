@@ -71,7 +71,7 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | `src/blackhole.ts` | Read pi-blackhole pending artifacts (Mode 1) — `parseOmEntry`, `readPendingArtifacts`. |
 | `src/ingest.ts` | `ingestItems` batch upsert + `artifactToIngestItem`. |
 | `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
-| `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point), `autoSnapshot`. |
+| `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point). |
 | `src/codescan.ts` | Standalone structural code extractor (opt-in, zero-dep): repo walk + per-language line matchers → deterministic per-symbol/per-file summaries. |
 | `src/code-sync.ts` | `syncCodeKnowledge` — scan → Qdrant snapshot (file_path→file_sha) → per-file diff → per whole-file batch: embed → delete-by-file_path → upsert. Batches are built from whole files so each file is replaced atomically and a failed embed never deletes. Never throws; Qdrant is the cache. |
 | `src/render.ts` | Tool-path text blocks (`renderHits` + `sourcePointer`), LLM-facing — deliberately outside the entry UI. |

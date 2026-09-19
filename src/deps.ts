@@ -45,6 +45,7 @@ export async function makeRuntime(
     embedBatch: io.embedBatch ?? ((texts: string[]) => embeddingClient.embedBatch(texts)),
     qdrant,
     collectionReady: new Set<string>(),
+    embedProbeCache: undefined,
     readGlobalConfig: io.readGlobalConfig,
     writeGlobalConfig: io.writeGlobalConfig,
     print: io.print,
@@ -73,6 +74,7 @@ export function writeGlobalConfigAndReload(rt: RuntimeDeps, agentDir: string, ne
 export function applyConfig(rt: RuntimeDeps, cfg: Config): void {
   rt.cfg = cfg;
   rt.collectionReady?.clear();
+  rt.embedProbeCache = undefined;
   const embeddingClient = new EmbeddingClient(
     cfg.embeddingBaseURL, cfg.embeddingModel, cfg.embeddingApiKey, cfg.expectedDimension);
   rt.embed = rt.resolvedIO?.embed ?? ((text: string) => embeddingClient.embed(text));

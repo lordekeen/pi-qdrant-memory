@@ -181,6 +181,96 @@ test("statusHandler with real QdrantClient reports collection does not exist yet
   assert.match(all, /does not exist yet/);
 });
 
+test("statusHandler caches embedding probe for 30s TTL (OI-011)", async () => {
+  let probeCount = 0;
+  let now = 1000;
+  const d = io({
+    embed: async (t: string) => {
+      if (t === "probe") probeCount++;
+      return new Array(768).fill(0.1);
+    },
+    now: () => now,
+  });
+
+  // First call probes
+  await statusHandler(d);
+  assert.equal(probeCount, 1);
+  assert.match(d.printed[0], /✓ reachable/);
+
+  // Second call within TTL (e.g. +10s) uses cached probe result
+  now += 10_000;
+  await statusHandler(d);
+  assert.equal(probeCount, 1);
+
+  // Third call after 30s TTL (now + 31s from first call) probes again
+  now += 21_000;
+  await statusHandler(d);
+  assert.equal(probeCount, 2);
+});
+
+test("statusHandler caches embedding probe failure for 5s TTL (OI-011)", async () => {
+  let probeCount = 0;
+  let now = 1000;
+  const d = io({
+    embed: async (t: string) => {
+      if (t === "probe") probeCount++;
+      throw new Error("endpoint unreachable");
+    },
+    now: () => now,
+  });
+
+  // First call probes and fails
+  await statusHandler(d);
+  assert.equal(probeCount, 1);
+  assert.match(d.printed[0], /✗ NOT reachable/);
+
+  // Second call within 5s failure TTL (e.g. +3s) uses cached failure
+  now += 3_000;
+  await statusHandler(d);
+  assert.equal(probeCount, 1);
+  assert.match(d.printed[1], /✗ NOT reachable/);
+
+  // Third call after 5s TTL (now + 6s from first call) probes again
+  now += 3_000;
+  await statusHandler(d);
+  assert.equal(probeCount, 2);
+});
+
+test("statusHandler invalidates probe cache when embedding config changes (OI-011)", async () => {
+  let probeCount = 0;
+  let now = 1000;
+  const d = io({
+    embed: async (t: string) => {
+      if (t === "probe") probeCount++;
+      return new Array(768).fill(0.1);
+    },
+    now: () => now,
+  });
+
+  await statusHandler(d);
+  assert.equal(probeCount, 1);
+
+  // Within TTL, but config changes
+  d.globalState.embeddingModel = "another-model";
+  await statusHandler(d);
+  assert.equal(probeCount, 2);
+});
+
+test("statusHandler bounds hanging embedding probe within probe timeout (OI-011)", async () => {
+  const d = io({
+    embed: async () => new Promise<number[]>(() => {}), // never resolves
+    embedProbeTimeoutMs: 20, // fast timeout for test
+  });
+
+  const start = Date.now();
+  await statusHandler(d);
+  const elapsed = Date.now() - start;
+
+  assert.ok(elapsed < 2000, `Expected probe to time out quickly, took ${elapsed}ms`);
+  const all = d.printed.join("\n");
+  assert.match(all, /✗ NOT reachable/);
+});
+
 test("rememberHandler prints success and upserts", async () => {
   const d = io();
   await rememberHandler(d, "use REST", "decision");
@@ -381,7 +471,7 @@ test("helpHandler prints the command list", async () => {
   const d = io();
   await helpHandler(d);
   const all = d.printed.join("\n");
-  for (const c of ["/qdrant-status", "/qdrant-settings", "/qdrant-remember", "/qdrant-search", "/qdrant-clear", "/qdrant-help"]) {
+  for (const c of ["/qdrant-status", "/qdrant-settings", "/qdrant-remember", "/qdrant-search", "/qdrant-forget", "/qdrant-clear", "/qdrant-help"]) {
     assert.match(all, new RegExp(c.replace("/", "\\/")));
   }
 });
@@ -563,12 +653,15 @@ test("statusHandler includes the code-memory row when the feature is wired", asy
   await statusHandler(d);
   const all = d.printed.join("\n");
   assert.match(all, /code memory: ✓ 4 files · 21 symbols/);
+  assert.match(all, /code threshold: 0\.4/);
 });
 
 test("statusHandler omits the code-memory row when not wired", async () => {
   const d = io();
   await statusHandler(d);
-  assert.doesNotMatch(d.printed.join("\n"), /code memory/);
+  const all = d.printed.join("\n");
+  assert.doesNotMatch(all, /code memory/);
+  assert.doesNotMatch(all, /code threshold:/);
 });
 
 test("statusHandler surfaces this project's overrides in the project-settings row", async () => {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { captureAtCompaction, autoSnapshot, summaryPayload } from "../src/capture.ts";
+import { captureAtCompaction, summaryPayload } from "../src/capture.ts";
 import { pointId } from "../src/ids.ts";
 import type { QdrantLike, QdrantPoint } from "../src/qdrant.ts";
 
@@ -19,7 +19,7 @@ function fakeQdrant(): QdrantLike & { upserted: QdrantPoint[][] } {
   };
 }
 
-const embed = async () => new Array(768).fill(0.2);
+const embed = async () => new Array(768).fill(0.1);
 
 test("summaryPayload builds session_summary own_capture point", () => {
   const p = summaryPayload("summary text", "pi-mem-p", "sess9", 5);
@@ -29,14 +29,16 @@ test("summaryPayload builds session_summary own_capture point", () => {
   assert.equal(p.ts, 5);
 });
 
-test("captureAtCompaction ingests one summary point with deterministic id", async () => {
+test("captureAtCompaction creates a session_summary point with session_id", async () => {
   const q = fakeQdrant();
   const deps = { embed, qdrant: q, projectId: "pi-mem-p" };
-  const res = await captureAtCompaction(deps, 768, "we decided REST over gRPC", "sess9", 7);
+  const res = await captureAtCompaction(deps, 768, "we chose sqlite", "sess9", 7);
   assert.equal(res.ingested, 1);
+  assert.equal(q.upserted.length, 1);
   const pts = q.upserted[0];
   assert.equal(pts.length, 1);
-  assert.equal(pts[0].id, pointId("we decided REST over gRPC", "own_capture", "sess9"));
+  assert.equal(pts[0].id, pointId("we chose sqlite", "own_capture", "sess9"));
+  assert.equal(pts[0].payload.session_id, "sess9");
   assert.equal(pts[0].payload.type, "session_summary");
 });
 
@@ -53,11 +55,4 @@ test("captureAtCompaction never throws on embed failure", async () => {
   const deps = { embed: async () => { throw new Error("down"); }, qdrant: q, projectId: "pi-mem-p" };
   const res = await captureAtCompaction(deps, 768, "some text", "sess9", 7);
   assert.equal(res.ingested, 0);
-});
-
-test("autoSnapshot never throws and ingests", async () => {
-  const q = fakeQdrant();
-  const deps = { embed, qdrant: q, projectId: "pi-mem-p" };
-  await autoSnapshot(deps, 768, "snapshot", "sess9", 1);
-  assert.equal(q.upserted.length, 1);
 });

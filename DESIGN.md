@@ -158,12 +158,12 @@ embeddings: ✓ reachable
 code memory: ✓ 12 files · 89 symbols
 qdrant url: http://localhost:6333
 model: nomic-embed-text @ http://localhost:8080/v1
-dimension: 768 · threshold: 0.15 · maxResults: 5
+dimension: 768 · threshold: 0.15 · maxResults: 5 · code threshold: 0.55
 project settings: codeKnowledge = on (global: off); codeScoreThreshold = 0.6 (global: 0.55)
 ```
 
 The `code memory:` row appears only while the feature is wired (registration-time
-`codeKnowledge: on`). Variants: `code memory: off` (muted slot),
+`codeKnowledge: on`). When present, the `dimension:` line also reports `code threshold: <threshold>` showing the effective code-similarity cut. Variants: `code memory: off` (muted slot),
 `code memory: on (syncing…)` (dim slot, before the first sync lands),
 `code memory: ✓ {files} files · {symbols} symbols` (success slot, reporting total indexed collection inventory after a sync).
 

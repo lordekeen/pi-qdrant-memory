@@ -14,6 +14,7 @@ import { projectIdFrom } from "../src/project.ts";
 import { pointId } from "../src/ids.ts";
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
+import { COMMAND_ROWS } from "../src/handlers.ts";
 
 async function settle(): Promise<void> {
   // refreshStatus is fire-and-forget; yield two ticks so its awaits resolve.
@@ -39,11 +40,14 @@ function fakeApi(): WireApi & { tools: unknown[]; commands: unknown[]; events: R
 }
 
 const qdrant: QdrantLike = {
-  async ensureCollection() { return "exists"; }, async upsert() {},
-  async search() { return []; }, async count() { return 0; }, async clearCollection() {},
-    async deletePointsByFiles() {},
-    async codeIndexSnapshot() { return new Map(); },
-    async countBySourceKind() { return 0; },
+  async ensureCollection() { return "exists"; },
+  async upsert() {},
+  async search() { return []; },
+  async count() { return 0; },
+  async clearCollection() {},
+  deletePointsByFiles: async () => {},
+  codeIndexSnapshot: async () => new Map(),
+  countBySourceKind: async () => 0,
 };
 
 const rt: RuntimeDeps = {
@@ -71,6 +75,16 @@ test("wireApi registers the /qdrant command set", () => {
     for (const n of ["qdrant-status", "qdrant-settings", "qdrant-remember", "qdrant-search", "qdrant-forget", "qdrant-clear", "qdrant-help"]) {
       assert.ok(names.includes(n), `missing command ${n}`);
     }
+  } finally { cleanup(); }
+});
+
+test("wireApi commands match COMMAND_ROWS in handlers (OI-009 parity)", () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, rt);
+  try {
+    const registeredNames = (api.commands as Array<{ name: string }>).map((c) => c.name).sort();
+    const commandRowNames = COMMAND_ROWS.map((r) => r.name).slice().sort();
+    assert.deepEqual(registeredNames, commandRowNames);
   } finally { cleanup(); }
 });
 
