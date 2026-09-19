@@ -315,7 +315,7 @@ export class QdrantClient implements QdrantLike {
           filter: {
             should: chunk.map((p) => ({ must: [{ key: "file_path", match: { value: p } }] })),
           },
-        });
+        }, { notFound: true });
       } catch (err) {
         console.error(`pi-qdrant-memory: code point delete failed (non-fatal): ${String(err)}`);
       }
@@ -356,18 +356,21 @@ export class QdrantClient implements QdrantLike {
   async existingPointIds(name: string, ids: string[]): Promise<Set<string>> {
     if (!ids.length) return new Set();
     const enc = encodeURIComponent(name);
-    const json = await this.request("POST", `/collections/${enc}/points`, {
-      ids,
-      with_payload: false,
-      with_vector: false,
-    }, { notFound: true }) as { result?: Array<{ id: string | number }> } | null;
     const found = new Set<string>();
-    for (const p of json?.result ?? []) {
-      const strId = String(p.id);
-      found.add(strId);
-      // Qdrant normalizes UUIDs with hyphens even when ingested without hyphens;
-      // indexing both forms guarantees matching regardless of representation.
-      found.add(strId.replace(/-/g, ""));
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      const json = await this.request("POST", `/collections/${enc}/points`, {
+        ids: chunk,
+        with_payload: false,
+        with_vector: false,
+      }, { notFound: true }) as { result?: Array<{ id: string | number }> } | null;
+      for (const p of json?.result ?? []) {
+        const strId = String(p.id);
+        found.add(strId);
+        // Qdrant normalizes UUIDs with hyphens even when ingested without hyphens;
+        // indexing both forms guarantees matching regardless of representation.
+        found.add(strId.replace(/-/g, ""));
+      }
     }
     return found;
   }

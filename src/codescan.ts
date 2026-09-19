@@ -367,7 +367,8 @@ function endLineFor(lines: string[], startIdx: number, defIndent: number, langua
   for (let i = startIdx + 1; i < lines.length; i++) {
     const t = lines[i]!;
     if (t.trim() === "") continue;
-    if (indentOf(t) <= defIndent && (t.startsWith("}") || t.endsWith("}"))) return i + 1;
+    const trimmed = t.trim();
+    if (indentOf(t) <= defIndent && (trimmed.startsWith("}") || trimmed.endsWith("}"))) return i + 1;
   }
   return lines.length;
 }
@@ -453,7 +454,7 @@ export function scanRepo(repoRoot: string, options: SkipOptions = {}): ScanResul
     const rel = relative(repoRoot, abs).split(sep).join("/");
     const language = languageFor(rel);
     if (!language) continue;
-    const lines = content.split("\n");
+    const lines = content.replace(/\r/g, "").split("\n");
     const nodes: CodeNode[] = [];
     for (let i = 0; i < lines.length; i++) {
       const m = matchLine(language, lines[i]!);

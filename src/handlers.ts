@@ -411,6 +411,10 @@ export async function clearHandler(io: HandlerIO, target?: string): Promise<Hand
     try {
       await io.qdrant.clearCollection(io.projectId);
       io.collectionReady?.delete(io.projectId);
+      if (io.codeMemory) {
+        io.codeMemory.files = 0;
+        io.codeMemory.symbols = 0;
+      }
       io.emit(message(`cleared: collection ${io.projectId} reset`));
     } catch (err) {
       io.emit(errorEntry(`error: clear failed: ${String(err)}`));
@@ -424,7 +428,15 @@ export async function clearHandler(io: HandlerIO, target?: string): Promise<Hand
         io.emit(message("clear: no code points indexed"));
         return { exit: false };
       }
-      await io.qdrant.deletePointsBySourceKind?.(io.projectId, "code_summary");
+      if (!io.qdrant.deletePointsBySourceKind) {
+        io.emit(errorEntry("error: clear failed: client does not support deletion by source kind"));
+        return { exit: false };
+      }
+      await io.qdrant.deletePointsBySourceKind(io.projectId, "code_summary");
+      if (io.codeMemory) {
+        io.codeMemory.files = 0;
+        io.codeMemory.symbols = 0;
+      }
       io.emit(message(`cleared: ${count} code memory point${count === 1 ? "" : "s"} removed`));
     } catch (err) {
       io.emit(errorEntry(`error: clear failed: ${String(err)}`));
@@ -461,8 +473,12 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
     return { exit: false };
   }
   const hitIds = res.value.map((h) => h.id);
+  if (!io.qdrant.deletePointsByIds) {
+    io.emit(errorEntry("error: forget failed: client does not support point deletion by id"));
+    return { exit: false };
+  }
   try {
-    const count = await io.qdrant.deletePointsByIds?.(io.projectId, hitIds) ?? hitIds.length;
+    const count = await io.qdrant.deletePointsByIds(io.projectId, hitIds);
     io.emit(message(`forgotten: ${count} memories removed`));
   } catch (err) {
     io.emit(errorEntry(`error: forget failed: ${err instanceof Error ? err.message : String(err)}`));

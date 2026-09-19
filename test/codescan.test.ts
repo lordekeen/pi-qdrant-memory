@@ -479,6 +479,38 @@ test("scanRepo extracts split arrow functions with return type on next line (#15
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("scanRepo correctly extracts endLine in files with CRLF line endings (#47)", () => {
+  const root = fixture();
+  try {
+    const crlfContent = [
+      "export function computeSum(a: number, b: number): number {",
+      "  const sum = a + b;",
+      "  return sum;",
+      "}",
+      "",
+      "export class Calculator {",
+      "  add(x: number): number {",
+      "    return x;",
+      "  }",
+      "}",
+    ].join("\r\n");
+    writeFileSync(join(root, "crlf.ts"), crlfContent);
+
+    const { files } = scanRepo(root);
+    assert.equal(files.length, 1);
+    const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
+
+    const fn = byName.get("computeSum")!;
+    assert.equal(fn.startLine, 1);
+    assert.equal(fn.endLine, 4);
+
+    const cls = byName.get("Calculator")!;
+    assert.equal(cls.startLine, 6);
+    assert.equal(cls.endLine, 10);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
 
 
 

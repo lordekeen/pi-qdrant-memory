@@ -1119,3 +1119,50 @@ test("forgetHandler emits error when deletePointsByIds throws", async () => {
   assert.equal(d.emitted[1].kind, "error");
   assert.match(d.printed[1], /error: forget failed: Qdrant write failed: timeout/);
 });
+
+test("forgetHandler emits error when deletePointsByIds is absent", async () => {
+  const hits = [
+    { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } },
+  ];
+  const d = io({
+    qdrant: {
+      async ensureCollection() { return "exists"; },
+      async search() { return hits; },
+      // deletePointsByIds omitted
+    } as unknown as QdrantLike,
+  });
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { return true; },
+  };
+  await forgetHandler(d, "auth", ui);
+  assert.equal(d.emitted.length, 2);
+  assert.equal(d.emitted[0].kind, "search");
+  assert.equal(d.emitted[1].kind, "error");
+  assert.match(d.printed[1], /error: forget failed: client does not support point deletion by id/);
+});
+
+test("clearHandler resets codeMemory counters to 0 on clear code and clear all", async () => {
+  let codeCount = 5;
+  const d = io({ codeMemory: { state: "synced", files: 2, symbols: 5 } });
+  d.qdrant.countBySourceKind = async () => codeCount;
+  d.qdrant.deletePointsBySourceKind = async () => { codeCount = 0; };
+  await clearHandler(d, "code");
+  assert.equal(d.codeMemory?.files, 0);
+  assert.equal(d.codeMemory?.symbols, 0);
+
+  const d2 = io({ codeMemory: { state: "synced", files: 4, symbols: 20 } });
+  await clearHandler(d2, "all");
+  assert.equal(d2.codeMemory?.files, 0);
+  assert.equal(d2.codeMemory?.symbols, 0);
+});
+
+test("clearHandler with 'code' emits error when deletePointsBySourceKind is absent", async () => {
+  const d = io();
+  d.qdrant.countBySourceKind = async () => 3;
+  delete (d.qdrant as { deletePointsBySourceKind?: unknown }).deletePointsBySourceKind;
+  await clearHandler(d, "code");
+  assert.match(d.printed.join("\n"), /error: clear failed: client does not support deletion by source kind/);
+});
+

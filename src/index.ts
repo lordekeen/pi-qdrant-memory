@@ -103,7 +103,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
   const codeMemoryState: { state: "off" | "syncing" | "synced" | "error"; files?: number; symbols?: number } = {
     state: codeMemoryOn ? "syncing" : "off",
   };
-  const io = buildIO(api, rt, codeMemoryState);
+  const io = buildIO(api, rt, codeMemoryOn ? codeMemoryState : undefined);
 
   /** Repo root for the code sync, re-resolved per call — the session cwd
    * anchor can change at session_start (see there). */
@@ -410,6 +410,8 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     if (rt.cfg.codeKnowledge === "on") {
       // Fire-and-forget code sync (spec §10): never blocks session start.
       void runCodeSync();
+    } else {
+      codeMemoryState.state = "off";
     }
     // Mode 2 safety-net auto snapshot (spec §3.3) is intentionally NOT wired here:
     // an early-session snapshot needs mid-session content distillation access that

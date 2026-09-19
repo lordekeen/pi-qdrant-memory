@@ -416,3 +416,35 @@ test("existingPointIds throws QdrantError on network or server failure", async (
   );
 });
 
+test("deletePointsByFiles survives 404 cleanly when collection does not exist", async () => {
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points/delete", () =>
+    jsonRes({ status: "error", message: "Not found" }, 404));
+  const client = makeClient(routes);
+  await client.deletePointsByFiles("pi-mem-abc", ["src/a.ts"]);
+});
+
+test("existingPointIds chunks requests above 50 ids", async () => {
+  let calls = 0;
+  const chunkSizes: number[] = [];
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("POST http://qdrant:6333/collections/pi-mem-abc/points", (_u, i) => {
+    calls++;
+    const body = JSON.parse(String(i.body)) as { ids: string[] };
+    chunkSizes.push(body.ids.length);
+    return jsonRes({
+      result: body.ids.slice(0, 1).map((id) => ({ id })),
+    });
+  });
+  const client = makeClient(routes);
+  const ids = Array.from({ length: 120 }, (_, k) => `id${k}`);
+  const found = await client.existingPointIds("pi-mem-abc", ids);
+  assert.equal(calls, 3);
+  assert.deepEqual(chunkSizes, [50, 50, 20]);
+  assert.equal(found.size, 3);
+  assert.ok(found.has("id0"));
+  assert.ok(found.has("id50"));
+  assert.ok(found.has("id100"));
+});
+
+

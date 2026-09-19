@@ -351,6 +351,12 @@ test("session_start gate reads the LIVE effective value: an override-off project
       // genuinely fails if the gate reads the frozen `codeMemoryOn` boolean.
       assert.equal(snapshots, 0, "override-off must suppress the code sync even when registration-time codeKnowledge was on");
       assert.equal(embedBatches, 0);
+
+      // Verify codeMemoryState.state was updated to "off" instead of freezing on "syncing" (Issue #43)
+      const statusCmd = (api.commands as Array<{ name: string; execute: () => Promise<void> }>).find((c) => c.name === "qdrant-status")!;
+      await statusCmd.execute();
+      const statusEntry = api.entries.at(-1) as { kind: string; health: { codeMemory?: { state?: string } } };
+      assert.equal(statusEntry.health.codeMemory?.state, "off");
     } finally { cleanup(); }
   } finally { rmSync(agentDir, { recursive: true, force: true }); }
 });
@@ -571,4 +577,17 @@ test("memory_forget tool executes forgetLogic and retracts memory", async () => 
     assert.match(resFail.content[0]!.text, /memory_forget failed: no memory_save point with that exact text/);
   } finally { cleanup(); }
 });
+
+test("qdrant-status omits codeMemory when codeKnowledge is 'off' (Issue #42)", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, rt); // default rt has codeKnowledge: "off"
+  try {
+    const statusCmd = (api.commands as Array<{ name: string; execute: () => Promise<void> }>).find((c) => c.name === "qdrant-status")!;
+    await statusCmd.execute();
+    const lastEntry = api.entries.at(-1) as { kind: string; health: { codeMemory?: unknown; detail: { codeThreshold?: unknown } } };
+    assert.equal(lastEntry.health.codeMemory, undefined);
+    assert.equal(lastEntry.health.detail.codeThreshold, undefined);
+  } finally { cleanup(); }
+});
+
 
