@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DEFAULTS, configPath, loadConfig, readGlobalConfig, setConfigField } from "../src/config.ts";
+import { DEFAULTS, configPath, loadConfig, readGlobalConfig, setConfigField, takeLoadWarnings, writeConfigFile as writeConfigFileSrc } from "../src/config.ts";
 import { saveProjectSettings } from "../src/project-settings.ts";
 import type { Config } from "../src/types.ts";
 
@@ -184,4 +184,79 @@ test("no runtime path reads the shipped template", () => {
     const text = readFileSync(new URL(name, srcDir), "utf8");
     assert.ok(!text.includes("config.example.json"), `${name} must not reference the shipped template`);
   }
+});
+
+// ── Atomic writes + corrupt-file reporting (#57) ────────────────────────────
+
+test("writeConfigFile writes a temp file and renames it over the target (#57)", () => {
+  const dir = tempAgentDir();
+  try {
+    // Seed a stale temp file: the rename must leave neither it nor any other
+    // temp behind, and the target must hold the *new* complete JSON.
+    const stale = `${configPath(dir)}.tmp`;
+    mkdirSync(dirname(configPath(dir)), { recursive: true });
+    writeFileSync(stale, "{ half-written garbage", "utf8");
+
+    writeConfigFileSrc(dir, { ...DEFAULTS, scoreThreshold: 0.99 });
+
+    const onDisk = JSON.parse(readFileSync(configPath(dir), "utf8")) as Config;
+    assert.equal(onDisk.scoreThreshold, 0.99);
+    assert.deepEqual(readGlobalConfig(dir, {}), { ...DEFAULTS, scoreThreshold: 0.99 });
+    assert.deepEqual(readdirSync(dirname(configPath(dir))).filter((f) => f.endsWith(".tmp")), []);
+    assert.equal(existsSync(stale), false, "the stale temp file is consumed by the rename");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("writeConfigFile keeps the target 0600 on POSIX after a rename", (t) => {
+  if (process.platform === "win32") t.skip("mode bits are not meaningful on win32");
+  const dir = tempAgentDir();
+  try {
+    writeConfigFileSrc(dir, { ...DEFAULTS, scoreThreshold: 0.5 });
+    assert.equal(statSync(configPath(dir)).mode & 0o777, 0o600);
+    // A second save must not loosen it either (the temp file is 0600 too).
+    writeConfigFileSrc(dir, { ...DEFAULTS, scoreThreshold: 0.6 });
+    assert.equal(statSync(configPath(dir)).mode & 0o777, 0o600);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a corrupt config file warns with its path, exactly once (#57)", () => {
+  const dir = tempAgentDir();
+  try {
+    // Raw write: the local helper JSON-encodes, and corrupt-by-definition is not
+    // something it can produce.
+    mkdirSync(dirname(configPath(dir)), { recursive: true });
+    writeFileSync(configPath(dir), "{not json", "utf8");
+    takeLoadWarnings(); // drain anything an earlier test queued
+
+    // First read: safe default preserved AND the path reported.
+    assert.deepEqual(readGlobalConfig(dir, {}), DEFAULTS);
+    const first = takeLoadWarnings();
+    assert.deepEqual(first, [configPath(dir)], "the unreadable file must be named");
+
+    // The drain is real: a second read adds nothing new to the queue, and the
+    // dedup means the same path is never reported twice in one process.
+    assert.deepEqual(readGlobalConfig(dir, {}), DEFAULTS);
+    assert.deepEqual(readGlobalConfig(dir, {}), DEFAULTS);
+    assert.deepEqual(takeLoadWarnings(), [], "a corrupt path is reported once per process");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an absent config file is silent — a missing file is not a fault (#57)", () => {
+  const dir = tempAgentDir();
+  try {
+    takeLoadWarnings(); // drain
+    assert.deepEqual(readGlobalConfig(dir, {}), DEFAULTS);
+    assert.deepEqual(takeLoadWarnings(), [], "first-run must not produce a warning");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a config file that is valid JSON but not an object warns (#57)", () => {
+  const dir = tempAgentDir();
+  try {
+    mkdirSync(dirname(configPath(dir)), { recursive: true });
+    writeFileSync(configPath(dir), "[1,2,3]", "utf8");
+    takeLoadWarnings(); // drain
+    assert.deepEqual(readGlobalConfig(dir, {}), DEFAULTS);
+    assert.deepEqual(takeLoadWarnings(), [configPath(dir)]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

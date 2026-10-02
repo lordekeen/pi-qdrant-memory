@@ -5,6 +5,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -20,6 +22,7 @@ import {
   projectsDir,
   readEffectiveConfig,
   saveProjectSettings,
+  takeLoadWarnings,
 } from "../src/project-settings.ts";
 import type { ProjectSettings } from "../src/project-settings.ts";
 import { DEFAULTS, configPath, writeConfigFile } from "../src/config.ts";
@@ -281,4 +284,51 @@ test("precedence §7.1: codeScoreThreshold across global file, project store and
       if (row.storeLoaded) assert.deepEqual(loadProjectSettings(dir, ID), row.storeLoaded, `${label}: store view`);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
+});
+
+// ── Atomic writes + corrupt-file reporting (#57) ────────────────────────────
+
+test("the project store is written temp-then-rename, leaving no .tmp (#57)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-store-"));
+  try {
+    // A stale temp from an earlier crash must not survive the next write.
+    const file = projectSettingsPath(dir, ID);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(`${file}.tmp`, "{ half-written", "utf8");
+
+    saveProjectSettings(dir, ID, { codeKnowledge: "on", codeScoreThreshold: 0.42 });
+
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as ProjectSettings;
+    assert.deepEqual(onDisk, { codeKnowledge: "on", codeScoreThreshold: 0.42 });
+    assert.deepEqual(loadProjectSettings(dir, ID), { codeKnowledge: "on", codeScoreThreshold: 0.42 });
+    assert.deepEqual(readdirSync(dirname(file)).filter((f) => f.endsWith(".tmp")), []);
+    assert.equal(existsSync(`${file}.tmp`), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a corrupt project store warns with its path, exactly once (#57)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-store-"));
+  try {
+    const file = projectSettingsPath(dir, ID);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "{not json", "utf8");
+    takeLoadWarnings(); // drain anything earlier queued
+
+    // Safe default preserved...
+    assert.deepEqual(loadProjectSettings(dir, ID), {});
+    assert.equal(readEffectiveConfig(dir, ID, {}).codeKnowledge, DEFAULTS.codeKnowledge);
+    // ...and the path reported, once.
+    assert.deepEqual(takeLoadWarnings(), [file]);
+    assert.deepEqual(loadProjectSettings(dir, ID), {});
+    assert.deepEqual(takeLoadWarnings(), [], "reported once per process");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an absent project store produces no warning (#57)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-store-"));
+  try {
+    takeLoadWarnings(); // drain
+    assert.deepEqual(loadProjectSettings(dir, ID), {});
+    assert.deepEqual(takeLoadWarnings(), [], "first run in a project must be silent");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

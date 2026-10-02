@@ -1,7 +1,12 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { DEFAULTS, isConfigKnowledge, readGlobalConfig, setConfigField } from "./config.ts";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { DEFAULTS, isConfigKnowledge, readGlobalConfig, recordLoadWarning, setConfigField, writeJsonAtomic } from "./config.ts";
 import type { Config } from "./types.ts";
+
+/** #57: the corrupt-file warning queue is shared with the global reader, so one
+ * drain in the lifecycle layer covers both files. Re-exported here so a caller
+ * holding the project store never has to know which reader module owns it. */
+export { takeLoadWarnings } from "./config.ts";
 
 /** The only Config keys a project may override (spec D1). Growing this list is
  * a one-line change: storage and precedence already handle it. */
@@ -36,8 +41,13 @@ export function loadProjectSettings(agentDir: string, projectId: string): Projec
   const file = projectSettingsPath(agentDir, projectId);
   if (!existsSync(file)) return {};
   let raw: unknown;
-  try { raw = JSON.parse(readFileSync(file, "utf8")); } catch { return {}; }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  try { raw = JSON.parse(readFileSync(file, "utf8")); } catch {
+    // Corrupt file: "no overrides" is the safe answer, and the path is reported
+    // so the override does not vanish without a trace (#57).
+    recordLoadWarning(file);
+    return {};
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) { recordLoadWarning(file); return {}; }
   const src = raw as Record<string, unknown>;
   const out: ProjectSettings = {};
   for (const key of PROJECT_OVERRIDABLE_FIELDS) {
@@ -108,10 +118,10 @@ function defined(next: ProjectSettings): ProjectSettings {
 }
 
 function writeStoreFile(agentDir: string, projectId: string, settings: ProjectSettings): void {
-  const file = projectSettingsPath(agentDir, projectId);
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-  try { chmodSync(file, 0o600); } catch { /* best-effort: creation mode already set */ }
+  // Temp-then-rename, shared with the global config writer: a partial write
+  // would leave a file that parses as *some* overrides and silently applies a
+  // half-saved state (#57). Same 0o600 discipline — see `writeJsonAtomic`.
+  writeJsonAtomic(projectSettingsPath(agentDir, projectId), settings);
 }
 
 /**

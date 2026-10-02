@@ -7,7 +7,7 @@ import {
   displayValue, settingsScopeLabel, settingsUsageText, clearUsageText, settingsUpdatedText, settingsGlobalUpdatedText,
   settingsOverrideClearedText, resetOptionLabel, formNumericPrompt, formSaveMessage, formClearMessage,
   forgetConfirmMessage, indexUsageText, unknownKeyText, unknownValueText, noArgumentText, unexpectedArgumentText,
-  commandUsageText, clearRequiresUiText,
+  commandUsageText, clearRequiresUiText, commandFormatNoticeEntry, COMMAND_FORMAT_NOTICE_TEXT, loadWarningText,
 } from "../src/out.ts";
 import { ARG_SHAPE, USAGE_KEYS } from "../src/commands.ts";
 import type { OutEntry, OutLine, Span } from "../src/out.ts";
@@ -435,4 +435,54 @@ test("indexUsageText renders one aligned line per kind it is given", () => {
     "code      — Re-index code summaries now",
     "documents — Index project documents",
   ].join("\n"));
+});
+
+// ── Migration notice + corrupt-file warning (plan Part D.3 / #57) ───────────
+
+test("the migration notice copy matches plan D.3 byte-for-byte", () => {
+  // Two lines: the entry renderer does not wrap prose and the host truncates at
+  // the terminal edge, so a single long line would be cut on a narrow terminal.
+  assert.equal(
+    COMMAND_FORMAT_NOTICE_TEXT,
+    "commands: /qdrant-* is now /qdrant <key> — e.g. /qdrant status, /qdrant search <query>.\n" +
+    "          Run /qdrant help for the full list. Shown each session until your first /qdrant command.",
+  );
+  // The second line hangs under the first: `commands: ` is 10 characters wide,
+  // so the continuation carries 10 spaces of hanging indent.
+  const [first, second] = COMMAND_FORMAT_NOTICE_TEXT.split("\n");
+  assert.equal(first!.startsWith("commands: /qdrant-* is now "), true, "the label is followed by the old name");
+  assert.equal(second!.slice(0, 10), " ".repeat(10));
+  assert.equal(second!.trimStart().startsWith("Run /qdrant help"), true);
+  // The promise in the copy: shown each session until the first /qdrant command.
+  assert.ok(COMMAND_FORMAT_NOTICE_TEXT.includes("Shown each session until your first /qdrant command."));
+});
+
+test("the migration notice is a message entry, never an error entry", () => {
+  // Nothing failed — an `error` entry would read as a fault and (per the
+  // output contract) is styled as one.
+  const entry = commandFormatNoticeEntry();
+  assert.equal(entry.kind, "message");
+  assert.equal(entry.text, COMMAND_FORMAT_NOTICE_TEXT);
+  assert.equal(outText(entry).includes("/qdrant-* is now"), true);
+});
+
+test("the notice renders as plain text with no error styling", () => {
+  const lines = renderOut(commandFormatNoticeEntry());
+  const roles = new Set(lines.flatMap((l) => l.spans.map((s) => s.role)));
+  assert.equal(roles.has("error"), false, "no span may take the error role");
+});
+
+test("loadWarningText names the unreadable file and says the safe default is in use", () => {
+  const one = loadWarningText(["/home/u/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json"]);
+  assert.ok(one.includes("/home/u/.pi/agent/pi-qdrant-memory/pi-qdrant-memory-config.json"), "must name the path");
+  assert.ok(one.includes("defaults are in use"), "must say the fallback is active");
+  assert.equal(one.split("\n").length, 1, "one path stays on one line");
+});
+
+test("loadWarningText lists every path when more than one file is unreadable", () => {
+  const two = loadWarningText(["/a/one.json", "/b/two.json"]);
+  assert.ok(two.includes("2 files"));
+  assert.ok(two.includes("/a/one.json"));
+  assert.ok(two.includes("/b/two.json"));
+  assert.equal(two.split("\n").length, 3, "header plus one line per path");
 });

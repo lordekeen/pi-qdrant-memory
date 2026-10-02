@@ -119,6 +119,36 @@ export function noArgumentText(key: string): string {
 export function unexpectedArgumentText(corrected: string): string {
   return `error: unexpected arguments — try ${corrected}`;
 }
+/**
+ * The one-shot `/qdrant-*` → `/qdrant <key>` migration notice (plan Part D.3).
+ * Emitted on `session_start` until the first successful `/qdrant` dispatch.
+ *
+ * Two lines on purpose: the entry renderer does not wrap prose and the host
+ * truncates at the terminal edge, so a single over-long line would be cut on a
+ * narrow terminal. The leading `commands:` label matches the structural-label
+ * convention the help block already uses. This is a `message` entry, never an
+ * `error` entry — nothing failed. Copy is pinned byte-for-byte by a test.
+ */
+export const COMMAND_FORMAT_NOTICE_TEXT =
+  "commands: /qdrant-* is now /qdrant <key> — e.g. /qdrant status, /qdrant search <query>.\n" +
+  "          Run /qdrant help for the full list. Shown each session until your first /qdrant command.";
+
+export function commandFormatNoticeEntry(): MessageEntry { return message(COMMAND_FORMAT_NOTICE_TEXT); }
+
+/**
+ * A config/store file that exists but does not parse (#57). The reader already
+ * fell back to the safe default; this names the file so a silent revert to
+ * `DEFAULTS` is visible. One path per session in practice — the message-entry
+ * shape only widens when a corrupt global config and a corrupt project store
+ * are found in the same session.
+ */
+export function loadWarningText(paths: readonly string[]): string {
+  if (paths.length === 1) {
+    return `settings: ${paths[0]} is not readable JSON — defaults are in use. Fix or delete the file.`;
+  }
+  return `settings: ${paths.length} files are not readable JSON — defaults are in use. Fix or delete them:\n${paths.join("\n")}`;
+}
+
 export function statusEntry(health: StatusHealth): StatusEntry { return { kind: "status", health }; }
 export function searchEntry(hits: SearchHitView[]): SearchEntry { return { kind: "search", hits }; }
 

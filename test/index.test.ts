@@ -1,7 +1,7 @@
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { wireApi } from "../src/index.ts";
@@ -10,13 +10,16 @@ import type { Config, RuntimeDeps } from "../src/types.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
 import { QdrantError } from "../src/qdrant.ts";
 import { readEffectiveConfig, saveProjectSettings } from "../src/project-settings.ts";
+import { takeLoadWarnings } from "../src/project-settings.ts";
+import { configPath, readGlobalConfig } from "../src/config.ts";
+import { readState, statePath } from "../src/state.ts";
 import { projectIdFrom } from "../src/project.ts";
 import { pointId } from "../src/ids.ts";
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
 import { COMMAND_ROWS } from "../src/handlers.ts";
 import { ARG_SHAPE, INDEX_KINDS, USAGE_KEYS } from "../src/commands.ts";
-import { commandUsageText, indexUsageText } from "../src/out.ts";
+import { commandUsageText, indexUsageText, COMMAND_FORMAT_NOTICE_TEXT } from "../src/out.ts";
 
 async function settle(): Promise<void> {
   // refreshStatus is fire-and-forget; yield two ticks so its awaits resolve.
@@ -843,3 +846,186 @@ test("/qdrant status omits codeMemory when codeKnowledge is 'off' (Issue #42)", 
 });
 
 
+
+// ── /qdrant-* → /qdrant migration notice (plan Part D) ──────────────────────
+
+/** A wireApi over a real, empty agent dir so state.json is a real file. */
+function noticeFixture(): {
+  api: ReturnType<typeof fakeApi>;
+  cleanup: () => void;
+  dir: string;
+  localRt: RuntimeDeps;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-notice-"));
+  const localRt: RuntimeDeps = { ...rt, agentDir: dir };
+  const api = fakeApi();
+  return { api, cleanup: wireApi(api, localRt), dir, localRt };
+}
+
+const sessionStart = (api: ReturnType<typeof fakeApi>) =>
+  api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
+
+const noticeTexts = (api: ReturnType<typeof fakeApi>) =>
+  (api.entries as Array<{ text?: string }>).map((e) => e.text ?? "").filter((t) => t.includes("/qdrant-* is now"));
+
+test("session_start emits the migration notice and does NOT write the flag (Part D.2)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-notice-"));
+  const localRt: RuntimeDeps = { ...rt, agentDir: dir };
+  const api = fakeApi();
+  const cleanup = wireApi(api, localRt);
+  try {
+    await sessionStart(api)({}, { mode: "tui" });
+    const notices = noticeTexts(api);
+    assert.equal(notices.length, 1, "the notice is emitted on the first session");
+    assert.equal(notices[0], COMMAND_FORMAT_NOTICE_TEXT);
+    // Emit-only: consuming the one-shot here would silence a session the user
+    // may have scrolled past.
+    assert.equal(existsSync(statePath(dir)), false, "session_start must never write the flag");
+  } finally { cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the notice repeats in each new session until a /qdrant command is used", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-notice-"));
+  try {
+    for (const session of [1, 2]) {
+      const localRt: RuntimeDeps = { ...rt, agentDir: dir };
+      const api = fakeApi();
+      const cleanup = wireApi(api, localRt);
+      try {
+        await sessionStart(api)({}, { mode: "tui" });
+        assert.equal(noticeTexts(api).length, 1, `session ${session} shows the notice`);
+      } finally { cleanup(); }
+    }
+    assert.equal(existsSync(statePath(dir)), false, "still nothing written after two sessions");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a successful /qdrant dispatch writes the flag and silences the next session", async () => {
+  const { api, cleanup, dir } = noticeFixture();
+  try {
+    // Bare form: status + help counts as a successful dispatch.
+    await qdrantCmd(api)("");
+    const state = JSON.parse(readFileSync(statePath(dir), "utf8")) as Record<string, unknown>;
+    assert.deepEqual(state, { commandFormatNoticeShown: true }, "the flag file is written by the dispatch");
+
+    // Next session over the same agent dir: silent.
+    const localRt: RuntimeDeps = { ...rt, agentDir: dir };
+    const api2 = fakeApi();
+    const cleanup2 = wireApi(api2, localRt);
+    try {
+      await sessionStart(api2)({}, { mode: "tui" });
+      assert.equal(noticeTexts(api2).length, 0, "the notice is gone once the user has migrated");
+    } finally { cleanup2(); }
+  } finally { cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("every valid key that clears checkArgShape arms the flag", async () => {
+  for (const args of ["status", "help", "search some query", "remember hello world", "clear all", "index code", "settings", "settings mode own"]) {
+    const { api, cleanup, dir } = noticeFixture();
+    try {
+      await qdrantCmd(api)(args);
+      assert.equal(readState(dir).commandFormatNoticeShown, true, `"/qdrant ${args}" must arm the flag`);
+    } finally { cleanup(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("an unknown key does NOT arm the flag — the user has not migrated", async () => {
+  const { api, cleanup, dir } = noticeFixture();
+  try {
+    await qdrantCmd(api)("bogus thing");
+    assert.equal(existsSync(statePath(dir)), false, "unknown key must leave the notice armed");
+  } finally { cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an argument-shape error does NOT arm the flag", async () => {
+  for (const args of ["status now", "clear", "index documents", "index code extra"]) {
+    const { api, cleanup, dir } = noticeFixture();
+    try {
+      await qdrantCmd(api)(args);
+      assert.equal(existsSync(statePath(dir)), false, `"/qdrant ${args}" must leave the notice armed`);
+    } finally { cleanup(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("the flag is written at most once per process, no matter how many commands run", async () => {
+  const { api, cleanup, dir } = noticeFixture();
+  try {
+    await qdrantCmd(api)("status");
+    const first = statSync(statePath(dir)).mtimeMs;
+    await qdrantCmd(api)("help");
+    await qdrantCmd(api)("status");
+    // The in-memory latch means later commands do no filesystem work at all.
+    assert.equal(statSync(statePath(dir)).mtimeMs, first, "no further writes after the first success");
+    assert.equal(readState(dir).commandFormatNoticeShown, true);
+  } finally { cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("headless sessions emit nothing; rpc still gets the notice (Part D.2)", async () => {
+  for (const mode of ["json", "print"]) {
+    const { api, cleanup, dir } = noticeFixture();
+    try {
+      await sessionStart(api)({}, { mode });
+      assert.equal(noticeTexts(api).length, 0, `${mode} has no transcript to show it in`);
+      assert.equal(existsSync(statePath(dir)), false, "a headless session must not consume the one-shot");
+    } finally { cleanup(); rmSync(dir, { recursive: true, force: true }); }
+  }
+  // rpc renders a transcript, so it is NOT gated.
+  const { api, cleanup, dir } = noticeFixture();
+  try {
+    await sessionStart(api)({}, { mode: "rpc" });
+    assert.equal(noticeTexts(api).length, 1, "rpc shows the notice");
+  } finally { cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a missing ctx.mode is treated as a transcript session", async () => {
+  const { api, cleanup, dir } = noticeFixture();
+  try {
+    await sessionStart(api)({}, {});
+    assert.equal(noticeTexts(api).length, 1);
+  } finally { cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("corrupt or non-object state.json reads as 'not shown' without throwing", async () => {
+  for (const raw of ["{not json", '"a string"', "null", "[]", "{}"]) {
+    const dir = mkdtempSync(join(tmpdir(), "pi-qm-notice-"));
+    try {
+      mkdirSync(dirname(statePath(dir)), { recursive: true });
+      writeFileSync(statePath(dir), raw, "utf8");
+      const localRt: RuntimeDeps = { ...rt, agentDir: dir };
+      const api = fakeApi();
+      const cleanup = wireApi(api, localRt);
+      try {
+        await assert.doesNotReject(() => sessionStart(api)({}, { mode: "tui" }));
+        const expected = raw === "{}" ? 1 : 1; // every shape above is "not shown"
+        assert.equal(noticeTexts(api).length, expected, `state ${raw} must show the notice`);
+        assert.equal(readFileSync(statePath(dir), "utf8"), raw, "session_start must not rewrite state.json");
+      } finally { cleanup(); }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("a corrupt config file is reported once, on session_start, naming the path (#57)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-notice-"));
+  try {
+    mkdirSync(dirname(configPath(dir)), { recursive: true });
+    writeFileSync(configPath(dir), "{not json", "utf8");
+    takeLoadWarnings(); // drain
+    const localRt: RuntimeDeps = { ...rt, agentDir: dir, cfg: readGlobalConfig(dir, {}) };
+    const api = fakeApi();
+    const cleanup = wireApi(api, localRt);
+    try {
+      await sessionStart(api)({}, { mode: "tui" });
+      const warnings = (api.entries as Array<{ text?: string }>).map((e) => e.text ?? "").filter((t) => t.includes("settings:"));
+      assert.equal(warnings.length, 1, "one warning entry");
+      assert.ok(warnings[0]!.includes(configPath(dir)), "the warning names the unreadable file");
+
+      // The drain means a later session does not repeat it.
+      const api2 = fakeApi();
+      const cleanup2 = wireApi(api2, localRt);
+      try {
+        await sessionStart(api2)({}, { mode: "tui" });
+        assert.equal((api2.entries as Array<{ text?: string }>).filter((e) => (e.text ?? "").includes("settings:")).length, 0);
+      } finally { cleanup2(); }
+    } finally { cleanup(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

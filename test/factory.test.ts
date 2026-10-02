@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import factory from "../src/index.ts";
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
+import { statePath } from "../src/state.ts";
 
 interface FakePiCommand {
   description?: string;
@@ -13,7 +14,11 @@ interface FakePiCommand {
   getArgumentCompletions?: (prefix: string) => Array<{ value: string; label?: string; description?: string }> | null;
 }
 
-/** Minimal fake of the real pi ExtensionAPI surface the factory adapts. */
+/** Minimal fake of the real pi ExtensionAPI surface the factory adapts.
+ *  `on` returns a REAL working unsubscribe, mirroring
+ *  `dist/core/extensions/loader.js:213-227` — a fake that returned a no-op
+ *  could not tell "the adapter forwards pi's unsubscribe" apart from "the
+ *  adapter returns a no-op" (#55). */
 function fakePi() {
   const tools: unknown[] = [];
   const commands = new Map<string, FakePiCommand>();
@@ -23,7 +28,14 @@ function fakePi() {
   const pi = {
     registerTool(d: unknown) { tools.push(d); },
     registerCommand(name: string, opts: FakePiCommand) { commands.set(name, opts); },
-    on(event: string, handler: (p: unknown, ctx: unknown) => void | Promise<void>) { events.push({ event, handler }); },
+    on(event: string, handler: (p: unknown, ctx: unknown) => void | Promise<void>) {
+      events.push({ event, handler });
+      // Real removal from the per-extension handler map, like the host.
+      return () => {
+        const i = events.findIndex((e) => e.handler === handler);
+        if (i !== -1) events.splice(i, 1);
+      };
+    },
     appendEntry(_customType: string, data?: unknown) {
       const entry = data as OutEntry | undefined;
       messages.push(entry && typeof entry === "object" && typeof entry.kind === "string" ? outText(entry) : String(data ?? ""));
@@ -31,6 +43,14 @@ function fakePi() {
     registerEntryRenderer(customType: string, renderer: unknown) { entryRenderers.set(customType, renderer); },
   };
   return { pi, tools, commands, events, entryRenderers, messages };
+}
+
+/** Dispatch every handler registered for an event, over a snapshot (as the
+ *  host's runner does — `snapshotEventHandlers` copies the handler arrays). */
+async function emit(events: Array<{ event: string; handler: (p: unknown, ctx: unknown) => void | Promise<void> }>, event: string, ctx: unknown = {}): Promise<void> {
+  for (const { handler } of events.filter((e) => e.event === event).slice()) {
+    await handler({ type: event }, ctx);
+  }
 }
 
 test("factory registers tools, /qdrant commands, and lifecycle hooks", async () => {
@@ -68,7 +88,100 @@ test("factory registers tools, /qdrant commands, and lifecycle hooks", async () 
     for (const ev of ["session_start", "session_before_compact", "session_compact"]) {
       assert.ok(registered.includes(ev), `expected ${ev} hook`);
     }
-    assert.ok(!registered.includes("session_shutdown"), "mode2 must not register session_shutdown");
+    // mode2 must not add the mode-1 shutdown ingest. Exactly one session_shutdown
+    // remains: the factory's own teardown hook (#55), which is not mode-dependent.
+    assert.equal(
+      registered.filter((e) => e === "session_shutdown").length,
+      1,
+      "mode2 must register only the teardown hook, never the mode-1 ingest hook",
+    );
+  } finally {
+    if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the adapter forwards pi's real unsubscribe, and cleanup runs on session_shutdown (#55)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-factory-"));
+  mkdirSync(join(dir, "pi-qdrant-memory"), { recursive: true });
+  const prev = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  const { pi, events } = fakePi();
+  try {
+    await factory(pi);
+    // mode2 → session_start + session_before_compact + session_compact, plus
+    // the teardown hook the factory registers.
+    assert.ok(events.length >= 4, `expected the wired hooks, got ${events.length}`);
+    const before = events.length;
+
+    // The host drops a factory's return value (ExtensionFactory returns
+    // void | Promise<void>; initializeExtension does `await factory(load.api)`
+    // and binds nothing), so teardown hangs off session_shutdown — which pi
+    // really does emit. Firing it must release EVERY handler the extension
+    // registered. This only passes if the adapter returned pi's own unsubscribe
+    // rather than a no-op: a no-op would leave all `before` handlers in place.
+    await emit(events, "session_shutdown");
+    assert.ok(before > 0, "the factory registered handlers to begin with");
+    assert.equal(events.length, 0, "every handler the extension registered must be unsubscribed");
+    assert.ok(events.length < before, "cleanup released something");
+
+    // Idempotent: the teardown removed itself, and a repeated shutdown is a no-op.
+    await emit(events, "session_shutdown");
+    assert.equal(events.length, 0);
+  } finally {
+    if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mode1 keeps the shutdown ingest alongside the teardown hook (#55)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-factory-"));
+  // An operational pi-blackhole config makes detectBlackhole true → mode1.
+  mkdirSync(join(dir, "pi-blackhole"), { recursive: true });
+  writeFileSync(join(dir, "pi-blackhole", "pi-blackhole-config.json"), JSON.stringify({ compactionEngine: "blackhole" }), "utf8");
+  mkdirSync(join(dir, "pi-qdrant-memory"), { recursive: true });
+  const prev = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  const { pi, events } = fakePi();
+  try {
+    await factory(pi);
+    // Two: the mode-1 ingestPending AND the teardown hook. The runner dispatches
+    // from a snapshot, so the teardown running cannot skip the ingest that was
+    // registered first.
+    assert.equal(events.filter((e) => e.event === "session_shutdown").length, 2);
+    await emit(events, "session_shutdown"); // ingest is a no-op with no pending artifacts
+    assert.equal(events.length, 0, "shutdown releases both");
+  } finally {
+    if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the migration notice reaches the transcript and the flag is written by a command", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-factory-"));
+  mkdirSync(join(dir, "pi-qdrant-memory"), { recursive: true });
+  const prev = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  const { pi, events, commands, messages } = fakePi();
+  try {
+    await factory(pi);
+    await emit(events, "session_start", { mode: "tui", cwd: dir });
+    assert.ok(
+      messages.some((m) => m.includes("/qdrant-* is now /qdrant <key>")),
+      "session_start must emit the migration notice",
+    );
+    assert.equal(existsSync(statePath(dir)), false, "session_start must not write the flag");
+
+    // A successful dispatch writes it; the next session_start is then silent.
+    await commands.get("qdrant")!.handler("help", {});
+    assert.deepEqual(JSON.parse(readFileSync(statePath(dir), "utf8")), { commandFormatNoticeShown: true });
+
+    messages.length = 0;
+    await emit(events, "session_start", { mode: "tui", cwd: dir });
+    assert.ok(
+      !messages.some((m) => m.includes("/qdrant-* is now")),
+      "the notice must not come back after a successful /qdrant dispatch",
+    );
   } finally {
     if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
     rmSync(dir, { recursive: true, force: true });

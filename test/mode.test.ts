@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { blackholeConfigPath, detectBlackhole, resolveMode, agentDirFromEnv } from "../src/mode.ts";
+import { blackholeConfigPath, detectBlackhole, resolveMode, agentDirFromEnv, expandAgentDir, loadHostAgentDir } from "../src/mode.ts";
 import type { Config } from "../src/types.ts";
 
 const base: Config = {
@@ -57,5 +57,45 @@ test("resolveMode auto follows detection", () => {
 
 test("agentDirFromEnv honors override and defaults to home", () => {
   assert.equal(agentDirFromEnv({ PI_CODING_AGENT_DIR: "/custom/agent" }), "/custom/agent");
-  assert.equal(agentDirFromEnv({}).startsWith(process.env.HOME ?? process.env.USERPROFILE ?? ""), true);
+  assert.equal(agentDirFromEnv({}), join(homedir(), ".pi", "agent"));
+});
+
+test("agentDirFromEnv expands a leading ~ like the host's getAgentDir (#60)", () => {
+  // The host runs PI_CODING_AGENT_DIR through expandTildePath (dist/config.js:450-456).
+  // Before this fix the extension kept the literal "~", so pi and the extension
+  // read and wrote two different trees.
+  assert.equal(agentDirFromEnv({ PI_CODING_AGENT_DIR: "~/.pi/agent-test" }), join(homedir(), ".pi", "agent-test"));
+  assert.equal(agentDirFromEnv({ PI_CODING_AGENT_DIR: "~" }), homedir());
+  // The value pi actually resolves to, asserted against the same expansion —
+  // pin the two together so they cannot drift again.
+  assert.equal(agentDirFromEnv({ PI_CODING_AGENT_DIR: "~/.pi/agent-test" }), expandAgentDir("~/.pi/agent-test"));
+});
+
+test("agentDirFromEnv leaves a plain absolute path verbatim (#60)", () => {
+  for (const p of ["/abs/agent", "/abs/with spaces/agent", "/abs/~tilde-ish/agent", "relative/dir"]) {
+    assert.equal(agentDirFromEnv({ PI_CODING_AGENT_DIR: p }), p, `path ${p} must pass through unchanged`);
+  }
+});
+
+test("tilde expansion never touches the filesystem (#60)", () => {
+  // The bug this fixes was an extension mkdirSync creating a literal "~"
+  // directory in the cwd. Expansion is pure string work, so asking for a path
+  // that does not exist must not create it — nor anything beside it.
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-mode-tilde-"));
+  const cwdBefore = readdirSync(process.cwd()).length;
+  try {
+    const resolved = agentDirFromEnv({ PI_CODING_AGENT_DIR: join("~", "pi-qm-should-never-exist") });
+    assert.equal(resolved, join(homedir(), "pi-qm-should-never-exist"));
+    assert.equal(existsSync(join(process.cwd(), "~")), false, "no literal ~ directory may be created in cwd");
+    assert.equal(readdirSync(process.cwd()).length, cwdBefore, "the working directory must be untouched");
+    assert.equal(existsSync(join(homedir(), "pi-qm-should-never-exist")), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("loadHostAgentDir resolves to undefined without the host package, and never throws", async () => {
+  // Under plain node the optional peer dependency does not resolve, so the
+  // factory must fall back to agentDirFromEnv rather than fail to load.
+  assert.equal(await loadHostAgentDir(), undefined);
+  // Cached: a second call must not re-attempt the import.
+  assert.equal(await loadHostAgentDir(), undefined);
 });

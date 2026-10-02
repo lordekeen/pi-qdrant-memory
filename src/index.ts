@@ -1,8 +1,9 @@
 import { makeRuntime, writeGlobalConfigAndReload } from "./deps.ts";
 import type { MakeRuntimeIO } from "./deps.ts";
-import { readGlobalConfig, writeConfigFile } from "./config.ts";
-import { agentDirFromEnv, detectBlackhole } from "./mode.ts";
+import { readGlobalConfig, takeLoadWarnings, writeConfigFile } from "./config.ts";
+import { agentDirFromEnv, detectBlackhole, loadHostAgentDir } from "./mode.ts";
 import { resolveMode } from "./mode.ts";
+import { markCommandFormatNoticeShown, readState } from "./state.ts";
 import { rememberLogic, memorySearchLogic, forgetLogic } from "./tools-core.ts";
 import { renderHits } from "./render.ts";
 import { readPendingArtifacts } from "./blackhole.ts";
@@ -28,9 +29,11 @@ import {
 import type { EnumKey, IndexKind, QdrantKey } from "./commands.ts";
 import {
   clearUsageText,
+  commandFormatNoticeEntry,
   commandUsageText,
   errorEntry,
   indexUsageText,
+  loadWarningText,
   memoryHeaderText,
   message,
   noArgumentText,
@@ -94,6 +97,15 @@ function ctxSessionId(ctx: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** `ctx.mode` is `json` or `print` in a headless session — there is no
+ *  transcript to show a prose notice in, so both the migration notice and the
+ *  corrupt-config warning stay silent there (`rpc` renders a transcript and is
+ *  NOT gated). Part D.2. */
+function isHeadlessMode(ctx: unknown): boolean {
+  const mode = (ctx as { mode?: unknown } | undefined)?.mode;
+  return mode === "json" || mode === "print";
 }
 
 function buildIO(api: WireApi, rt: RuntimeDeps, codeMemory?: CodeMemoryHealth): HandlerIO {
@@ -312,6 +324,23 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
   // completion) lives in src/commands.ts; this block is the only routing code.
   const indexRunners: Record<IndexKind, () => Promise<SyncResult>> = { code: runCodeSync };
 
+  /** One-shot arm of the migration notice (plan Part D.2). Called ONLY once a
+   *  `/qdrant` invocation was recognised by the grammar — the bare form, or a
+   *  known key whose arguments passed `checkArgShape`. An unknown key or an
+   *  argument-shape error returns before this point, because such a user has
+   *  demonstrably not migrated.
+   *
+   *  The `noticeMarked` latch makes the write at most once per process: the
+   *  command runs many times per session, and stat-ing/writing the state file on
+   *  every keystroke-driven invocation would be pure noise. After the first
+   *  success this closure does no filesystem work at all. */
+  let noticeMarked = false;
+  const markNoticeShown = (): void => {
+    if (noticeMarked) return;
+    noticeMarked = true;
+    try { markCommandFormatNoticeShown(rt.agentDir); } catch { /* best-effort: advisory state */ }
+  };
+
   /** Usage line for a key whose bounded token is missing, keyed by the `enum`
    *  keys of ARG_SHAPE (`Record<EnumKey, string>`): a future enum key is a
    *  compile error here, never a silent fall-through to another key's text
@@ -334,6 +363,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
       // Bare form: self-documenting in every mode — the status block plus the
       // command list. Anything else is an unknown key.
       if (parsed.raw === "") {
+        markNoticeShown();
         await statusHandler(io);
         await helpHandler(io);
         return;
@@ -352,6 +382,9 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
       io.emit(errorEntry(unexpectedArgumentText(problem.corrected)));
       return;
     }
+    // Past the grammar gate: the user typed a valid `/qdrant <key> [...]`, so
+    // the migration notice has served its purpose (Part D.2).
+    markNoticeShown();
     switch (key) {
       case "status":
         await statusHandler(io);
@@ -486,6 +519,27 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     // too. Local disk only — never blocks on Qdrant; applyConfig swaps cfg +
     // clients and does NOT re-register.
     rt.reloadEffectiveConfig();
+    // Corrupt-file warning (#57): the reader already fell back to the safe
+    // default, so this is the only place the user learns their settings were
+    // ignored. Drained AFTER the reload, so it covers both the factory-time read
+    // and this one; a drain that finds nothing emits nothing. Gated on the mode
+    // for the same reason as the notice below. Best-effort: a lifecycle handler
+    // must never throw.
+    try {
+      if (!isHeadlessMode(ctx)) {
+        const unreadable = takeLoadWarnings();
+        if (unreadable.length > 0) api.appendEntry(CUSTOM_TYPE, message(loadWarningText(unreadable)));
+      }
+    } catch { /* never block session_start on a warning */ }
+    // The /qdrant-* → /qdrant migration notice (plan Part D.2): emitted at the
+    // start of every session until the user successfully dispatches any /qdrant
+    // key (runQdrantCommand arms the flag, and only there). NOT headless-gated
+    // on write because this path never writes; and never throws.
+    try {
+      if (!isHeadlessMode(ctx) && readState(rt.agentDir).commandFormatNoticeShown !== true) {
+        api.appendEntry(CUSTOM_TYPE, commandFormatNoticeEntry());
+      }
+    } catch { /* never block session_start on a notice */ }
     // Footer statusline — icon-led label like ketch's "🌐 ketch: active", then
     // the stored-memory count + mode + project collection as the state
     // (DESIGN.md footer-status). Mode is re-resolved live so a /qdrant settings
@@ -563,9 +617,11 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
 // the installed @earendil-works/pi-coding-agent package types:
 //   - registerTool(toolDefinition)
 //   - registerCommand(name, { description, handler(args: string, ctx) })
-//   - on(event, handler) — handler receives (event, ctx); subscriptions are
-//     tracked by the extension runtime and released on teardown (pi has no
-//     unsubscribe return value)
+//   - on(event, handler) — handler receives (event, ctx); the returned
+//     `() => void` unsubscribes that one handler (#55 — the host DOES return an
+//     unsubscribe: `on(event: "session_start", ...): () => void` in
+//     `dist/core/extensions/types.d.ts:1146`, implemented as a real removal from
+//     the per-extension handler map in `dist/core/extensions/loader.js:213-227`)
 //   - appendEntry(customType, data) + registerEntryRenderer(customType, renderer)
 //     — slash-command output goes here: custom entries are rendered in the TUI
 //     transcript but DO NOT participate in LLM context (unlike sendMessage,
@@ -583,7 +639,7 @@ interface PiSurface {
     handler(args: string, ctx: unknown): void | Promise<void>;
     getArgumentCompletions?: (prefix: string) => Array<{ value: string; label?: string; description?: string }> | null;
   }): void;
-  on(event: string, handler: (payload: unknown, ctx: unknown) => void | Promise<void>): void;
+  on(event: string, handler: (payload: unknown, ctx: unknown) => void | Promise<void>): () => void;
   appendEntry(customType: string, data?: unknown): void;
   registerEntryRenderer(customType: string, renderer: (entry: { customType?: string; data?: unknown }, options?: unknown, theme?: unknown) => unknown): void;
 }
@@ -599,7 +655,11 @@ const CUSTOM_TYPE = "qdrant-memory";
 export default async function factory(api: unknown): Promise<void> {
   const pi = api as PiSurface;
   const env = process.env;
-  const agentDir = agentDirFromEnv(env);
+  // #60: prefer the host's own `getAgentDir()` so this extension and pi resolve
+  // PI_CODING_AGENT_DIR to the *same* tree (the host expands a leading `~`; the
+  // pure fallback below does too). Lazily imported — a plain-node run never
+  // resolves the host package, and the loader's rules forbid a top-level import.
+  const agentDir = (await loadHostAgentDir()) ?? agentDirFromEnv(env);
 
   let currentUi: {
     setStatus?: (key: string, text: string | undefined) => void;
@@ -671,13 +731,16 @@ export default async function factory(api: unknown): Promise<void> {
       });
     },
     on: (event, handler) => {
-      pi.on(event, (payload, ctx) => {
+      // #55: forward the host's REAL unsubscribe. The wrapper below only
+      // remembers the ctx.ui handle, which is per-invocation state, so
+      // unsubscribing the host subscription is exactly `pi.on`'s own return
+      // value — no bookkeeping of our own is needed.
+      return pi.on(event, (payload, ctx) => {
         // Remember the ui context so setStatus()/future notify() calls can route.
         const ui = (ctx as { ui?: unknown } | undefined)?.ui as typeof currentUi;
         if (ui) currentUi = ui;
         return handler(payload, ctx);
       });
-      return () => {}; // pi tracks and releases event-bus subscriptions on teardown
     },
     appendEntry: (_type, data) => { pi.appendEntry(CUSTOM_TYPE, data); },
     setStatus: (text) => {
@@ -699,9 +762,29 @@ export default async function factory(api: unknown): Promise<void> {
 
   const cleanup = wireApi(adapter, rt);
 
-  // pi tracks and releases event-bus subscriptions on runtime teardown and the
-  // adapter's `on` intentionally returns a no-op, so the structural `cleanup`
-  // returned by wireApi is a no-op here — it only matters for unit tests with the
-  // fake WireApi. Keep a reference so future wiring can flush in-flight work.
-  void cleanup;
+  // #55: the cleanup is no longer dropped. The host discards a factory's return
+  // value (`initializeExtension`: `await factory(load.api)` with nothing bound,
+  // `dist/core/extensions/loader.js:505-517`) and `ExtensionFactory`'s type is
+  // `(pi) => void | Promise<void>`, so there is no return-value hook to hang
+  // teardown on. `session_shutdown` IS the host's teardown event — pi emits it
+  // from `teardownCurrent`/`dispose` (`agent-session-runtime.ts`) and pi's own
+  // bundled MCP extension releases its connections there.
+  //
+  // Safety of unsubscribing from inside a handler: the runner dispatches from a
+  // snapshot (`snapshotEventHandlers` copies the handler arrays,
+  // `dist/core/extensions/runner.js:807-830`), so removing handlers mid-emit
+  // cannot skip a sibling that has not run yet — in mode1 the shutdown-time
+  // ingest is registered first and therefore still runs. Registering this AFTER
+  // `wireApi` guarantees that ordering. On a session switch pi reloads the whole
+  // extension set (`clearExtensionCache()` + re-running every factory), so these
+  // unsubscribes only ever touch the Extension object being discarded anyway.
+  //
+  // The hook unsubscribes ITSELF too: `cleanup()` only knows about the handlers
+  // wireApi registered through the adapter, not this one, which is registered
+  // directly on `pi`. Leaving it in place would keep this closure — and the whole
+  // runtime it holds — alive for the life of the Extension object.
+  const offTeardown = pi.on("session_shutdown", () => {
+    try { cleanup(); } catch { /* teardown must never throw */ }
+    try { offTeardown(); } catch { /* already removed */ }
+  });
 }
