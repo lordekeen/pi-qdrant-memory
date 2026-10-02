@@ -12,8 +12,8 @@ A **pi.dev extension** (TypeScript, no build step) giving the pi agent semantic,
 cross-session/cross-project retrieval over durable conversation knowledge. It
 embeds knowledge text into a per-project Qdrant collection and exposes it to the
 agent via two core tools (`memory_save`, `memory_search`) plus the opt-in
-`code_memory` and `memory_forget` tools, and to the human via the `/qdrant-*`
-command set.
+`code_memory` and `memory_forget` tools, and to the human via the
+`/qdrant <key>` command.
 
 ## Commands (run these before claiming anything works)
 
@@ -45,9 +45,12 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
    `pi.appendEntry` + a registered entry renderer — visible in the TUI, excluded
    from the LLM context. `sendMessage`'s `display` flag only gates rendering; the
    content still reaches the model. (This was a real bug; see git history.)
-4. **Unique single-token commands.** Every command is `/qdrant-<verb>` with no
-   subcommand parsing — pi resolves the first token as the command name. Do not
-   introduce `"/qdrant status"`-style multi-token names.
+4. **One `/qdrant` command, keys as arguments.** Exactly one command is
+   registered; its first token is a subcommand key from `QdrantKey`
+   (`src/commands.ts`). pi splits the line on the first space, so `/qdrant
+   status` arrives as the command `qdrant` with args `status`. Never register a
+   second `qdrant-…` command name — the grammar is the table, not the command
+   list.
 5. **Idempotent writes.** Point ids are deterministic content hashes
    (`src/ids.ts`). Re-ingesting the same artifact is a no-op. Keep it that way.
 6. **Graceful degradation.** Unreachable Qdrant or embeddings must produce a
@@ -59,10 +62,11 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 
 | File | Role |
 | --- | --- |
-| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, `/qdrant-*` commands, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). |
-| `src/handlers.ts` | Slash-command handlers (status/settings/remember/search/forget/clear/index-code/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. |
+| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, the single `/qdrant` command, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). |
+| `src/commands.ts` | The `/qdrant <key>` grammar, pure: `QdrantKey`, `ArgShape`/`ARG_SHAPE`, the `INDEX_KINDS` registry, `parseQdrantArgs`, `checkArgShape`, `splitKeyedArg`, `getQdrantCompletions`. No pi imports, no runtime. |
+| `src/handlers.ts` | Handlers for the `/qdrant <key>` cases (status/settings/remember/search/forget/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. |
 | `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested. |
-| `src/config.ts` | `DEFAULTS`, `readGlobalConfig` (the global layer: defaults → file → env; `loadConfig` is its historical alias), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form). Knows nothing about projects. |
+| `src/config.ts` | `DEFAULTS`, `readGlobalConfig` (the global layer: defaults → file → env; `loadConfig` is its historical alias), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form), `SETTING_FIELDS` (the one editable-key list, read by the form and the `/qdrant settings` grammar). Knows nothing about projects. |
 | `src/project-settings.ts` | Per-project override store (allowlisted keys only): `PROJECT_OVERRIDABLE_FIELDS`, `loadProjectSettings` / `saveProjectSettings` / `clearProjectField`, and `readEffectiveConfig` (env → project → global → `DEFAULTS`). Lives here, not `config.ts`, to keep imports one-directional (`config.ts` ← `project-settings.ts`, no ESM cycle). |
 | `src/mode.ts` | Runtime mode resolution: `detectBlackhole`, `resolveMode` (mode1 = blackhole present; mode2 = own capture), `agentDirFromEnv`. |
 | `src/project.ts` | `projectIdFrom` — hashes the nearest git root realpath → `pi-mem-<16hex>`. |
@@ -93,18 +97,18 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
   `cfg.codeKnowledge`, `memory_forget` gated on `cfg.memoryForget`) register
   conditionally and are session-fixed exactly like lifecycle hooks — a mid-session
   settings flip takes effect on reload, and the settings output says so.
-- **Adding a command**: add a single-token def to the `commands` array in
-  `wireApi` (name `qdrant-<verb>`, `execute(args: string)`), implement the
-  handler in `handlers.ts`, emit one structured entry through `io.emit(...)`
-  (builders + role rules live in `src/out.ts`; DESIGN.md owns the strings), add
-  it to `helpHandler`, register a test in `test/handlers.test.ts` and assert
-  registration in `test/index.test.ts` and `test/factory.test.ts`.
+- **Adding a command**: add a key to `QdrantKey` + `ARG_SHAPE` and a case in
+  `runQdrantCommand` (`src/index.ts`) — never a new registered command name —
+  implement the handler in `handlers.ts`, emit one structured entry through
+  `io.emit(...)` (builders + role rules live in `src/out.ts`; DESIGN.md owns the
+  strings), add a `COMMAND_ROWS` row, and cover it in `test/commands.test.ts`,
+  `test/handlers.test.ts` and `test/index.test.ts`. Completion and usage text
+  derive from the table, so they update for free.
 - **Changing config**: update `Config` in `types.ts`, `DEFAULTS`+`readGlobalConfig`
-  precedence in `config.ts`, and `SETTING_FIELDS` in `handlers.ts` so the form
-  covers it. Validation goes in `setConfigField` — CLI and form share it. Adding
+  precedence and `SETTING_FIELDS` in `config.ts` so the form covers it. Validation goes in `setConfigField` — CLI and form share it. Adding
   an **overridable** field is a `PROJECT_OVERRIDABLE_FIELDS` entry in
   `project-settings.ts` plus the `Config`/`DEFAULTS`/`SETTING_FIELDS` updates, and
-  `/qdrant-settings` routes it to the project layer (add project-store +
+  `/qdrant settings` routes it to the project layer (add project-store +
   precedence tests). A **non-allowlisted** field routes to the global file and its
   write path keeps using `readGlobalConfig` (D10: persist with the reader of the
   file you write, then re-apply `readEffectiveConfig`).

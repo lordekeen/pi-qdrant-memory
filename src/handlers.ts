@@ -1,5 +1,7 @@
 import { resolveMode, detectBlackhole } from "./mode.ts";
-import { configPath, setConfigField } from "./config.ts";
+import type { QdrantKey } from "./commands.ts";
+import { SETTING_FIELDS, configPath, setConfigField } from "./config.ts";
+import type { SettingField } from "./config.ts";
 import {
   PROJECT_OVERRIDABLE_FIELDS,
   clearProjectField,
@@ -11,6 +13,11 @@ import {
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
 import {
   EMPTY_SEARCH_TEXT,
+  clearAlreadyEmptyText,
+  clearAllConfirmMessage,
+  clearAllConfirmTitle,
+  clearCancelledText,
+  clearRequiresUiText,
   clearUsageText,
   codeMemoryReloadNotice,
   displayValue,
@@ -263,23 +270,9 @@ export interface SettingsUI {
   confirm(title: string, message: string): Promise<boolean>;
 }
 
-/** Editable fields in a stable order, all config keys minus nothing. */
-const SETTING_FIELDS = [
-  "mode",
-  "codeKnowledge",
-  "memoryForget",
-  "embeddingBaseURL",
-  "embeddingModel",
-  "expectedDimension",
-  "scoreThreshold",
-  "codeScoreThreshold",
-  "maxResults",
-  "qdrantUrl",
-  "qdrantApiKey",
-  "embeddingApiKey",
-] as const;
-
-type SettingField = (typeof SETTING_FIELDS)[number];
+/** Editable fields in a stable order — defined once in `config.ts` so the
+ *  settings form, the CLI validator and the `/qdrant settings` grammar all read
+ *  the same list. */
 
 /**
  * Dynamic access by a `SettingField` key — the `SETTING_FIELDS` names are
@@ -410,7 +403,7 @@ export async function searchHandler(io: HandlerIO, query: string, type?: MemoryT
   if (res.ok) {
     io.emit(res.value.length === 0 ? message(EMPTY_SEARCH_TEXT) : searchEntry(res.value.map(searchHitView)));
   } else {
-    // Command voice: /qdrant-search failures read "error: search failed:
+    // Command voice: /qdrant search failures read "error: search failed:
     // <reason>" (plan §1.2). `res.error` is now a bare reason (tools-core no
     // longer prefixes a tool name), so no prefix-stripping is needed here — the
     // LLM tool's "memory_search failed:" lead lives only on the memory_search
@@ -420,16 +413,60 @@ export async function searchHandler(io: HandlerIO, query: string, type?: MemoryT
   return { exit: false };
 }
 
-export async function clearHandler(io: HandlerIO, target?: string): Promise<HandlerResult> {
+/**
+ * Drop the in-memory caches a clear invalidates (#44): the memoized
+ * collection-existence set and the code-memory inventory counts that
+ * `/qdrant status` reports. Called on **every** successful clear path — the
+ * empty collection included, where the stored side is already empty but the
+ * counters may be stale (#61).
+ */
+function resetCodeMemoryCaches(io: HandlerIO): void {
+  io.collectionReady?.delete(io.projectId);
+  if (io.codeMemory) {
+    io.codeMemory.files = 0;
+    io.codeMemory.symbols = 0;
+  }
+}
+
+export async function clearHandler(io: HandlerIO, target?: string, ui?: SettingsUI): Promise<HandlerResult> {
   const normalized = target?.trim().toLowerCase();
   if (normalized === "all") {
+    // Headless refusal (plan Part C): a destructive wipe is never attempted
+    // when there is no dialog to ask — mirrors the forget refusal.
+    if (!ui) {
+      io.emit(errorEntry(clearRequiresUiText()));
+      return { exit: false };
+    }
+    // Count first so an empty (or absent) collection never opens a dialog.
+    // A 404 count means the collection does not exist — that is empty, not an
+    // error. Any other failure deletes nothing.
+    let count: number;
+    try {
+      count = await io.qdrant.count(io.projectId);
+    } catch (err) {
+      if (err instanceof QdrantError && err.status === 404) {
+        count = 0;
+      } else {
+        io.emit(errorEntry(`error: clear failed: ${String(err)}`));
+        return { exit: false };
+      }
+    }
+    if (count === 0) {
+      // Nothing is stored, but the in-memory inventory can still be stale (the
+      // collection may have been emptied elsewhere) — reset it here too, so
+      // /qdrant status never keeps reporting deleted files/symbols (#61).
+      resetCodeMemoryCaches(io);
+      io.emit(message(clearAlreadyEmptyText(io.projectId)));
+      return { exit: false };
+    }
+    const ok = await ui.confirm(clearAllConfirmTitle(io.projectId, count), clearAllConfirmMessage());
+    if (!ok) {
+      io.emit(message(clearCancelledText()));
+      return { exit: false };
+    }
     try {
       await io.qdrant.clearCollection(io.projectId);
-      io.collectionReady?.delete(io.projectId);
-      if (io.codeMemory) {
-        io.codeMemory.files = 0;
-        io.codeMemory.symbols = 0;
-      }
+      resetCodeMemoryCaches(io);
       io.emit(message(`cleared: collection ${io.projectId} reset`));
     } catch (err) {
       io.emit(errorEntry(`error: clear failed: ${String(err)}`));
@@ -448,10 +485,7 @@ export async function clearHandler(io: HandlerIO, target?: string): Promise<Hand
         return { exit: false };
       }
       await io.qdrant.deletePointsBySourceKind(io.projectId, "code_summary");
-      if (io.codeMemory) {
-        io.codeMemory.files = 0;
-        io.codeMemory.symbols = 0;
-      }
+      resetCodeMemoryCaches(io);
       io.emit(message(`cleared: ${count} code memory point${count === 1 ? "" : "s"} removed`));
     } catch (err) {
       io.emit(errorEntry(`error: clear failed: ${String(err)}`));
@@ -467,7 +501,7 @@ export const FORGET_MAX_HITS = 5;
 export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsUI): Promise<HandlerResult> {
   const trimmed = query.trim();
   if (!trimmed) {
-    io.emit(message("usage: /qdrant-forget <search query>"));
+    io.emit(message("usage: /qdrant forget <search query>"));
     return { exit: false };
   }
   // Probe one hit beyond the cap: a hit at index FORGET_MAX_HITS proves more
@@ -483,7 +517,7 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
     return { exit: false };
   }
   if (!ui) {
-    io.emit(errorEntry("error: /qdrant-forget requires interactive UI confirmation"));
+    io.emit(errorEntry("error: /qdrant forget requires interactive UI confirmation"));
     return { exit: false };
   }
   const capped = res.value.length > FORGET_MAX_HITS;
@@ -510,21 +544,22 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
 }
 
 export interface CommandRow {
-  name: string;
+  /** The `/qdrant` subcommand key this row documents — one per `ARG_SHAPE` key. */
+  name: QdrantKey;
   cmd: string;
   desc: string;
   gated?: "codeKnowledge";
 }
 
 export const COMMAND_ROWS: readonly CommandRow[] = [
-  { name: "qdrant-status", cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
-  { name: "qdrant-settings", cmd: "/qdrant-settings <key> <value>", desc: "persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global" },
-  { name: "qdrant-remember", cmd: "/qdrant-remember <text>", desc: "save durable knowledge now" },
-  { name: "qdrant-search", cmd: "/qdrant-search <query>", desc: "semantic search of durable knowledge" },
-  { name: "qdrant-forget", cmd: "/qdrant-forget <query>", desc: "search and remove memories interactively" },
-  { name: "qdrant-clear", cmd: "/qdrant-clear all | code", desc: "reset entire collection (all) or purge code summaries (code)" },
-  { name: "qdrant-index-code", cmd: "/qdrant-index-code", desc: "re-index code summaries now", gated: "codeKnowledge" },
-  { name: "qdrant-help", cmd: "/qdrant-help", desc: "this list" },
+  { name: "status", cmd: "/qdrant status", desc: "connection health + active mode + collection status" },
+  { name: "settings", cmd: "/qdrant settings [key] [value]", desc: "open the settings screen, or persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global" },
+  { name: "remember", cmd: "/qdrant remember <text>", desc: "save durable knowledge now" },
+  { name: "search", cmd: "/qdrant search <query>", desc: "semantic search of durable knowledge" },
+  { name: "forget", cmd: "/qdrant forget <query>", desc: "search and remove memories interactively" },
+  { name: "clear", cmd: "/qdrant clear all | code", desc: "reset entire collection (all) or purge code summaries (code)" },
+  { name: "index", cmd: "/qdrant index code", desc: "re-index code summaries now", gated: "codeKnowledge" },
+  { name: "help", cmd: "/qdrant help", desc: "this list" },
 ];
 
 export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {

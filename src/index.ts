@@ -14,7 +14,31 @@ import type { SyncResult } from "./code-sync.ts";
 import { statusHandler, settingsHandler, rememberHandler, searchHandler, forgetHandler, clearHandler, helpHandler, depsToIO } from "./handlers.ts";
 import type { HandlerIO, SettingsUI } from "./handlers.ts";
 import { runSettingsForm } from "./handlers.ts";
-import { errorEntry, memoryHeaderText, message, codeMemorySyncMessage } from "./out.ts";
+import {
+  INDEX_KINDS,
+  USAGE_KEYS,
+  canonicalEnumArg,
+  canonicalIndexKind,
+  checkArgShape,
+  getQdrantCompletions,
+  isEnumKey,
+  parseQdrantArgs,
+  splitKeyedArg,
+} from "./commands.ts";
+import type { EnumKey, IndexKind, QdrantKey } from "./commands.ts";
+import {
+  clearUsageText,
+  commandUsageText,
+  errorEntry,
+  indexUsageText,
+  memoryHeaderText,
+  message,
+  noArgumentText,
+  unexpectedArgumentText,
+  unknownKeyText,
+  unknownValueText,
+  codeMemorySyncMessage,
+} from "./out.ts";
 import type { CodeMemoryHealth } from "./out.ts";
 import { QdrantError } from "./qdrant.ts";
 import { loadRendererModules, renderEntryComponent } from "./entry-render.ts";
@@ -43,7 +67,7 @@ const OK = (text: string): ToolTextResult => ({ content: [{ type: "text", text }
 const ERR = (text: string): ToolTextResult => ({ content: [{ type: "text", text }], details: undefined });
 
 interface CommandDef {
-  /** Single-token command name as typed after the slash, e.g. "qdrant-status". */
+  /** pi command name as typed after the slash, e.g. "qdrant". */
   name: string;
   description: string;
   /** Receives the raw argument string — everything after the command token. */
@@ -84,21 +108,21 @@ function buildIO(api: WireApi, rt: RuntimeDeps, codeMemory?: CodeMemoryHealth): 
   });
 }
 
-/** Testable wiring: registers the two tools, the /qdrant command family, and the
+/** Testable wiring: registers the two tools, the single /qdrant command, and the
  * lifecycle handlers for the resolved mode. Returns a cleanup that unsubscribes
  * every registered handler. */
 export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
   // Registration-time mode: decides which lifecycle hooks are wired (mode1 →
   // session_shutdown ingest; mode2 → compaction capture). A mode change via
-  // /qdrant-settings applies to the hooks at the next session; the footer and
+  // /qdrant settings applies to the hooks at the next session; the footer and
   // every command re-resolve the mode live (see currentMode).
   const registrationMode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
   // Same session-fixation rule for code memory: the code_memory tool is
   // registered here iff enabled; a mid-session flip is covered by the settings
-  // reload notice (spec §12). The /qdrant-index-code command is registered
-  // unconditionally with a live-config guard — that is what makes §12's
-  // "index right away" promise keepable right after an off→on flip (the TOOL
-  // still waits for the reload, satisfying G5).
+  // reload notice (spec §12). The single /qdrant command is registered
+  // unconditionally and its `index` key carries a live-config guard — that is
+  // what makes §12's "index right away" promise keepable right after an off→on
+  // flip (the TOOL still waits for the reload, satisfying G5).
   const codeMemoryOn = rt.cfg.codeKnowledge === "on";
   const codeMemoryState: { state: "off" | "syncing" | "synced" | "error"; files?: number; symbols?: number } = {
     state: codeMemoryOn ? "syncing" : "off",
@@ -281,20 +305,74 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     });
   }
 
-  // ── /qdrant command family ─────────────────────────────────────────────────
-  // One pi command per unique single-token name: pi resolves "/qdrant-status" as
-  // the command "qdrant-status" with everything after the first space as its raw
-  // args. No subcommand parsing, and every command is individually discoverable
-  // and autocompletable in the TUI.
-  const commands: CommandDef[] = [
-    { name: "qdrant-status", description: "Connection health, active mode, collection status", execute: async () => { await statusHandler(io); } },
-    {
-      name: "qdrant-settings",
-      description: "Settings form, or persist a config field: /qdrant-settings <key> <value>",
-      execute: async (args) => {
-        const trimmed = args.trim();
-        const field = trimmed.split(/\s+/)[0] ?? "";
-        if (!field) {
+  // ── /qdrant command ────────────────────────────────────────────────────────
+  // ONE pi command with a subcommand key: the host splits the line on the first
+  // space (agent-session.ts), so "/qdrant search foo" arrives here as the command
+  // "qdrant" with args "search foo". The grammar (ARG_SHAPE, the kind registry,
+  // completion) lives in src/commands.ts; this block is the only routing code.
+  const indexRunners: Record<IndexKind, () => Promise<SyncResult>> = { code: runCodeSync };
+
+  /** Usage line for a key whose bounded token is missing, keyed by the `enum`
+   *  keys of ARG_SHAPE (`Record<EnumKey, string>`): a future enum key is a
+   *  compile error here, never a silent fall-through to another key's text
+   *  (#62). The strings come from out.ts; the index line is generated from
+   *  INDEX_KINDS so it cannot drift. */
+  const ENUM_USAGE: Record<EnumKey, string> = {
+    clear: clearUsageText(),
+    index: indexUsageText(INDEX_KINDS),
+  };
+
+  /** Only `enum` keys can report `missing-value`, so the guard always holds; it
+   *  exists to narrow the key without a cast. The non-enum branch prints the
+   *  generic usage line — unreachable, but never another key's text. */
+  const enumUsageText = (key: QdrantKey): string =>
+    isEnumKey(key) ? ENUM_USAGE[key] : commandUsageText(USAGE_KEYS);
+
+  const runQdrantCommand = async (args: string): Promise<void> => {
+    const parsed = parseQdrantArgs(args);
+    if (parsed.key === undefined) {
+      // Bare form: self-documenting in every mode — the status block plus the
+      // command list. Anything else is an unknown key.
+      if (parsed.raw === "") {
+        await statusHandler(io);
+        await helpHandler(io);
+        return;
+      }
+      io.emit(errorEntry(unknownKeyText(parsed.raw, USAGE_KEYS)));
+      return;
+    }
+    const key = parsed.key;
+    const problem = checkArgShape(key, parsed.rest);
+    if (problem) {
+      // Nothing is guessed: a missing bounded token prints that key's own usage
+      // line; anything else is one error entry naming the correction.
+      if (problem.kind === "missing-value") { io.emit(message(enumUsageText(key))); return; }
+      if (problem.kind === "no-argument") { io.emit(errorEntry(noArgumentText(key))); return; }
+      if (problem.kind === "unknown-value") { io.emit(errorEntry(unknownValueText(key, problem.value, problem.values, USAGE_KEYS))); return; }
+      io.emit(errorEntry(unexpectedArgumentText(problem.corrected)));
+      return;
+    }
+    switch (key) {
+      case "status":
+        await statusHandler(io);
+        return;
+      case "help":
+        await helpHandler(io);
+        return;
+      case "search":
+        // free text, verbatim — never re-tokenised
+        await searchHandler(io, parsed.rest);
+        return;
+      case "remember":
+        await rememberHandler(io, parsed.rest);
+        void refreshStatus();
+        return;
+      case "forget":
+        await forgetHandler(io, parsed.rest, api.requestUI?.());
+        void refreshStatus();
+        return;
+      case "settings": {
+        if (parsed.rest === "") {
           const ui = api.requestUI?.();
           if (ui) { await runSettingsForm(ui, io); return; }
           // No dialog-capable ui (print/headless harnesses): print usage. NOT an
@@ -304,44 +382,37 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
           await settingsHandler(io);
           return;
         }
-        const value = trimmed.slice(trimmed.indexOf(field) + field.length).trim();
-        await settingsHandler(io, field, value === "" ? undefined : value);
-      },
-    },
-    { name: "qdrant-remember", description: "Save durable knowledge now: /qdrant-remember <text>", execute: async (args) => { await rememberHandler(io, args.trim()); void refreshStatus(); } },
-    { name: "qdrant-search", description: "Semantic search: /qdrant-search <query>", execute: async (args) => { await searchHandler(io, args.trim()); } },
-    {
-      name: "qdrant-forget",
-      description: "Search and remove memories interactively: /qdrant-forget <query>",
-      execute: async (args) => {
-        const ui = api.requestUI?.();
-        await forgetHandler(io, args.trim(), ui);
+        // Only the key token is bounded; the value is the verbatim remainder.
+        const { field, value } = splitKeyedArg(parsed.rest);
+        await settingsHandler(io, field, value);
+        return;
+      }
+      case "clear": {
+        // The target in the registry's own spelling (`clear ALL` → `all`);
+        // checkArgShape already accepted it, so `?? ""` is unreachable and lands
+        // on the usage line rather than dispatching an unvalidated token.
+        const target = canonicalEnumArg("clear", parsed.rest) ?? "";
+        // requestUI() is undefined when no dialog-capable UI is present — the
+        // handler then refuses to clear `all` rather than deleting blindly.
+        await clearHandler(io, target, api.requestUI?.());
         void refreshStatus();
-      },
-    },
-    {
-      name: "qdrant-clear",
-      description: "Reset entire collection or purge code points: /qdrant-clear all | code",
-      execute: async (args) => { await clearHandler(io, args.trim()); void refreshStatus(); },
-      getArgumentCompletions: (prefix) => {
-        const options = ["all", "code"];
-        const filtered = options.filter((o) => o.startsWith(prefix.trim().toLowerCase()));
-        return filtered.length > 0 ? filtered.map((o) => ({ value: o, label: o })) : null;
-      },
-    },
-    { name: "qdrant-help", description: "List /qdrant commands", execute: async () => { await helpHandler(io); } },
-    {
-      name: "qdrant-index-code",
-      description: "Re-index code summaries now",
-      execute: async () => {
-        // Live-config guard: after a mid-session flip-off this answers honestly
-        // instead of silently indexing; the code_memory TOOL still requires the
-        // session reload (spec §10.1/§12).
-        if (rt.cfg.codeKnowledge !== "on") {
-          io.emit(message("code memory is disabled (codeKnowledge: off)"));
+        return;
+      }
+      case "index": {
+        // The kind in the registry's own spelling (`index CODE` → `code`), so
+        // INDEX_KINDS[kind] is always a real entry — no cast, no guess. The
+        // undefined branch is unreachable and prints the key's own usage line.
+        const kind = canonicalIndexKind(parsed.rest);
+        if (kind === undefined) { io.emit(message(enumUsageText("index"))); return; }
+        // Live-config guard (spec §10.1/§12): after a mid-session flip-off this
+        // answers honestly instead of silently indexing; the code_memory TOOL
+        // still requires the session reload. Declared per kind via INDEX_KINDS.
+        const gate = INDEX_KINDS[kind].gate;
+        if (rt.cfg[gate] !== "on") {
+          io.emit(message(`code memory is disabled (${gate}: off)`));
           return;
         }
-        const r = await runCodeSync();
+        const r = await indexRunners[kind]();
         if (!r.ok) {
           io.emit(errorEntry(`code memory: sync failed — ${r.error ?? "unknown error"}`));
           return;
@@ -351,7 +422,23 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
           symbols: r.symbols,
           deleted: r.deleted,
         })));
-      },
+        return;
+      }
+    }
+    // Compile-time exhaustiveness (#62): every key returns above, so control
+    // only reaches this line if a key was added to ARG_SHAPE without an arm —
+    // then `key` is no longer `never` and the build fails instead of the
+    // command answering "unknown key" for a *valid* key.
+    const unhandled: never = key;
+    throw new Error(`pi-qdrant-memory: unhandled /qdrant key ${unhandled}`);
+  };
+
+  const commands: CommandDef[] = [
+    {
+      name: "qdrant",
+      description: "Show status, search memories, and manage settings for this project",
+      execute: runQdrantCommand,
+      getArgumentCompletions: getQdrantCompletions,
     },
   ];
   for (const c of commands) {
@@ -401,7 +488,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     rt.reloadEffectiveConfig();
     // Footer statusline — icon-led label like ketch's "🌐 ketch: active", then
     // the stored-memory count + mode + project collection as the state
-    // (DESIGN.md footer-status). Mode is re-resolved live so a /qdrant-settings
+    // (DESIGN.md footer-status). Mode is re-resolved live so a /qdrant settings
     // mode change is reflected without a restart.
     const mode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
     api.setStatus(memoryHeaderText({ mode, collection: rt.projectId }));
@@ -409,7 +496,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     void refreshStatus(); // repaint with the count once known, best-effort
     // LIVE effective gate (D7 item 4): a session re-anchored into a project
     // whose override is off must skip the sync even when the factory-time value
-    // was on. Same shape as /qdrant-index-code's live-config guard. Tool
+    // was on. Same shape as /qdrant index code's live-config guard. Tool
     // registration stays fixed to `codeMemoryOn` (session-fixed by design).
     if (rt.cfg.codeKnowledge === "on") {
       // Fire-and-forget code sync (spec §10): never blocks session start.
@@ -556,10 +643,10 @@ export default async function factory(api: unknown): Promise<void> {
   const adapter: WireApi = {
     registerTool: (def) => pi.registerTool(def),
     registerCommand: (def) => {
-      // One real pi command per def. pi resolves "/qdrant-status" as the command
-      // "qdrant-status" and passes everything after the first space as the raw
-      // `args` string, so each def runs directly on its own argument text — no
-      // family coalescing or subcommand dispatch in the adapter.
+      // One real pi command per def. pi splits the line on the first space, so
+      // "/qdrant search foo" resolves the command "qdrant" with
+      // args = "search foo" and the def runs on its own argument text — the
+      // subcommand dispatch itself lives in wireApi.
       const d = def as {
         name?: string;
         description?: string;

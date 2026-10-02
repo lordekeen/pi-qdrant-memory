@@ -51,12 +51,17 @@ test("factory registers tools, /qdrant commands, and lifecycle hooks", async () 
     // never in the LLM context).
     assert.ok(entryRenderers.has("qdrant-memory"), "expected an entry renderer for qdrant-memory");
 
-    // One real pi command per unique single-token name (pi resolves
-    // "/qdrant-status" as the command "qdrant-status" — no subcommand parsing).
+    // ONE command with a subcommand key — pi splits the line on the first space,
+    // so "/qdrant help" is this command with args "help". The hard cut is pinned
+    // here: if an old alias ever creeps back, this assertion fails.
     const cmdNames = [...commands.keys()].sort();
-    // qdrant-index-code is registered unconditionally (live-config guard inside;
-    // spec §12's "index right away" promise) — it answers "disabled" when off.
-    assert.deepEqual(cmdNames, ["qdrant-clear", "qdrant-forget", "qdrant-help", "qdrant-index-code", "qdrant-remember", "qdrant-search", "qdrant-settings", "qdrant-status"]);
+    assert.deepEqual(cmdNames, ["qdrant"]);
+
+    // Two-level completion arrives through the same registration.
+    const qdrant = commands.get("qdrant")!;
+    assert.deepEqual(qdrant.getArgumentCompletions?.("")?.map((c) => c.value), [
+      "status", "settings", "remember", "search", "forget", "clear", "index", "help",
+    ]);
 
     // No pi-blackhole config in the temp agent dir → mode2 → lifecycle hooks.
     const registered = events.map((e) => e.event);
@@ -70,7 +75,7 @@ test("factory registers tools, /qdrant commands, and lifecycle hooks", async () 
   }
 });
 
-test("factory: qdrant-help prints the command list; bad settings key is rejected", async () => {
+test("factory: qdrant help prints the command list; a bad settings key is rejected", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-qm-factory-"));
   mkdirSync(join(dir, "pi-qdrant-memory"), { recursive: true });
   const prev = process.env.PI_CODING_AGENT_DIR;
@@ -79,13 +84,20 @@ test("factory: qdrant-help prints the command list; bad settings key is rejected
   try {
     await factory(pi);
 
-    // "/qdrant-help" → helpHandler output routed through appendEntry (no network).
-    await commands.get("qdrant-help")!.handler("", {});
-    assert.ok(messages.join("\n").includes("/qdrant-status"), "help output missing command list");
+    // "/qdrant help" → helpHandler output routed through appendEntry (no network).
+    await commands.get("qdrant")!.handler("help", {});
+    assert.ok(messages.join("\n").includes("/qdrant status"), "help output missing command list");
 
-    // "/qdrant-settings badkey 1" → unknown-key message, no crash.
-    await commands.get("qdrant-settings")!.handler("definitely-not-a-key 1", {});
+    // "/qdrant settings definitely-not-a-key 1" → unknown-key message, no crash.
+    await commands.get("qdrant")!.handler("settings definitely-not-a-key 1", {});
     assert.ok(messages.join("\n").includes("unknown key"), "expected an unknown-key message");
+
+    // An unknown subcommand answers with one error entry, and never throws.
+    const before = messages.length;
+    await commands.get("qdrant")!.handler("bogus thing", {});
+    assert.equal(messages.length - before, 1);
+    assert.match(messages.at(-1)!, /unknown key "bogus thing"/);
+    assert.match(messages.at(-1)!, /usage: \/qdrant <key>/);
   } finally {
     if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
     rmSync(dir, { recursive: true, force: true });
@@ -100,11 +112,11 @@ test("factory: a settings write persists and triggers a runtime config reload", 
   const { pi, commands, messages } = fakePi();
   try {
     await factory(pi);
-    const settings = commands.get("qdrant-settings")!;
+    const qdrant = commands.get("qdrant")!;
 
     // Write a valid numeric setting — persists to the canonical file and reloads
     // the runtime (applyConfig) without any network I/O.
-    await settings.handler("scoreThreshold 0.99", {});
+    await qdrant.handler("settings scoreThreshold 0.99", {});
     assert.ok(messages.join("\n").includes("scoreThreshold updated"));
     const { readFileSync } = await import("node:fs");
     const { configPath } = await import("../src/config.ts");
@@ -112,7 +124,7 @@ test("factory: a settings write persists and triggers a runtime config reload", 
     assert.equal(onDisk.scoreThreshold, 0.99);
 
     // Invalid write is rejected and leaves the file unchanged (no clobber).
-    await settings.handler("maxResults not-a-number", {});
+    await qdrant.handler("settings maxResults not-a-number", {});
     const onDisk2 = JSON.parse(readFileSync(configPath(dir), "utf8")) as { scoreThreshold?: unknown; maxResults?: unknown };
     assert.equal(onDisk2.scoreThreshold, 0.99);
     assert.equal(onDisk2.maxResults, 10); // unchanged default
@@ -122,7 +134,7 @@ test("factory: a settings write persists and triggers a runtime config reload", 
   }
 });
 
-test("factory: qdrant-clear provides argument completions and shows usage without args", async () => {
+test("factory: /qdrant clear completes its modifiers and shows usage without one", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-qm-factory-"));
   mkdirSync(join(dir, "pi-qdrant-memory"), { recursive: true });
   const prev = process.env.PI_CODING_AGENT_DIR;
@@ -130,22 +142,18 @@ test("factory: qdrant-clear provides argument completions and shows usage withou
   const { pi, commands, messages } = fakePi();
   try {
     await factory(pi);
-    const clearCmd = commands.get("qdrant-clear")!;
-    assert.ok(clearCmd, "qdrant-clear should be registered");
+    const qdrant = commands.get("qdrant")!;
+    assert.ok(qdrant, "qdrant should be registered");
 
-    // Argument completions:
-    const allOptions = clearCmd.getArgumentCompletions?.("");
-    assert.deepEqual(allOptions, [{ value: "all", label: "all" }, { value: "code", label: "code" }]);
+    // Second-level argument completions, off the single command:
+    assert.deepEqual(qdrant.getArgumentCompletions?.("clear "), [{ value: "all", label: "all" }, { value: "code", label: "code" }]);
+    assert.deepEqual(qdrant.getArgumentCompletions?.("clear c"), [{ value: "code", label: "code" }]);
+    assert.deepEqual(qdrant.getArgumentCompletions?.("clear xyz"), []); // no match suppresses the menu
+    assert.equal(qdrant.getArgumentCompletions?.("search anything"), null); // free text: not ours
 
-    const cPrefix = clearCmd.getArgumentCompletions?.("c");
-    assert.deepEqual(cPrefix, [{ value: "code", label: "code" }]);
-
-    const none = clearCmd.getArgumentCompletions?.("xyz");
-    assert.equal(none, null);
-
-    // Bare invocation without args shows usage:
-    await clearCmd.handler("", {});
-    assert.match(messages.join("\n"), /clear: usage — \/qdrant-clear all \| code/);
+    // Bare invocation without a modifier shows usage:
+    await qdrant.handler("clear", {});
+    assert.match(messages.join("\n"), /clear: usage — \/qdrant clear all \| code/);
   } finally {
     if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
     rmSync(dir, { recursive: true, force: true });

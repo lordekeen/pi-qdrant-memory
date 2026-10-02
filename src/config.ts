@@ -17,6 +17,27 @@ export const DEFAULTS: Config = {
   memoryForget: "off",
 };
 
+/** Every editable config key, in the stable order the settings surface uses.
+ *  The single definition: `setConfigField` validates against the `Config` keys,
+ *  the settings form walks this list, and the `/qdrant settings` grammar
+ *  completes exactly these names as its bounded key token. */
+export const SETTING_FIELDS = [
+  "mode",
+  "codeKnowledge",
+  "memoryForget",
+  "embeddingBaseURL",
+  "embeddingModel",
+  "expectedDimension",
+  "scoreThreshold",
+  "codeScoreThreshold",
+  "maxResults",
+  "qdrantUrl",
+  "qdrantApiKey",
+  "embeddingApiKey",
+] as const;
+
+export type SettingField = (typeof SETTING_FIELDS)[number];
+
 export function configPath(agentDir: string): string {
   return join(agentDir, "pi-qdrant-memory", "pi-qdrant-memory-config.json");
 }
@@ -49,7 +70,7 @@ export function isConfigForget(v: string | undefined): v is MemoryForgetMode {
 
 /**
  * Apply a validated `field = value` write to a config copy. Shared by the CLI
- * (`/qdrant-settings <key> <value>`) and the interactive form so both accept and
+ * (`/qdrant settings <key> <value>`) and the interactive form so both accept and
  * reject exactly the same values. `value` is always a raw string from the user.
  */
 export function setConfigField(

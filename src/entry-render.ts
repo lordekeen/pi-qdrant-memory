@@ -8,7 +8,7 @@
  *
  * The renderer is a dumb mapper: content + style roles come from `renderOut`
  * (src/out.ts, fully unit-tested); here each role becomes a host-theme slot.
- * Every entry — /qdrant-status included — renders as one multi-line styled
+ * Every entry — /qdrant status included — renders as one multi-line styled
  * `Text` (DESIGN.md: no cards, no background fills, no boxes, no self-drawn
  * shapes). Only collapsed search summaries append a muted expand hint.
  */

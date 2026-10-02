@@ -45,7 +45,7 @@ export interface StatusHealth {
 }
 export interface CodeMemoryHealth { state: "off" | "syncing" | "synced" | "error"; files?: number; symbols?: number; error?: string; }
 
-/** One allowlisted project override for the `/qdrant-status` row (D5). Values
+/** One allowlisted project override for the `/qdrant status` row (D5). Values
  * keep their stored JSON type; formatting for display is the renderer's job. */
 export interface ProjectSettingRow { key: string; value: string | number; globalValue: string | number; }
 export interface StatusEntry { kind: "status"; health: StatusHealth; }
@@ -63,7 +63,7 @@ export function errorEntry(text: string): ErrorEntry { return { kind: "error", t
 /**
  * The header line shared with the footer statusline (DESIGN.md footer-status).
  * Footer variant (with `points`): `🧠 Memory (N): <mode> (<collection>)`.
- * Entry variant (no `points`, used by /qdrant-status and /qdrant-help — the
+ * Entry variant (no `points`, used by /qdrant status and /qdrant help — the
  * status block already reports the count on its own qdrant row):
  * `🧠 Memory: <mode> (<collection>)`.
  */
@@ -73,7 +73,7 @@ export function memoryHeaderText(h: MemoryHeader): string {
     : `🧠 Memory (${h.points}): ${h.mode} (${h.collection})`;
 }
 
-/** /qdrant-status warning row when mode=own is forced while pi-blackhole is
+/** /qdrant status warning row when mode=own is forced while pi-blackhole is
  * operational: both extensions claim session_before_compact (#50). */
 export const MODE_OWN_CONFLICT_ROW = "own while pi-blackhole is installed — both extensions claim session_before_compact; if pi-blackhole cancels compaction, no mode-2 capture happens";
 
@@ -83,6 +83,42 @@ export function modeOwnConflictNotice(): string {
 }
 
 export function helpEntry(rows: HelpRow[], header: MemoryHeader): HelpEntry { return { kind: "help", header, rows }; }
+
+// ── `/qdrant <key>` parse errors ─────────────────────────────────────────────
+// Every rejection produced by the dispatcher is built here, never inline: the
+// usage line is shared, and each correction names either the accepted values or
+// the corrected command. Nothing is guessed.
+
+/** The one usage line every parse error ends with. The key list is **passed in
+ *  from the grammar** (`USAGE_KEYS`, commands.ts) rather than written here: this
+ *  module stays free of runtime imports, and the printed list can never drift
+ *  from `ARG_SHAPE` because it *is* `Object.keys(ARG_SHAPE)`. */
+export function commandUsageText(keys: readonly string[]): string {
+  return `usage: /qdrant <key> — ${keys.join(" | ")}`;
+}
+
+/** Unknown head (`/qdrant bogus`): names the token, then the usage line. */
+export function unknownKeyText(head: string, keys: readonly string[]): string {
+  return `error: unknown key "${head}"\n${commandUsageText(keys)}`;
+}
+
+/** Unrecognised second token for an `enum` key (`/qdrant index documents`):
+ *  names the accepted values — the command is never run. */
+export function unknownValueText(key: string, value: string, accepted: readonly string[], keys: readonly string[]): string {
+  return `error: unknown ${key} value "${value}" — accepted: ${accepted.join(", ")}\n${commandUsageText(keys)}`;
+}
+
+/** Extra tokens on a `none` key (`/qdrant status now`): a one-line correction,
+ *  never a silent ignore. */
+export function noArgumentText(key: string): string {
+  return `error: /qdrant ${key} takes no arguments — try /qdrant ${key}`;
+}
+
+/** Extra tokens after a valid bounded token (`/qdrant index code extra`): the
+ *  corrected command, quoted back. */
+export function unexpectedArgumentText(corrected: string): string {
+  return `error: unexpected arguments — try ${corrected}`;
+}
 export function statusEntry(health: StatusHealth): StatusEntry { return { kind: "status", health }; }
 export function searchEntry(hits: SearchHitView[]): SearchEntry { return { kind: "search", hits }; }
 
@@ -96,12 +132,12 @@ export function searchHitView(hit: SearchHit): SearchHitView {
   return { type: hit.payload.type, score: hit.score, pointer: hitPointer(hit.payload), text };
 }
 
-/** Per-hit preview width inside the /qdrant-forget confirmation dialog. Short on
+/** Per-hit preview width inside the /qdrant forget confirmation dialog. Short on
  * purpose: the dialog identifies the memories; the entry above renders them in full. */
 const FORGET_PREVIEW_MAX = 60;
 
 /**
- * Confirm-dialog body for `/qdrant-forget` (#48): names the count and lists
+ * Confirm-dialog body for `/qdrant forget` (#48): names the count and lists
  * exactly the memories a Yes deletes (type + 2-decimal score + one flattened
  * preview line each). When `capped`, the hit cap hid further matches — say so,
  * because those are left untouched. Never used for entry output.
@@ -145,23 +181,63 @@ export function settingsScopeLabel(r: SettingsScopeRow, noOverrideText = "global
   return `${r.key} = ${displayValue(r.value)} (${scope})`;
 }
 
-/** Bare `/qdrant-settings` usage: the scope rule, both absolute file paths, and
+/** Bare `/qdrant settings` usage: the scope rule, both absolute file paths, and
  * this project's allowlisted rows with scope + inherited values. */
 export function settingsUsageText(p: { projectPath: string; globalPath: string; rows: SettingsScopeRow[] }): string {
   return [
-    "settings: usage — /qdrant-settings opens the form; /qdrant-settings <key> <value> sets a field.",
+    "settings: usage — /qdrant settings opens the settings screen; /qdrant settings <key> <value> sets a field.",
     `          codeKnowledge and codeScoreThreshold are per project (${p.projectPath});`,
     `          the other keys are global (${p.globalPath}).`,
     `          this project: ${p.rows.map((r) => settingsScopeLabel(r, "inherited from global")).join("; ")}`,
   ].join("\n");
 }
 
-/** Bare or invalid `/qdrant-clear` usage: explains all vs code modifiers. */
+/** Confirm-dialog title for `/qdrant clear all` (plan Part C): names the
+ * project and the exact count the Yes would delete. */
+export function clearAllConfirmTitle(projectId: string, count: number): string {
+  return `Reset ${projectId} and delete all ${count} stored ${count === 1 ? "memory" : "memories"}?`;
+}
+
+/** Confirm-dialog body for `/qdrant clear all` (plan Part C). */
+export function clearAllConfirmMessage(): string {
+  return "Deletes every memory and code summary for this project from Qdrant. This cannot be undone.";
+}
+
+/** `/qdrant clear all` on an empty (or absent) collection: nothing to confirm,
+ * so no dialog is ever opened. */
+export function clearAlreadyEmptyText(projectId: string): string {
+  return `clear: collection ${projectId} is already empty`;
+}
+
+/** `/qdrant clear all` with no dialog-capable UI: a destructive wipe is never
+ *  attempted without a confirmation, so it refuses instead (mirrors the forget
+ *  refusal). */
+export function clearRequiresUiText(): string {
+  return "error: /qdrant clear all requires interactive UI confirmation";
+}
+
+/** `/qdrant clear all` declined — mirrors `forget: unchanged (cancelled)`. */
+export function clearCancelledText(): string {
+  return "clear: unchanged (cancelled)";
+}
+
+/** Bare or invalid `/qdrant clear` usage: explains all vs code modifiers. */
 export function clearUsageText(): string {
   return [
-    "clear: usage — /qdrant-clear all | code",
+    "clear: usage — /qdrant clear all | code",
     "       all  — reset the current project's entire memory collection (irreversible)",
     "       code — remove all indexed code summaries for this project",
+  ].join("\n");
+}
+
+/** Bare `/qdrant index` usage: the key's own line, then one line per kind.
+ *  `kinds` is the `INDEX_KINDS` registry (commands.ts) passed in — out.ts stays
+ *  free of runtime imports, and the list can never drift from what is accepted. */
+export function indexUsageText(kinds: Record<string, { summary: string }>): string {
+  const width = Math.max(...Object.keys(kinds).map((k) => k.length), 0);
+  return [
+    "index: usage — /qdrant index <kind>",
+    ...Object.entries(kinds).map(([kind, info]) => `${kind.padEnd(width)} — ${info.summary}`),
   ].join("\n");
 }
 
@@ -210,7 +286,7 @@ export function formSaveMessage(
   dest: "project" | "global",
   globalValue?: string | number | null,
 ): string {
-  const tail = `(was ${displayValue(prev)}; run /qdrant-settings again to edit another field)`;
+  const tail = `(was ${displayValue(prev)}; run /qdrant settings again to edit another field)`;
   const body = dest === "project"
     ? `${key} = ${displayValue(next)} → this project's settings file (global: ${displayValue(globalValue ?? null)})`
     : `${key} = ${displayValue(next)} → the global config file`;
@@ -253,14 +329,14 @@ export const EMPTY_SEARCH_TEXT = "No relevant memory found.";
 /** Mid-session codeKnowledge flip notice (spec §12) — direction-aware because
  * the reload consequence differs: the tool registers on on-flips and
  * unregisters on off-flips. Indexing itself never needs a reload
- * (/qdrant-index-code). */
+ * (/qdrant index code). */
 export function codeMemoryReloadNotice(next: "off" | "on"): string {
   return next === "on"
-    ? "code memory: takes effect at the next session start — the code_memory tool registers on reload. Run /qdrant-index-code to index the current session's code right away."
+    ? "code memory: takes effect at the next session start — the code_memory tool registers on reload. Run /qdrant index code to index the current session's code right away."
     : "code memory: turns off at the next session start — the code_memory tool unregisters on reload.";
 }
 
-/** /qdrant-index-code result line (spec §10.1). `symbols` counts symbol
+/** /qdrant index code result line (spec §10.1). `symbols` counts symbol
  * summaries only — file anchors are represented by the `files` count (#49). */
 export function codeMemorySyncMessage(r: { files: number; symbols: number; deleted: number }): string {
   return `code memory: ${String(r.files)} files · ${String(r.symbols)} symbols indexed (${String(r.deleted)} file${r.deleted === 1 ? "" : "s"} replaced)`;

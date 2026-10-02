@@ -92,7 +92,7 @@ test("status state rows carry semantic roles through the theme", () => {
 
 test("help renders the memory header then the aligned command list", () => {
   const entry = helpEntry(
-    [{ cmd: "/qdrant-status", desc: "health" }, { cmd: "/qdrant-clear", desc: "reset" }],
+    [{ cmd: "/qdrant status", desc: "health" }, { cmd: "/qdrant clear all | code", desc: "reset" }],
     { mode: "mode1", collection: "pi-mem-abc" },
   );
   const component = renderEntryComponent(entry, seam, new WrapTheme());

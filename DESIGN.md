@@ -35,10 +35,10 @@ at-a-glance scanning or to hide real detail, never as decoration. The extension
 draws no borders, frames, rules, layouts, or background panels of its own. The
 footer-style `🧠 Memory:` header (count-bearing on the statusbar) — the same
 string the statusbar carries, minus its live point count — heads the
-`/qdrant-status` and `/qdrant-help` blocks so
-they read as branded panels. Output never echoes its own command path
-(`/qdrant-*`) as a text prefix: the invoking command line already sits above the
-block, and each entry carries its own structural labels. The branded element is
+`/qdrant status` and `/qdrant help` blocks so
+they read as branded panels. Output never echoes its own command path as a text
+prefix: the invoking command line already sits above the block, and each entry
+carries its own structural labels. The branded element is
 the brain glyph `🧠`, used only as the memory header mark.
 
 ## Colors
@@ -48,19 +48,19 @@ The extension owns no color. Every color an agent needs is resolved by the
 extension's output. Richer output is expressed purely through the host's
 semantic slots as exposed to entry renderers (`theme.fg` / `theme.bold`):
 
-- **success** — the `✓` glyph and healthy lines in `/qdrant-status`.
+- **success** — the `✓` glyph and healthy lines in `/qdrant status`.
 - **warning** — the `!` glyph, "collection does not exist yet", terminating-ish
   states.
 - **error** — the `✗` glyph, "NOT reachable" lines, and every `error:` row.
 - **accent / success / warning / dim / muted** — the per-memory-type tags in
   search results (`decision`→accent, `fact`→success, `constraint`→warning,
   `preference`→dim, `session_summary`→muted).
-- **bold** — the `commands` title in `/qdrant-help`. Nothing else is bold.
+- **bold** — the `commands` title in `/qdrant help`. Nothing else is bold.
 
 Glyphs are limited to `✓ ✗ !` (state carries meaning, color refines) and `…` for
 truncation. The `🧠` glyph is the sole permitted emoji: it marks the memory
 header, used in the footer statusline and as the first glyph of the
-`/qdrant-status` and `/qdrant-help` block headers — never elsewhere.
+`/qdrant status` and `/qdrant help` block headers — never elsewhere.
 
 ## Typography
 
@@ -100,7 +100,7 @@ collapse/expand:
 - Each logical line begins with a stable label (`qdrant: `, `embeddings: `,
   `remembered: `, `cleared: `, `settings: `, `error: `, `commands`) so a reader
   can scan vertically.
-- The `/qdrant-status` and `/qdrant-help` blocks open with the shared
+- The `/qdrant status` and `/qdrant help` blocks open with the shared
   `🧠 Memory: <mode> (<collection>)` header — the footer-status string without
   its `({points})` segment.
 - Search results are expandable entries: a collapsed summary line, with the full
@@ -110,7 +110,7 @@ collapse/expand:
 
 ## Shapes
 
-None. Every entry — `/qdrant-status` included — is unboxed text rendered by the
+None. Every entry — `/qdrant status` included — is unboxed text rendered by the
 host transcript. Dialogs use pi's built-in chrome. The extension never draws its
 own boxes, dividers, borders, background fills, or highlight regions.
 
@@ -128,26 +128,26 @@ The statusline entry shown while a session is active.
   collection — total points, not a per-session delta. It is resolved from
   Qdrant on `session_start` (after any mode1 catch-up ingest) and repainted
   after every successful write or retraction (`memory_save`, `memory_forget`,
-  `/qdrant-remember`, `/qdrant-forget`, the mode2 compaction capture) and after
-  `/qdrant-clear`. When the collection does not
+  `/qdrant remember`, `/qdrant forget`, the mode2 compaction capture) and after
+  `/qdrant clear`. When the collection does not
   exist yet the count is `0`; when Qdrant is unreachable the header drops the
   `({points})` segment entirely — the statusline is best-effort and never
   blocks a tool result, command, or lifecycle handler.
 - `mode` is the resolved runtime mode label: `mode1` (pi-blackhole present,
   ingest its artifacts) or `mode2` (own compaction capture). Re-resolved live
-  on every repaint, so a `/qdrant-settings mode` change is reflected without a
+  on every repaint, so a `/qdrant settings mode` change is reflected without a
   restart (lifecycle hook wiring itself is fixed at session start).
 - `collection` is the project collection id (`pi-mem-<16 hex>`).
 - Set on `session_start`, never cleared mid-session by the extension — the host
   owns footer teardown. Best-effort — never throw if the footer is unavailable.
-- The entry headers of `/qdrant-status` and `/qdrant-help` use the same string
+- The entry headers of `/qdrant status` and `/qdrant help` use the same string
   **without** the `({points})` segment (see status / commands below) — the
   status block already reports the point count on its own qdrant row.
 
-### status (`/qdrant-status`)
+### status (`/qdrant status`)
 
 One entry, one plain always-visible text block — the same minimal shape as
-`/qdrant-help` and every message. No card, no background fill, no
+`/qdrant help` and every message. No card, no background fill, no
 collapse/expand, no `/qdrant: ` prefix anywhere. It opens with the shared
 memory header (the footer-status string), then the subsystem rows, then config
 detail in one label column:
@@ -188,7 +188,7 @@ refines it:
 - healthy: `✓` in the success slot.
 - `✗ NOT reachable` — error slot (subsystem down/unreachable).
 - `! collection pi-mem-… does not exist yet` — warning slot (fresh project or
-  after `/qdrant-clear`).
+  after `/qdrant clear`).
 - `mode: ! own while pi-blackhole is installed — …` — warning slot, present only
   when `mode = own` is configured while pi-blackhole is operational (#50): both
   extensions claim `session_before_compact`, and a pi-blackhole cancellation
@@ -198,27 +198,63 @@ Never display API keys or imply their presence. Status shows the same rows
 whether or not the host marks the entry expanded — nothing is hidden behind a
 gesture.
 
-### commands (`/qdrant-help`)
+### commands (`/qdrant help`)
 
 One entry, the same minimal block shape. Opens with the shared memory header,
 then a bold `commands` title and aligned rows — command in plain text,
 description dim, column aligned to the longest command + 2. The row list is
-conditional: `/qdrant-index-code` appears (between `/qdrant-clear all | code` and
-`/qdrant-help`) only while `codeKnowledge: on` was active at registration.
+conditional: `/qdrant index code` appears (between `/qdrant clear all | code` and
+`/qdrant help`) only while `codeKnowledge: on` was active at registration. The
+bare `/qdrant` emits this block right after the status block, so the bare form
+is self-documenting in every mode.
 
 ```
 🧠 Memory: mode1 (pi-mem-<hex>)
 commands
-/qdrant-status                 connection health + active mode + collection status
-/qdrant-settings <key> <value> persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global
-/qdrant-remember <text>        save durable knowledge now
-/qdrant-search <query>         semantic search of durable knowledge
-/qdrant-forget <query>         search and remove memories interactively
-/qdrant-clear all | code       reset entire collection (all) or purge code summaries (code)
-/qdrant-help                   this list
+/qdrant status                         connection health + active mode + collection status
+/qdrant settings [key] [value]         open the settings screen, or persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global
+/qdrant remember <text>                save durable knowledge now
+/qdrant search <query>                 semantic search of durable knowledge
+/qdrant forget <query>                 search and remove memories interactively
+/qdrant clear all | code               reset entire collection (all) or purge code summaries (code)
+/qdrant index code                     re-index code summaries now
+/qdrant help                           this list
 ```
 
-### search-results (`/qdrant-search`)
+### command grammar (`/qdrant <key>`)
+
+One registered command; the first token after it is the key. `src/commands.ts`
+owns the grammar (`ARG_SHAPE`) and `src/out.ts` owns every string below; the
+dispatcher is the only place a key is routed.
+
+| Key | Shape | Behaviour |
+|---|---|---|
+| `status`, `help` | no arguments | one block each; extra tokens get a correction |
+| `search`, `remember`, `forget` | free text | the remainder is passed **verbatim** — never re-tokenised |
+| `settings` | one bounded key token, then free text | the value is the rest of the line, so URLs and model names keep their punctuation; the key token is validated by the shared `setConfigField` |
+| `clear` | exactly one of `all` or `code` | |
+| `index` | exactly one registered kind (`code`) | the kind's own usage line when missing; the gate per kind, then the sync |
+
+Parse failures are **one error entry each**, never a throw and never a silent
+no-op. Nothing is guessed — each message names the accepted values or the
+corrected command, and the unknown-key case ends in the shared usage line:
+
+```text
+error: unknown key "bogus thing"
+usage: /qdrant <key> — status | settings | remember | search | forget | clear | index | help
+
+error: /qdrant status takes no arguments — try /qdrant status
+error: unknown index value "documents" — accepted: code
+       usage: /qdrant <key> — …
+error: unexpected arguments — try /qdrant index code
+```
+
+Argument completion is two-level: the keys for an empty prefix, then the bounded
+second token (`all`/`code`, the registered index kinds, the twelve settings
+fields). It returns nothing beyond that token — the value is free text — and a
+prefix matching no key shows no menu.
+
+### search-results (`/qdrant search`)
 
 One entry per query. **Collapsed** (default) is a single summary line ending in
 a preview of the top hit's text:
@@ -254,8 +290,8 @@ a preview of the top hit's text:
 
 ### message (confirmations)
 
-One plain one-line entry each — `/qdrant-remember`, `/qdrant-clear all`,
-`/qdrant-clear code`, and `/qdrant-settings` writes/declines. No icons, no color
+One plain one-line entry each — `/qdrant remember`, `/qdrant clear all`,
+`/qdrant clear code`, and `/qdrant settings` writes/declines. No icons, no color
 beyond default text (the leading label may be dimmed):
 
 ```
@@ -269,23 +305,32 @@ forget: no memories matched "<query>"
 forget: unchanged (cancelled)
 settings: qdrantUrl updated (global config; reloaded at runtime)
 settings: scoreThreshold unchanged (cancelled)
-code memory: takes effect at the next session start — the code_memory tool registers on reload. Run /qdrant-index-code to index the current session's code right away.
+code memory: takes effect at the next session start — the code_memory tool registers on reload. Run /qdrant index code to index the current session's code right away.
 ```
 
-Bare `/qdrant-clear` (or unrecognized modifier) prints usage guidance:
+Bare `/qdrant clear` prints usage guidance (as does an unrecognized modifier,
+which never clears):
 
 ```
-clear: usage — /qdrant-clear all | code
+clear: usage — /qdrant clear all | code
        all  — reset the current project's entire memory collection (irreversible)
        code — remove all indexed code summaries for this project
 ```
 
-Bare `/qdrant-settings` (no key/value) prints one multi-line usage message naming
+Bare `/qdrant index` prints its own usage line plus one line per registered kind,
+generated from the kind registry:
+
+```
+index: usage — /qdrant index <kind>
+       code — Re-index code summaries now
+```
+
+Bare `/qdrant settings` (no key/value) prints one multi-line usage message naming
 the scope rule and **both** absolute file paths (from `projectSettingsPath` /
 `configPath`, never hand-built):
 
 ```
-settings: usage — /qdrant-settings opens the form; /qdrant-settings <key> <value> sets a field.
+settings: usage — /qdrant settings opens the settings screen; /qdrant settings <key> <value> sets a field.
           codeKnowledge and codeScoreThreshold are per project (<projectSettingsPath>);
           the other keys are global (<configPath>).
           this project: codeKnowledge = off (inherited from global); codeScoreThreshold = 0.6 (this project; global: 0.55)
@@ -303,7 +348,7 @@ non-allowlisted keys keep the single-layer clause `settings: <key> updated
 
 A `codeKnowledge` settings write additionally emits the direction-aware reload
 notice (spec §12): switching **on** ends `…the code_memory tool registers on
-reload. Run /qdrant-index-code to index the current session's code right away.`;
+reload. Run /qdrant index code to index the current session's code right away.`;
 switching **off** ends `…the code_memory tool unregisters on reload.`
 
 Writing `mode = own` while pi-blackhole is operational additionally emits one
@@ -313,11 +358,11 @@ warning entry — from both the CLI write and the settings form:
 warning: mode = own while pi-blackhole is installed — both extensions claim session_before_compact; if pi-blackhole cancels compaction, no mode-2 capture happens. mode = auto (or removing pi-blackhole) avoids the conflict.
 ```
 
-The `/qdrant-remember` confirmation is command voice: plain `remembered:`
+The `/qdrant remember` confirmation is command voice: plain `remembered:`
 without echoing the stored point's internal source kind (the memory_save tool
 return is the one surface that names it — see agent-tool-results).
 
-The `/qdrant-forget` confirmation is never a bare count: the dialog message
+The `/qdrant forget` confirmation is never a bare count: the dialog message
 lists every memory a Yes deletes — one line per hit, `[<type>] <score> —
 "<60-char one-line preview>"` — and the search entry above it shows the same
 deletion set verbatim. At most five hits are deleted per confirmation; when
@@ -334,17 +379,17 @@ error: <message>
 ```
 
 Rendered from command failures (including a thrown handler) and from
-`/qdrant-search`/`/qdrant-remember` failures. It is data, not a dialog or a
+`/qdrant search`/`/qdrant remember` failures. It is data, not a dialog or a
 crash — commands always exit normally with the error as content.
 
 ### settings-form
 
-Interactive config editing. Only reachable from the `/qdrant-settings` command
+Interactive config editing. Only reachable from the `/qdrant settings` command
 with no arguments, and only when `ctx.ui` dialogs exist. That includes the
 interactive TUI **and RPC**: rpc sets `ctx.hasUI = true` and translates
 `select`/`input`/`confirm` into `extension_ui_request`/`extension_ui_response`,
 so the form runs there too. Print/headless contexts without the dialog trio fall
-back to the usage message. `/qdrant-settings <key> <value>` bypasses the UI
+back to the usage message. `/qdrant settings <key> <value>` bypasses the UI
 entirely. The form displays the **effective** value (this project's override,
 else the global value) and the pick labels also name the layer, so the
 destination is never ambiguous.
@@ -365,8 +410,8 @@ Fixed flow, Esc cancels at any step:
    in each case with the current value as placeholder.
 3. **confirm** — `Save <key>?` with a destination-naming message. Allowlisted
    keys: `<key> = <new> → this project's settings file (global: <g>) (was <old>;
-   run /qdrant-settings again to edit another field)`. The other keys:
-   `<key> = <new> → the global config file (was <old>; run /qdrant-settings again
+   run /qdrant settings again to edit another field)`. The other keys:
+   `<key> = <new> → the global config file (was <old>; run /qdrant settings again
    to edit another field)`.
 
 Reset-to-inherited exists **only** for the two allowlisted fields: the enum
@@ -425,7 +470,7 @@ duplicating it.
   knowledge is the product.
 - Do resolve every color/glyph through the host theme's semantic slots (the
   Colors list); never invent a palette, ANSI code, or emoji color. The 🧠 glyph
-  belongs to the footer statusline and the `/qdrant-status` / `/qdrant-help` block
+  belongs to the footer statusline and the `/qdrant status` / `/qdrant help` block
   headers only.
 - Do draw no self-chrome at all: no borders, frames, rules, panels, or
   background fills anywhere, ever. Entries are unboxed text.

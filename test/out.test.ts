@@ -6,8 +6,10 @@ import {
   modeOwnConflictNotice,
   displayValue, settingsScopeLabel, settingsUsageText, clearUsageText, settingsUpdatedText, settingsGlobalUpdatedText,
   settingsOverrideClearedText, resetOptionLabel, formNumericPrompt, formSaveMessage, formClearMessage,
-  forgetConfirmMessage,
+  forgetConfirmMessage, indexUsageText, unknownKeyText, unknownValueText, noArgumentText, unexpectedArgumentText,
+  commandUsageText, clearRequiresUiText,
 } from "../src/out.ts";
+import { ARG_SHAPE, USAGE_KEYS } from "../src/commands.ts";
 import type { OutEntry, OutLine, Span } from "../src/out.ts";
 import type { PointPayload, SearchHit } from "../src/types.ts";
 
@@ -48,8 +50,8 @@ test("error renders whole line with the error role", () => {
 test("help renders the memory header, then a bold title + aligned rows", () => {
   const header = { mode: "mode1", collection: "pi-mem-abc" };
   const e = helpEntry([
-    { cmd: "qdrant-status", desc: "health" },
-    { cmd: "qdrant-settings", desc: "config" },
+    { cmd: "qdrant status", desc: "health" },
+    { cmd: "qdrant settings", desc: "config" },
   ], header);
   const lines = renderOut(e);
   // Footer-style header brands the block (DESIGN.md footer-status).
@@ -58,20 +60,20 @@ test("help renders the memory header, then a bold title + aligned rows", () => {
   assert.equal(spanText(lines[1]), "commands");
   assert.deepEqual(roles(lines[1]), ["bold"]);
   // command column aligned to the longest name + 2
-  assert.equal(spanText(lines[2]), `${"qdrant-status".padEnd("qdrant-settings".length + 2)}health`);
+  assert.equal(spanText(lines[2]), `${"qdrant status".padEnd("qdrant settings".length + 2)}health`);
   assert.deepEqual(roles(lines[2]), ["default", "dim"]);
 });
 
 test("help aligns usage commands past 26 chars without jamming the description", () => {
   const rows = [
-    { cmd: "/qdrant-status", desc: "connection health + active mode + collection status" },
-    { cmd: "/qdrant-settings <key> <value>", desc: "persist a config field (e.g. scoreThreshold 0.2)" },
+    { cmd: "/qdrant status", desc: "connection health + active mode + collection status" },
+    { cmd: "/qdrant settings [key] [value]", desc: "persist a config field (e.g. scoreThreshold 0.2)" },
   ];
   const lines = renderOut(helpEntry(rows, { mode: "mode2", collection: "pi-mem-abc" }));
   const width = Math.max(...rows.map((r) => r.cmd.length)) + 2; // 31 — an old 26-cap jammed here
   assert.equal(spanText(lines[0]), "🧠 Memory: mode2 (pi-mem-abc)"); // header first
-  assert.equal(spanText(lines[2]), `${"/qdrant-status".padEnd(width)}connection health + active mode + collection status`);
-  assert.equal(spanText(lines[3]), `${"/qdrant-settings <key> <value>".padEnd(width)}persist a config field (e.g. scoreThreshold 0.2)`);
+  assert.equal(spanText(lines[2]), `${"/qdrant status".padEnd(width)}connection health + active mode + collection status`);
+  assert.equal(spanText(lines[3]), `${"/qdrant settings [key] [value]".padEnd(width)}persist a config field (e.g. scoreThreshold 0.2)`);
   assert.equal(spanText(lines[3]).indexOf("persist"), width);
 });
 
@@ -288,6 +290,7 @@ test("status renders the mode=own/blackhole conflict as a warning row (#50)", ()
 
 test("codeMemoryReloadNotice is direction-aware", () => {
   assert.match(codeMemoryReloadNotice("on"), /registers on reload/);
+  assert.match(codeMemoryReloadNotice("on"), /Run \/qdrant index code to index/);
   assert.match(codeMemoryReloadNotice("off"), /unregisters on reload/);
   assert.equal(codeMemorySyncMessage({ files: 2, symbols: 9, deleted: 1 }),
     "code memory: 2 files · 9 symbols indexed (1 file replaced)");
@@ -342,7 +345,7 @@ test("settingsUsageText is one multi-line string naming the scope rule and both 
   });
   const lines = text.split("\n");
   assert.equal(lines.length, 4);
-  assert.equal(lines[0], "settings: usage — /qdrant-settings opens the form; /qdrant-settings <key> <value> sets a field.");
+  assert.equal(lines[0], "settings: usage — /qdrant settings opens the settings screen; /qdrant settings <key> <value> sets a field.");
   assert.match(lines[1], /^ {10}codeKnowledge and codeScoreThreshold are per project \(\/a\/pi-qdrant-memory\/projects\/pi-mem-abc\.json\);$/);
   assert.match(lines[2], /^ {10}the other keys are global \(\/a\/pi-qdrant-memory\/pi-qdrant-memory-config\.json\)\.$/);
   assert.equal(lines[3], "          this project: codeKnowledge = off (inherited from global); codeScoreThreshold = 0.6 (this project; global: 0.55)");
@@ -368,18 +371,68 @@ test("form builders produce the destination-naming strings", () => {
   assert.equal(formNumericPrompt("codeScoreThreshold", 0.55), 'codeScoreThreshold (number; "default" inherits global: 0.55)');
   assert.equal(
     formSaveMessage("codeScoreThreshold", 0.6, 0.4, "project", 0.55),
-    "codeScoreThreshold = 0.6 → this project's settings file (global: 0.55) (was 0.4; run /qdrant-settings again to edit another field)",
+    "codeScoreThreshold = 0.6 → this project's settings file (global: 0.55) (was 0.4; run /qdrant settings again to edit another field)",
   );
   assert.equal(
     formSaveMessage("qdrantUrl", "http://x:6333", "http://localhost:6333", "global"),
-    "qdrantUrl = http://x:6333 → the global config file (was http://localhost:6333; run /qdrant-settings again to edit another field)",
+    "qdrantUrl = http://x:6333 → the global config file (was http://localhost:6333; run /qdrant settings again to edit another field)",
   );
   assert.equal(formClearMessage("codeScoreThreshold", 0.55), "codeScoreThreshold returns to the global value (0.55)");
 });
 
 test("clearUsageText returns multi-line usage guidance", () => {
   const text = clearUsageText();
-  assert.match(text, /^clear: usage — \/qdrant-clear all \| code/);
+  assert.match(text, /^clear: usage — \/qdrant clear all \| code/);
   assert.match(text, /all {2}— reset the current project's entire memory collection/);
   assert.match(text, /code — remove all indexed code summaries for this project/);
+});
+
+test("clearRequiresUiText is the headless refusal, kept with every other clear string", () => {
+  // It lives in out.ts, not inline in the handler: the refusal is user-facing
+  // copy like every other message (#62).
+  assert.equal(clearRequiresUiText(), "error: /qdrant clear all requires interactive UI confirmation");
+});
+
+test("the usage line is derived from the grammar's key list, not hand-written", () => {
+  assert.equal(commandUsageText(USAGE_KEYS), "usage: /qdrant <key> — status | settings | remember | search | forget | clear | index | help");
+  // A different key list produces a different line: the builder owns only the
+  // wording, the grammar owns the keys (a key added to ARG_SHAPE shows up here
+  // with no change to out.ts).
+  assert.equal(commandUsageText(["a", "b"]), "usage: /qdrant <key> — a | b");
+  assert.equal(commandUsageText([]), "usage: /qdrant <key> — ");
+  assert.deepEqual([...USAGE_KEYS], Object.keys(ARG_SHAPE));
+});
+
+test("parse-error builders name the correction and carry the derived usage line", () => {
+  assert.equal(
+    unknownKeyText("bogus thing", USAGE_KEYS),
+    'error: unknown key "bogus thing"\nusage: /qdrant <key> — status | settings | remember | search | forget | clear | index | help',
+  );
+  assert.equal(
+    unknownValueText("index", "documents", ["code"], USAGE_KEYS),
+    'error: unknown index value "documents" — accepted: code\nusage: /qdrant <key> — status | settings | remember | search | forget | clear | index | help',
+  );
+  // The accepted values come from the argument, the key list from the grammar:
+  // each line can be read without consulting the other.
+  assert.equal(
+    unknownValueText("index", "documents", ["code", "documents2"], USAGE_KEYS),
+    `error: unknown index value "documents" — accepted: code, documents2\n${commandUsageText(USAGE_KEYS)}`,
+  );
+  assert.equal(noArgumentText("help"), "error: /qdrant help takes no arguments — try /qdrant help");
+  assert.equal(unexpectedArgumentText("/qdrant index code"), "error: unexpected arguments — try /qdrant index code");
+});
+
+test("indexUsageText renders one aligned line per kind it is given", () => {
+  assert.equal(indexUsageText({ code: { summary: "Re-index code summaries now" } }), [
+    "index: usage — /qdrant index <kind>",
+    "code — Re-index code summaries now",
+  ].join("\n"));
+  assert.equal(indexUsageText({
+    code: { summary: "Re-index code summaries now" },
+    documents: { summary: "Index project documents" },
+  }), [
+    "index: usage — /qdrant index <kind>",
+    "code      — Re-index code summaries now",
+    "documents — Index project documents",
+  ].join("\n"));
 });

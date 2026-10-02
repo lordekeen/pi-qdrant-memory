@@ -353,25 +353,121 @@ test("searchHandler prints no-relevant-memory message on empty", async () => {
   assert.match(d.printed.join("\n"), /No relevant memory/);
 });
 
-test("clearHandler with 'all' calls clearCollection and prints confirmation", async () => {
+test("clearHandler with 'all' refuses without a UI and deletes nothing", async () => {
   const d = io();
   await clearHandler(d, "all");
+  assert.equal(d.qdrantClears, 0);
+  assert.equal(d.emitted.length, 1);
+  assert.equal(d.emitted[0].kind, "error");
+  assert.match(d.printed[0], /error: \/qdrant clear all requires interactive UI confirmation/);
+});
+
+test("clearHandler with 'all' clears after a confirmed dialog", async () => {
+  const d = io();
+  let confirms = 0;
+  let confirmTitle = "";
+  let confirmMessage = "";
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm(t, m) { confirms++; confirmTitle = t; confirmMessage = m; return true; },
+  };
+  await clearHandler(d, "all", ui);
+  assert.equal(confirms, 1);
+  // The dialog names the project and the exact count (fake count is 3).
+  assert.equal(confirmTitle, "Reset pi-mem-abc and delete all 3 stored memories?");
+  assert.equal(confirmMessage, "Deletes every memory and code summary for this project from Qdrant. This cannot be undone.");
   assert.equal(d.qdrantClears, 1);
-  assert.match(d.printed.join("\n"), /cleared: collection pi-mem-abc reset/i);
+  assert.match(d.printed.join("\n"), /cleared: collection pi-mem-abc reset/);
+});
+
+test("clearHandler with 'all' uses the singular title for one point", async () => {
+  const d = io();
+  d.qdrant.count = async () => 1;
+  let confirmTitle = "";
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm(t) { confirmTitle = t; return true; },
+  };
+  await clearHandler(d, "all", ui);
+  assert.equal(confirmTitle, "Reset pi-mem-abc and delete all 1 stored memory?");
+  assert.equal(d.qdrantClears, 1);
+});
+
+test("clearHandler with 'all' does not clear when the dialog is declined", async () => {
+  const d = io();
+  let confirms = 0;
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { confirms++; return false; },
+  };
+  await clearHandler(d, "all", ui);
+  assert.equal(confirms, 1);
+  assert.equal(d.qdrantClears, 0);
+  assert.match(d.printed.join("\n"), /clear: unchanged \(cancelled\)/);
+});
+
+test("clearHandler with 'all' on an empty collection never opens a dialog", async () => {
+  const d = io();
+  d.qdrant.count = async () => 0;
+  let confirms = 0;
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { confirms++; return true; },
+  };
+  await clearHandler(d, "all", ui);
+  assert.equal(confirms, 0, "nothing to act on means no dialog");
+  assert.equal(d.qdrantClears, 0);
+  assert.match(d.printed.join("\n"), /clear: collection pi-mem-abc is already empty/);
+});
+
+test("clearHandler with 'all' treats a missing collection (count 404) as empty", async () => {
+  const d = io();
+  d.qdrant.count = async () => { throw new QdrantError(`Qdrant request GET http://localhost:6333/collections/pi-mem-abc failed: HTTP 404`, 404); };
+  let confirms = 0;
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { confirms++; return true; },
+  };
+  await clearHandler(d, "all", ui);
+  assert.equal(confirms, 0, "absent collection is empty — no dialog");
+  assert.equal(d.qdrantClears, 0);
+  assert.match(d.printed.join("\n"), /clear: collection pi-mem-abc is already empty/);
+});
+
+test("clearHandler with 'all' reports a non-404 count failure without clearing or confirming", async () => {
+  const d = io();
+  d.qdrant.count = async () => { throw new QdrantError(`Qdrant request GET http://localhost:6333/collections/pi-mem-abc failed: HTTP 500`, 500); };
+  let confirms = 0;
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { confirms++; return true; },
+  };
+  await clearHandler(d, "all", ui);
+  assert.equal(confirms, 0);
+  assert.equal(d.qdrantClears, 0);
+  assert.equal(d.emitted.length, 1);
+  assert.equal(d.emitted[0].kind, "error");
+  assert.match(d.printed[0], /error: clear failed: .*HTTP 500/);
 });
 
 test("clearHandler without arguments prints usage guidance without clearing", async () => {
   const d = io();
   await clearHandler(d);
   assert.equal(d.qdrantClears, 0);
-  assert.match(d.printed.join("\n"), /clear: usage — \/qdrant-clear all \| code/);
+  assert.match(d.printed.join("\n"), /clear: usage — \/qdrant clear all \| code/);
 });
 
 test("clearHandler with invalid modifier prints usage guidance without clearing", async () => {
   const d = io();
   await clearHandler(d, "nonsense");
   assert.equal(d.qdrantClears, 0);
-  assert.match(d.printed.join("\n"), /clear: usage — \/qdrant-clear all \| code/);
+  assert.match(d.printed.join("\n"), /clear: usage — \/qdrant clear all \| code/);
 });
 
 test("clearHandler with 'code' when points exist deletes them and prints count", async () => {
@@ -546,7 +642,7 @@ test("helpHandler prints the command list", async () => {
   const d = io();
   await helpHandler(d);
   const all = d.printed.join("\n");
-  for (const c of ["/qdrant-status", "/qdrant-settings", "/qdrant-remember", "/qdrant-search", "/qdrant-forget", "/qdrant-clear", "/qdrant-help"]) {
+  for (const c of ["/qdrant status", "/qdrant settings", "/qdrant remember", "/qdrant search", "/qdrant forget", "/qdrant clear", "/qdrant help"]) {
     assert.match(all, new RegExp(c.replace("/", "\\/")));
   }
 });
@@ -580,7 +676,7 @@ test("searchHandler emits an error entry when the search fails", async () => {
   const d = io({ qdrant: qdrantErr });
   await searchHandler(d, "query");
   assert.equal(d.emitted[0].kind, "error");
-  // Command voice: /qdrant-search failures read "error: search failed: <reason>"
+  // Command voice: /qdrant search failures read "error: search failed: <reason>"
   // (plan §1.2). `res.error` is a bare reason, so the LLM tool's
   // "memory_search failed:" lead never leaks here (DESIGN.md agent-tool-results)
   // — and the reason is not double-labelled.
@@ -768,14 +864,14 @@ test("statusHandler omits the project-settings row on an empty store", async () 
   assert.doesNotMatch(d.printed.join("\n"), /project settings/);
 });
 
-test("help lists /qdrant-index-code only when codeKnowledge is on", async () => {
+test("help lists /qdrant index code only when codeKnowledge is on", async () => {
   const on = io({ cfg: { ...cfg, codeKnowledge: "on" } });
   await helpHandler(on);
-  assert.match(on.printed.join("\n"), /qdrant-index-code/);
+  assert.match(on.printed.join("\n"), /\/qdrant index code/);
 
   const off = io();
   await helpHandler(off);
-  assert.doesNotMatch(off.printed.join("\n"), /qdrant-index-code/);
+  assert.doesNotMatch(off.printed.join("\n"), /\/qdrant index/);
 });
 
 // ── §7.3 mixed-scope routing ─────────────────────────────────────────────────
@@ -1075,9 +1171,11 @@ test("help row names the scope rule and adds no second command", async () => {
   await helpHandler(d);
   const all = d.printed.join("\n");
   assert.match(all, /persist a config field — codeKnowledge\/codeScoreThreshold apply to this project, other keys are global/);
-  assert.match(all, /\/qdrant-settings <key> <value>/);
-  assert.match(all, /\/qdrant-forget <query>/);
+  assert.match(all, /\/qdrant settings \[key\] \[value\]/);
+  assert.match(all, /\/qdrant forget <query>/);
   assert.doesNotMatch(all, /qdrant-project-settings/);
+  // The old per-verb command names are gone from the help block (hard cut).
+  assert.doesNotMatch(all, /qdrant-(status|settings|remember|search|forget|clear|help|index-code)/);
 });
 
 test("forgetHandler validates query and requires arguments", async () => {
@@ -1085,7 +1183,7 @@ test("forgetHandler validates query and requires arguments", async () => {
   await forgetHandler(d, "   ");
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "message");
-  assert.match(d.printed[0], /usage: \/qdrant-forget <search query>/);
+  assert.match(d.printed[0], /usage: \/qdrant forget <search query>/);
 });
 
 test("forgetHandler emits message when no memories match query", async () => {
@@ -1120,7 +1218,7 @@ test("forgetHandler requires interactive UI when hits match", async () => {
   await forgetHandler(d, "auth");
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "error");
-  assert.match(d.printed[0], /error: \/qdrant-forget requires interactive UI confirmation/);
+  assert.match(d.printed[0], /error: \/qdrant forget requires interactive UI confirmation/);
 });
 
 test("forgetHandler cancels when user declines confirmation", async () => {
@@ -1265,9 +1363,70 @@ test("clearHandler resets codeMemory counters to 0 on clear code and clear all",
   assert.equal(d.codeMemory?.symbols, 0);
 
   const d2 = io({ codeMemory: { state: "synced", files: 4, symbols: 20 } });
-  await clearHandler(d2, "all");
+  const ui2: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { return true; },
+  };
+  await clearHandler(d2, "all", ui2);
   assert.equal(d2.codeMemory?.files, 0);
   assert.equal(d2.codeMemory?.symbols, 0);
+});
+
+test("clearHandler resets stale codeMemory counters on the empty-collection path (#61)", async () => {
+  // Regression of #44: the count === 0 early return skipped the reset, so an
+  // empty collection with a stale in-memory inventory kept reporting deleted
+  // files/symbols in /qdrant status.
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { return true; },
+  };
+  const d = io({ codeMemory: { state: "synced", files: 7, symbols: 33 } });
+  d.qdrant.count = async () => 0;
+  await clearHandler(d, "all", ui);
+  assert.equal(d.codeMemory?.files, 0);
+  assert.equal(d.codeMemory?.symbols, 0);
+  assert.match(d.printed.join("\n"), /clear: collection pi-mem-abc is already empty/);
+  assert.equal(d.qdrantClears, 0, "nothing to delete means nothing is deleted");
+});
+
+test("clearHandler resets the collectionReady cache on every successful clear path (#61)", async () => {
+  const ui: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { return true; },
+  };
+  // Empty path: a stale "collection exists" memo must not survive.
+  const d = io({ collectionReady: new Set(["pi-mem-abc"]) });
+  d.qdrant.count = async () => 0;
+  await clearHandler(d, "all", ui);
+  assert.equal(d.collectionReady?.has("pi-mem-abc"), false);
+
+  // Confirmed path: the memo is dropped there too (existing #44 behaviour).
+  const d2 = io({ collectionReady: new Set(["pi-mem-abc"]), codeMemory: { state: "synced", files: 1, symbols: 2 } });
+  d2.qdrant.count = async () => 5;
+  await clearHandler(d2, "all", ui);
+  assert.equal(d2.collectionReady?.has("pi-mem-abc"), false);
+  assert.equal(d2.codeMemory?.files, 0);
+});
+
+test("clearHandler leaves stale counters alone when the clear is refused or declined (#61)", async () => {
+  // The refusal and the declined-confirm paths delete nothing, so they must not
+  // claim the inventory is empty.
+  const noUi = io({ codeMemory: { state: "synced", files: 3, symbols: 9 } });
+  await clearHandler(noUi, "all");
+  assert.equal(noUi.codeMemory?.files, 3);
+
+  const declinedUi: SettingsUI = {
+    async select() { return undefined; },
+    async input() { return undefined; },
+    async confirm() { return false; },
+  };
+  const declined = io({ codeMemory: { state: "synced", files: 3, symbols: 9 } });
+  await clearHandler(declined, "all", declinedUi);
+  assert.equal(declined.codeMemory?.files, 3);
+  assert.equal(declined.codeMemory?.symbols, 9);
 });
 
 test("clearHandler with 'code' emits error when deletePointsBySourceKind is absent", async () => {

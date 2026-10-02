@@ -15,6 +15,8 @@ import { pointId } from "../src/ids.ts";
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
 import { COMMAND_ROWS } from "../src/handlers.ts";
+import { ARG_SHAPE, INDEX_KINDS, USAGE_KEYS } from "../src/commands.ts";
+import { commandUsageText, indexUsageText } from "../src/out.ts";
 
 async function settle(): Promise<void> {
   // refreshStatus is fire-and-forget; yield two ticks so its awaits resolve.
@@ -68,24 +70,35 @@ test("wireApi registers memory_save and memory_search tools", () => {
   } finally { cleanup(); }
 });
 
-test("wireApi registers the /qdrant command set", () => {
+test("wireApi registers exactly one /qdrant command (the hard cut)", () => {
   const api = fakeApi();
   const cleanup = wireApi(api, rt);
   try {
-    const names = (api.commands as Array<{ name: string }>).map((c) => c.name);
-    for (const n of ["qdrant-status", "qdrant-settings", "qdrant-remember", "qdrant-search", "qdrant-forget", "qdrant-clear", "qdrant-help"]) {
-      assert.ok(names.includes(n), `missing command ${n}`);
-    }
+    // One registration, no aliases: the eight /qdrant-* names are gone (A.4).
+    assert.deepEqual((api.commands as Array<{ name: string }>).map((c) => c.name), ["qdrant"]);
+    assert.ok(!(api.commands as Array<{ name: string }>).some((c) => c.name.startsWith("qdrant-")));
   } finally { cleanup(); }
 });
 
-test("wireApi commands match COMMAND_ROWS in handlers (OI-009 parity)", () => {
+test("wireApi's help rows stay in parity with the dispatch grammar (OI-009)", () => {
   const api = fakeApi();
   const cleanup = wireApi(api, rt);
   try {
-    const registeredNames = (api.commands as Array<{ name: string }>).map((c) => c.name).sort();
-    const commandRowNames = COMMAND_ROWS.map((r) => r.name).slice().sort();
-    assert.deepEqual(registeredNames, commandRowNames);
+    // One documented row per ARG_SHAPE key, in the same order.
+    assert.deepEqual(COMMAND_ROWS.map((r) => r.name), Object.keys(ARG_SHAPE));
+    assert.ok(COMMAND_ROWS.every((r) => r.cmd.startsWith(`/qdrant ${r.name}`)), "every row names its key");
+  } finally { cleanup(); }
+});
+
+test("the registered command description is one imperative line (#62)", () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, rt);
+  try {
+    const cmd = (api.commands as Array<{ name: string; description: string }>).find((c) => c.name === "qdrant")!;
+    // Imperative lead, not a noun list: the host shows this in the command
+    // palette, where "Project memory: status, search, …" read as a label.
+    assert.equal(cmd.description, "Show status, search memories, and manage settings for this project");
+    assert.equal(cmd.description.split("\n").length, 1, "one line only");
   } finally { cleanup(); }
 });
 
@@ -156,7 +169,7 @@ test("statusline reports 0 memories when the collection does not exist yet", asy
 
 const onRt: RuntimeDeps = { ...rt, cfg: { ...rt.cfg, codeKnowledge: "on" } };
 
-test("code_memory tool gates on codeKnowledge; /qdrant-index-code is always present", () => {
+test("code_memory tool gates on codeKnowledge; /qdrant index code is always dispatchable", () => {
   const on = fakeApi();
   const off = fakeApi();
   const onCleanup = wireApi(on, onRt);
@@ -166,16 +179,26 @@ test("code_memory tool gates on codeKnowledge; /qdrant-index-code is always pres
     const offTools = (off.tools as Array<{ name: string }>).map((t) => t.name);
     assert.ok(onTools.includes("code_memory"), "expected code_memory when on");
     assert.ok(!offTools.includes("code_memory"), "no code_memory when off");
-    // The command registers unconditionally (live-config guard inside) so the
-    // §12 "index right away" notice is keepable right after an off→on flip.
-    const onCmds = (on.commands as Array<{ name: string }>).map((c) => c.name);
-    const offCmds = (off.commands as Array<{ name: string }>).map((c) => c.name);
-    assert.ok(onCmds.includes("qdrant-index-code"));
-    assert.ok(offCmds.includes("qdrant-index-code"));
+    // The single command registers unconditionally (live-config guard per kind
+    // inside) so the §12 "index right away" notice is keepable right after an
+    // off→on flip.
+    assert.deepEqual((on.commands as Array<{ name: string }>).map((c) => c.name), ["qdrant"]);
+    assert.deepEqual((off.commands as Array<{ name: string }>).map((c) => c.name), ["qdrant"]);
   } finally { onCleanup(); offCleanup(); }
 });
 
-test("/qdrant-index-code emits the count message on success and an error entry on failure", async () => {
+/** The registered command's raw-args entry point (pi splits on the first space). */
+function qdrantCmd(api: { commands: unknown[] }): (args: string) => Promise<void> {
+  const cmd = (api.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>)
+    .find((c) => c.name === "qdrant")!;
+  return (args: string) => cmd.execute(args);
+}
+
+function entryTexts(api: { entries: unknown[] }): string[] {
+  return (api.entries as Array<{ text?: string }>).map((e) => e.text ?? "");
+}
+
+test("/qdrant index code emits the count message on success and an error entry on failure", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-qm-cmd-"));
   try {
     writeFileSync(join(root, "a.ts"), "export function alpha() {}\n");
@@ -183,10 +206,8 @@ test("/qdrant-index-code emits the count message on success and an error entry o
     const api = fakeApi();
     const cleanup = wireApi(api, localRt);
     try {
-      const cmd = (api.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>)
-        .find((c) => c.name === "qdrant-index-code")!;
-      await cmd.execute("");
-      const texts = (api.entries as Array<{ text?: string }>).map((e) => e.text ?? "");
+      await qdrantCmd(api)("index code");
+      const texts = entryTexts(api);
       assert.ok(texts.some((t) => /^code memory: 1 files · 1 symbols indexed \(1 file replaced\)$/.test(t)), JSON.stringify(texts));
 
       // Failure path: sync reports ok:false → error entry (spec §10.1).
@@ -199,9 +220,7 @@ test("/qdrant-index-code emits the count message on success and an error entry o
       const api2 = fakeApi();
       const cleanup2 = wireApi(api2, brokenRt);
       try {
-        const cmd2 = (api2.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>)
-          .find((c) => c.name === "qdrant-index-code")!;
-        await cmd2.execute("");
+        await qdrantCmd(api2)("index code");
         const texts2 = (api2.entries as Array<{ kind?: string; text?: string }>).map((e) => ({ kind: e.kind, text: e.text ?? "" }));
         const errEntry = texts2.find((t) => t.text.includes("code memory: sync failed"));
         assert.ok(errEntry, JSON.stringify(texts2));
@@ -209,6 +228,242 @@ test("/qdrant-index-code emits the count message on success and an error entry o
       } finally { cleanup2(); }
     } finally { cleanup(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// ── /qdrant dispatch ──────────────────────────────────────────────────────────
+
+test("bare /qdrant emits the status block and the command list (self-documenting)", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, rt);
+  try {
+    await qdrantCmd(api)("");
+    const kinds = (api.entries as Array<{ kind: string }>).map((e) => e.kind);
+    assert.deepEqual(kinds, ["status", "help"]);
+    const help = api.entries.at(-1) as { rows: Array<{ cmd: string }> };
+    assert.ok(help.rows.some((r) => r.cmd === "/qdrant status"), JSON.stringify(help.rows));
+    assert.ok(help.rows.some((r) => r.cmd.startsWith("/qdrant search")));
+  } finally { cleanup(); }
+});
+
+test("/qdrant status and /qdrant help each emit their one block", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, rt);
+  try {
+    await qdrantCmd(api)("status");
+    assert.deepEqual((api.entries as Array<{ kind: string }>).map((e) => e.kind), ["status"]);
+    api.entries.length = 0;
+    await qdrantCmd(api)("help");
+    assert.deepEqual((api.entries as Array<{ kind: string }>).map((e) => e.kind), ["help"]);
+  } finally { cleanup(); }
+});
+
+test("/qdrant search passes the query verbatim, spaces and quotes included", async () => {
+  // The embed call is the observable seam for the exact query text: a query with
+  // internal runs of spaces and embedded quotes must arrive intact.
+  const embedded: string[] = [];
+  const api = fakeApi();
+  const cleanup = wireApi(api, { ...rt, embed: async (t: string) => { embedded.push(t); return new Array(768).fill(0.1); } });
+  try {
+    await qdrantCmd(api)("search   the  \"exact  phrase\"   trailing   ");
+    assert.deepEqual(embedded, ["the  \"exact  phrase\"   trailing"]);
+    assert.match(entryTexts(api).join("\n"), /No relevant memory found/);
+  } finally { cleanup(); }
+});
+
+test("/qdrant remember passes its text verbatim", async () => {
+  const embedded: string[] = [];
+  const api = fakeApi();
+  const cleanup = wireApi(api, { ...rt, embed: async (t: string) => { embedded.push(t); return new Array(768).fill(0.1); } });
+  try {
+    await qdrantCmd(api)("remember   a  \"quoted  fact\"   ");
+    assert.deepEqual(embedded, ["a  \"quoted  fact\""]);
+    assert.match(entryTexts(api).join("\n"), /^remembered: a  "quoted  fact"/);
+  } finally { cleanup(); }
+});
+
+test("a none key with a remainder is corrected, not silently ignored", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, rt);
+  try {
+    await qdrantCmd(api)("status now");
+    const entries = api.entries as Array<{ kind: string; text?: string }>;
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].kind, "error");
+    assert.equal(entries[0].text, "error: /qdrant status takes no arguments — try /qdrant status");
+  } finally { cleanup(); }
+});
+
+test("an unknown key emits exactly one error entry carrying the derived usage line", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, rt);
+  try {
+    await qdrantCmd(api)("bogus thing");
+    const entries = api.entries as Array<{ kind: string; text?: string }>;
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].kind, "error");
+    // The key list is read from ARG_SHAPE, never restated here (#62).
+    assert.deepEqual([...USAGE_KEYS], Object.keys(ARG_SHAPE));
+    assert.equal(entries[0].text, `error: unknown key "bogus thing"\n${commandUsageText(USAGE_KEYS)}`);
+  } finally { cleanup(); }
+});
+
+test("/qdrant clear with a missing, unknown or over-long modifier never clears", async () => {
+  let cleared = 0;
+  const recording: QdrantLike = { ...qdrant, async clearCollection() { cleared++; } };
+  const api = fakeApi();
+  const cleanup = wireApi(api, { ...rt, qdrant: recording });
+  try {
+    await qdrantCmd(api)("clear");
+    assert.match(entryTexts(api).join("\n"), /^clear: usage — \/qdrant clear all \| code/m);
+    await qdrantCmd(api)("clear documents");
+    const unknown = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
+    assert.equal(unknown.kind, "error");
+    assert.match(unknown.text!, /unknown clear value "documents" — accepted: all, code/);
+    await qdrantCmd(api)("clear all extra");
+    const tooMany = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
+    assert.equal(tooMany.kind, "error");
+    assert.equal(tooMany.text, "error: unexpected arguments — try /qdrant clear all");
+    assert.equal(cleared, 0, "no malformed invocation may delete anything");
+
+    // This fake api has no requestUI: `clear all` must refuse, not delete.
+    await qdrantCmd(api)("clear all");
+    const refused = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
+    assert.equal(refused.kind, "error");
+    assert.equal(refused.text, "error: /qdrant clear all requires interactive UI confirmation");
+    assert.equal(cleared, 0);
+  } finally { cleanup(); }
+});
+
+test("/qdrant clear all dispatches the live dialog UI and clears on confirm", async () => {
+  let cleared = 0;
+  const recording: QdrantLike = { ...qdrant, async count() { return 2; }, async clearCollection() { cleared++; } };
+  let confirms = 0;
+  const api = {
+    ...fakeApi(),
+    requestUI: () => ({
+      async select() { return undefined; },
+      async input() { return undefined; },
+      async confirm() { confirms++; return true; },
+    }),
+  };
+  const cleanup = wireApi(api, { ...rt, qdrant: recording });
+  try {
+    await qdrantCmd(api)("clear all");
+    assert.equal(confirms, 1, "the dispatch passes the live UI into the handler");
+    assert.equal(cleared, 1);
+  } finally { cleanup(); }
+});
+
+test("/qdrant clear ALL clears after confirmation — case variants are not rejected (#61)", async () => {
+  // Regression: the old /qdrant-clear handler lowercased its target, so `ALL`
+  // worked; the refactor's shape check was case-sensitive and rejected it while
+  // completion (case-insensitive) kept suggesting the value.
+  for (const token of ["all", "ALL", "All"]) {
+    let cleared = 0;
+    const recording: QdrantLike = { ...qdrant, async count() { return 2; }, async clearCollection() { cleared++; } };
+    let confirms = 0;
+    const api = {
+      ...fakeApi(),
+      requestUI: () => ({
+        async select() { return undefined; },
+        async input() { return undefined; },
+        async confirm() { confirms++; return true; },
+      }),
+    };
+    const cleanup = wireApi(api, { ...rt, qdrant: recording });
+    try {
+      await qdrantCmd(api)(`clear ${token}`);
+      assert.equal(confirms, 1, `clear ${token} must reach the confirm dialog`);
+      assert.equal(cleared, 1, `clear ${token} must clear`);
+      assert.ok(entryTexts(api).some((t) => t.includes("cleared: collection pi-mem-abc reset")));
+    } finally { cleanup(); }
+  }
+});
+
+test("/qdrant index CODE dispatches a real registry kind, not the typed token (#61)", async () => {
+  let snapshots = 0;
+  const recording: QdrantLike = { ...qdrant, async codeIndexSnapshot() { snapshots++; return new Map(); } };
+  const api = fakeApi();
+  const cleanup = wireApi(api, { ...onRt, qdrant: recording });
+  try {
+    await qdrantCmd(api)("index CODE");
+    // The guard reads INDEX_KINDS[kind]: a raw "CODE" would miss the registry
+    // and throw; the canonicalised spelling reaches the gate and the runner.
+    assert.equal(snapshots, 1, "a case variant runs the same kind as the lowercase form");
+    assert.ok(entryTexts(api).every((t) => !/unknown index value/.test(t)));
+  } finally { cleanup(); }
+});
+
+test("/qdrant clear ALL extra quotes the canonical command, not the typed one (#61)", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, rt);
+  try {
+    await qdrantCmd(api)("clear ALL extra");
+    const last = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
+    assert.equal(last.kind, "error");
+    assert.equal(last.text, "error: unexpected arguments — try /qdrant clear all");
+  } finally { cleanup(); }
+});
+
+test("/qdrant index prints its usage when the kind is missing, names kinds when unknown", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, onRt);
+  try {
+    await qdrantCmd(api)("index");
+    assert.equal(entryTexts(api).at(-1), indexUsageText(INDEX_KINDS));
+    await qdrantCmd(api)("index documents");
+    const unknown = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
+    assert.equal(unknown.kind, "error");
+    assert.equal(unknown.text, `error: unknown index value "documents" — accepted: ${Object.keys(INDEX_KINDS).join(", ")}\n${commandUsageText(USAGE_KEYS)}`);
+    await qdrantCmd(api)("index code extra");
+    const tooMany = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
+    assert.equal(tooMany.text, "error: unexpected arguments — try /qdrant index code");
+  } finally { cleanup(); }
+});
+
+test("/qdrant index code answers the disabled guard instead of syncing", async () => {
+  let snapshots = 0;
+  const recording: QdrantLike = { ...qdrant, async codeIndexSnapshot() { snapshots++; return new Map(); } };
+  const api = fakeApi();
+  const cleanup = wireApi(api, { ...rt, qdrant: recording }); // codeKnowledge: "off"
+  try {
+    await qdrantCmd(api)("index code");
+    assert.deepEqual(entryTexts(api), ["code memory is disabled (codeKnowledge: off)"]);
+    assert.equal(snapshots, 0, "a disabled kind must not sync");
+  } finally { cleanup(); }
+});
+
+test("/qdrant settings <key> <value> routes to the shared write path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-set-"));
+  const prev = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  try {
+    const api = fakeApi();
+    const localRt: RuntimeDeps = { ...rt, agentDir: dir };
+    const cleanup = wireApi(api, localRt);
+    try {
+      await qdrantCmd(api)("settings maxResults not-a-number");
+      assert.match(entryTexts(api).join("\n"), /positive integer|maxResults/);
+      await qdrantCmd(api)("settings");
+      // No dialog-capable ui in the fake → the usage entry, not the form.
+      assert.match(entryTexts(api).at(-1)!, /settings: usage — \/qdrant settings opens the settings screen/);
+    } finally { cleanup(); }
+  } finally {
+    if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the qdrant command exposes two-level argument completion", async () => {
+  const api = fakeApi();
+  const cleanup = wireApi(api, rt);
+  try {
+    const cmd = (api.commands as Array<{ name: string; getArgumentCompletions?: (p: string) => Array<{ value: string }> | null }>)
+      .find((c) => c.name === "qdrant")!;
+    assert.deepEqual(cmd.getArgumentCompletions?.("")?.map((c) => c.value), Object.keys(ARG_SHAPE));
+    assert.deepEqual(cmd.getArgumentCompletions?.("clear ")?.map((c) => c.value), ["all", "code"]);
+    assert.equal(cmd.getArgumentCompletions?.("search "), null);
+  } finally { cleanup(); }
 });
 
 test("code_memory executes a code-typed search", async () => {
@@ -354,8 +609,7 @@ test("session_start gate reads the LIVE effective value: an override-off project
       assert.equal(embedBatches, 0);
 
       // Verify codeMemoryState.state was updated to "off" instead of freezing on "syncing" (Issue #43)
-      const statusCmd = (api.commands as Array<{ name: string; execute: () => Promise<void> }>).find((c) => c.name === "qdrant-status")!;
-      await statusCmd.execute();
+      await qdrantCmd(api)("status");
       const statusEntry = api.entries.at(-1) as { kind: string; health: { codeMemory?: { state?: string } } };
       assert.equal(statusEntry.health.codeMemory?.state, "off");
     } finally { cleanup(); }
@@ -395,7 +649,7 @@ test("session_start gate reads the LIVE effective value: an override-on project 
   } finally { rmSync(agentDir, { recursive: true, force: true }); }
 });
 
-test("qdrant-status reflects collection totals from codeMemoryState after sync", async () => {
+test("/qdrant status reflects collection totals from codeMemoryState after sync", async () => {
   const agentDir = idxAgentDir();
   try {
     const repo = gitRepo(agentDir, "target");
@@ -434,9 +688,7 @@ test("qdrant-status reflects collection totals from codeMemoryState after sync",
       await settle();
       await settle();
 
-      const statusCmd = (api.commands as Array<{ name: string; execute: () => Promise<void> }>).find((c) => c.name === "qdrant-status");
-      assert.ok(statusCmd);
-      await statusCmd.execute();
+      await qdrantCmd(api)("status");
 
       const lastEntry = api.entries.at(-1) as { kind: string; health: { codeMemory?: { files?: number; symbols?: number } } };
       assert.equal(lastEntry.kind, "status");
@@ -476,9 +728,8 @@ test("runCodeSync deduplicates concurrent invocations", async () => {
     const cleanup = wireApi(api, localRt);
     try {
       const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
-      const cmd = (api.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>)
-        .find((c) => c.name === "qdrant-index-code")!;
-      await Promise.all([onStart({}, { cwd: repo }), cmd.execute("")]);
+      const cmd = qdrantCmd(api);
+      await Promise.all([onStart({}, { cwd: repo }), cmd("index code")]);
       await settle();
       assert.equal(snapshots, 1, "expected exactly one sync, not two concurrent ones");
     } finally { cleanup(); }
@@ -499,8 +750,7 @@ test("runCodeSync sets codeMemoryState to syncing while in-flight", async () => 
     const recording: QdrantLike = {
       ...qdrant,
       async codeIndexSnapshot() {
-        const statusCmd = (api.commands as Array<{ name: string; execute: () => Promise<void> }>).find((c) => c.name === "qdrant-status");
-        if (statusCmd) await statusCmd.execute();
+        await qdrantCmd(api)("status");
         const lastEntry = api.entries.at(-1) as { kind: string; health: { codeMemory?: { state?: string } } };
         stateDuringSnapshot = lastEntry?.health?.codeMemory?.state;
         return new Map();
@@ -516,9 +766,8 @@ test("runCodeSync sets codeMemoryState to syncing while in-flight", async () => 
     localRt.projectId = targetId;
     const cleanup = wireApi(api, localRt);
     try {
-      const cmd = (api.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>)
-        .find((c) => c.name === "qdrant-index-code")!;
-      await cmd.execute("");
+      const cmd = qdrantCmd(api);
+      await cmd("index code");
       await settle();
       assert.equal(stateDuringSnapshot, "syncing");
     } finally { cleanup(); }
@@ -581,12 +830,12 @@ test("memory_forget tool executes forgetLogic and retracts memory", async () => 
   } finally { cleanup(); }
 });
 
-test("qdrant-status omits codeMemory when codeKnowledge is 'off' (Issue #42)", async () => {
+test("/qdrant status omits codeMemory when codeKnowledge is 'off' (Issue #42)", async () => {
   const api = fakeApi();
   const cleanup = wireApi(api, rt); // default rt has codeKnowledge: "off"
   try {
-    const statusCmd = (api.commands as Array<{ name: string; execute: () => Promise<void> }>).find((c) => c.name === "qdrant-status")!;
-    await statusCmd.execute();
+    const statusCmd = (api.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>).find((c) => c.name === "qdrant")!;
+    await statusCmd.execute("status");
     const lastEntry = api.entries.at(-1) as { kind: string; health: { codeMemory?: unknown; detail: { codeThreshold?: unknown } } };
     assert.equal(lastEntry.health.codeMemory, undefined);
     assert.equal(lastEntry.health.detail.codeThreshold, undefined);
