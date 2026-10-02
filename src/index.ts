@@ -44,9 +44,49 @@ import {
 } from "./out.ts";
 import type { CodeMemoryHealth } from "./out.ts";
 import { QdrantError } from "./qdrant.ts";
-import { loadRendererModules, renderEntryComponent } from "./entry-render.ts";
-import type { RendererOptions, RendererTheme } from "./entry-render.ts";
+import { loadHostModules, hostModules, renderEntryComponent } from "./entry-render.ts";
+import type { RendererOptions, RendererTheme, SettingsHost } from "./entry-render.ts";
+import { openSettingsScreen } from "./settings-ui.ts";
+import type { CustomFactoryArgs, MountFn, SettingsComponent } from "./settings-ui.ts";
 import type { MemoryType, RuntimeDeps } from "./types.ts";
+
+/**
+ * The settings screen's host requirements, checked against the resolved bridge.
+ *
+ * Returns undefined when the bridge is missing ANY of the three symbols the
+ * screen cannot run without, which is what makes graceful degradation a hard
+ * rule rather than a hope: the dispatch then falls back to the dialog form or
+ * the usage entry instead of mounting a half-built screen.
+ */
+function settingsHost(bridge: Partial<SettingsHost> | undefined): SettingsHost | undefined {
+  if (!bridge?.SettingsList || !bridge.Input || !bridge.getSettingsListTheme) return undefined;
+  return {
+    SettingsList: bridge.SettingsList,
+    Input: bridge.Input,
+    getSettingsListTheme: bridge.getSettingsListTheme,
+    ...(bridge.DynamicBorder ? { DynamicBorder: bridge.DynamicBorder } : {}),
+    ...(bridge.keyText ? { keyText: bridge.keyText } : {}),
+  };
+}
+
+/**
+ * The live UI view of ONE command invocation (#56).
+ *
+ * Every field is read from the `ctx` the host passed to THAT handler — nothing
+ * here is duck-typed and nothing is captured across handlers. `mode` is the
+ * host's own predicate for "terminal-only UI is real"
+ * (`dist/core/extensions/types.d.ts:216-219`), and `hasUI` is its
+ * dialog-capable predicate (true in TUI and rpc).
+ */
+export interface CommandUi {
+  hasUI: boolean;
+  mode: "tui" | "rpc" | "json" | "print";
+  /** select/input/confirm — present iff `hasUI`. */
+  dialogs?: SettingsUI;
+  /** `ctx.ui.custom` — present iff `mode === "tui"`. Its RPC implementation is
+   *  a no-op (`dist/modes/rpc/rpc-mode.js`), so the modal is gated on mode. */
+  custom?: MountFn;
+}
 
 /**
  * Narrow structural surface the wiring logic depends on. Isolating pi's real
@@ -60,8 +100,13 @@ export interface WireApi {
   on(event: string, handler: (payload: unknown, ctx?: unknown) => void | Promise<void>): () => void;
   appendEntry(type: string, data: unknown): void;
   setStatus(text: string): void;
-  /** Interactive ctx.ui (select/input/confirm) when a command runs in the TUI. */
-  requestUI?(): SettingsUI | undefined;
+  /** The UI view of the CURRENT command invocation, or undefined outside one
+   *  (a tool call, a fire-and-forget refresh). Deliberately NOT a captured ctx:
+   *  the adapter binds it at handler entry and releases it in `finally`. */
+  commandUI?(): CommandUi | undefined;
+  /** The resolved host bridge (pi-tui + pi-coding-agent), or undefined when it
+   *  has not resolved — the settings screen is unreachable in that case. */
+  hostBridge?(): Partial<SettingsHost> | undefined;
 }
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown };
@@ -401,17 +446,28 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
         void refreshStatus();
         return;
       case "forget":
-        await forgetHandler(io, parsed.rest, api.requestUI?.());
+        await forgetHandler(io, parsed.rest, api.commandUI?.()?.dialogs);
         void refreshStatus();
         return;
       case "settings": {
         if (parsed.rest === "") {
-          const ui = api.requestUI?.();
-          if (ui) { await runSettingsForm(ui, io); return; }
-          // No dialog-capable ui (print/headless harnesses): print usage. NOT an
-          // rpc fallback — rpc sets ctx.hasUI = true and implements the dialog
-          // trio over extension_ui_request/response, so requestUI() returns a ui
-          // there and the form path above runs (issue #51).
+          const ui = api.commandUI?.();
+          // Plan B.5, decided from the LIVE ctx of this invocation:
+          //   mode === "tui" → pi's own SettingsList modal
+          //   hasUI          → the select → input → confirm sequence (rpc)
+          //   otherwise      → the usage entry
+          // `ctx.ui.custom` is a silent no-op under rpc
+          // (dist/modes/rpc/rpc-mode.js), so the modal is gated on `mode`, not
+          // on `hasUI`.
+          if (ui?.mode === "tui" && ui.custom) {
+            const host = settingsHost(api.hostBridge?.());
+            if (host) {
+              await openSettingsScreen(io, host, ui.custom);
+              return;
+            }
+          }
+          if (ui?.hasUI && ui.dialogs) { await runSettingsForm(ui.dialogs, io); return; }
+          // No dialog-capable UI (print/headless): print usage.
           await settingsHandler(io);
           return;
         }
@@ -425,9 +481,9 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
         // checkArgShape already accepted it, so `?? ""` is unreachable and lands
         // on the usage line rather than dispatching an unvalidated token.
         const target = canonicalEnumArg("clear", parsed.rest) ?? "";
-        // requestUI() is undefined when no dialog-capable UI is present — the
+        // commandUI() is undefined when no dialog-capable UI is present — the
         // handler then refuses to clear `all` rather than deleting blindly.
-        await clearHandler(io, target, api.requestUI?.());
+        await clearHandler(io, target, api.commandUI?.()?.dialogs);
         void refreshStatus();
         return;
       }
@@ -644,6 +700,65 @@ interface PiSurface {
   registerEntryRenderer(customType: string, renderer: (entry: { customType?: string; data?: unknown }, options?: unknown, theme?: unknown) => unknown): void;
 }
 
+/** The `ctx.ui` slice this extension ever touches, structurally typed against
+ *  the host's `ExtensionUIContext` (`dist/core/extensions/types.d.ts:70-190`). */
+interface ExtensionUiLike {
+  setStatus?(key: string, text: string | undefined): void;
+  select?(title: string, options: string[]): Promise<string | undefined>;
+  input?(title: string, placeholder?: string): Promise<string | undefined>;
+  confirm?(title: string, message: string): Promise<boolean>;
+  custom?(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => SettingsComponent): Promise<unknown>;
+}
+
+function uiFromCtx(ctx: unknown): ExtensionUiLike | undefined {
+  const ui = (ctx as { ui?: unknown } | undefined)?.ui;
+  return ui && typeof ui === "object" ? (ui as ExtensionUiLike) : undefined;
+}
+
+/**
+ * The live UI view for one invocation (#56).
+ *
+ * `hasUI` is the host's OWN "dialogs are real" predicate and `mode` its own
+ * "terminal-only UI is real" predicate (`ExtensionContext.mode`/`hasUI`,
+ * `dist/core/extensions/types.d.ts:216-219`; true in TUI and rpc, and `mode`
+ * is exactly `"tui" | "rpc" | "json" | "print"`). This replaces the old
+ * duck-typed `typeof ui.select === "function"` probe, which could only ever
+ * guess what those two flags already state.
+ *
+ * `custom` is offered ONLY for `mode === "tui"`: rpc implements the dialog trio
+ * but its `custom` is `async () => undefined` (`dist/modes/rpc/rpc-mode.js`),
+ * so exposing it there would mount a modal that never opens and never resolves.
+ */
+function commandUiFromCtx(ctx: unknown): { view: CommandUi; ui: ExtensionUiLike | undefined } | undefined {
+  const raw = ctx as { ui?: unknown; mode?: unknown; hasUI?: unknown } | undefined;
+  if (!raw || typeof raw !== "object") return undefined;
+  const mode = raw.mode;
+  if (mode !== "tui" && mode !== "rpc" && mode !== "json" && mode !== "print") return undefined;
+  const hasUI = raw.hasUI === true;
+  const ui = uiFromCtx(ctx);
+  const dialogs: SettingsUI | undefined =
+    hasUI && typeof ui?.select === "function" && typeof ui.input === "function" && typeof ui.confirm === "function"
+      ? {
+        select: (t, o) => ui.select!(t, o),
+        input: (t, p) => ui.input!(t, p),
+        confirm: (t, m) => ui.confirm!(t, m),
+      }
+      : undefined;
+  const custom: MountFn | undefined =
+    mode === "tui" && typeof ui?.custom === "function"
+      ? (factory) => ui.custom!(
+        (tui, theme, keybindings, done) =>
+          factory({
+            tui,
+            theme: theme as CustomFactoryArgs["theme"],
+            keybindings: keybindings as CustomFactoryArgs["keybindings"],
+            done: (result?: unknown) => done(result),
+          }),
+      )
+      : undefined;
+  return { view: { hasUI, mode, ...(dialogs ? { dialogs } : {}), ...(custom ? { custom } : {}) }, ui };
+}
+
 const QDRANT_STATUS_KEY = "qdrant-memory";
 const CUSTOM_TYPE = "qdrant-memory";
 
@@ -661,20 +776,27 @@ export default async function factory(api: unknown): Promise<void> {
   // resolves the host package, and the loader's rules forbid a top-level import.
   const agentDir = (await loadHostAgentDir()) ?? agentDirFromEnv(env);
 
-  let currentUi: {
-    setStatus?: (key: string, text: string | undefined) => void;
-    notify?: (text: string, level?: string) => void;
-    select?: (title: string, options: string[]) => Promise<string | undefined>;
-    input?: (title: string, placeholder?: string) => Promise<string | undefined>;
-    confirm?: (title: string, message: string) => Promise<boolean>;
-  } | undefined;
+  /** The status sink for calls that have no ctx of their own (a tool
+   *  `execute()`, the fire-and-forget `refreshStatus`). #56 asks for "no ctx
+   *  retained past the handler that received it"; this closure deliberately
+   *  keeps the `ctx.ui` OBJECT, never a ctx, and re-binds it at every handler
+   *  entry — so the newest handler always wins and nothing older than the last
+   *  entry is ever used. It cannot be removed without regressing the footer:
+   *  `api.setStatus` is part of the WireApi seam, and a tool result arrives
+   *  with a `ToolContext` that carries no `ui` at all. */
+  let statusUi: ExtensionUiLike | undefined;
+  /** The UI view of the command invocation in flight, bound at entry and
+   *  RELEASED in `finally` — so `commandUI()` is only ever non-undefined while
+   *  a command handler is actually running (#56). */
+  let activeInvocation: CommandUi | undefined;
 
-  // pi-tui components + keyHint, loaded lazily: pi's extension loader aliases
-  // `@earendil-works/pi-tui` / `@earendil-works/pi-coding-agent` to its bundled
-  // copies, but plain-node test runs never resolve them (they don't render
-  // entries). Until they resolve, the renderer returns undefined and pi skips
-  // the row — safe under every runtime.
-  void loadRendererModules();
+  // pi-tui components, keyHint + the settings-screen host pieces, loaded
+  // lazily: pi's extension loader aliases `@earendil-works/pi-tui` /
+  // `@earendil-works/pi-coding-agent` to its bundled copies, but plain-node test
+  // runs never resolve them. Until they resolve the renderer returns undefined
+  // and pi skips the row, and the settings screen is unreachable — safe under
+  // every runtime.
+  void loadHostModules();
 
   pi.registerEntryRenderer(CUSTOM_TYPE, (entry, options, theme) =>
     renderEntryComponent(entry?.data, options as RendererOptions | undefined, theme as RendererTheme | undefined));
@@ -718,46 +840,46 @@ export default async function factory(api: unknown): Promise<void> {
         description: d.description,
         getArgumentCompletions: d.getArgumentCompletions,
         handler: async (args: string, ctx: unknown) => {
-          const ui = (ctx as { ui?: unknown } | undefined)?.ui as typeof currentUi;
-          if (ui) currentUi = ui;
+          // #56: bind the LIVE ctx for this invocation. `RegisteredCommand.handler`
+          // is `(args: string, ctx: ExtensionCommandContext) => Promise<void>`
+          // (`dist/core/extensions/types.d.ts:1133`), so the decision is made from
+          // the ctx the host just handed us — never from a previously captured one.
+          const invocation = commandUiFromCtx(ctx);
+          if (invocation) {
+            statusUi = invocation.ui;
+            activeInvocation = invocation.view;
+          }
           try {
             await d.execute?.(args);
           } catch (err) {
             // Surface handler failures as an error entry instead of relying on
             // pi's (easily missed) extension-error channel.
             pi.appendEntry(CUSTOM_TYPE, errorEntry(`error: ${err instanceof Error ? err.message : String(err)}`));
+          } finally {
+            // Released here: no ctx-derived state outlives the handler (#56).
+            activeInvocation = undefined;
           }
         },
       });
     },
     on: (event, handler) => {
       // #55: forward the host's REAL unsubscribe. The wrapper below only
-      // remembers the ctx.ui handle, which is per-invocation state, so
+      // refreshes the status sink, which is per-invocation state, so
       // unsubscribing the host subscription is exactly `pi.on`'s own return
       // value — no bookkeeping of our own is needed.
       return pi.on(event, (payload, ctx) => {
-        // Remember the ui context so setStatus()/future notify() calls can route.
-        const ui = (ctx as { ui?: unknown } | undefined)?.ui as typeof currentUi;
-        if (ui) currentUi = ui;
+        // Re-bind the status sink at every handler entry (newest wins, #56).
+        const ui = uiFromCtx(ctx);
+        if (ui) statusUi = ui;
         return handler(payload, ctx);
       });
     },
     appendEntry: (_type, data) => { pi.appendEntry(CUSTOM_TYPE, data); },
     setStatus: (text) => {
-      try { currentUi?.setStatus?.(QDRANT_STATUS_KEY, text); } catch { /* status is best-effort */ }
+      try { statusUi?.setStatus?.(QDRANT_STATUS_KEY, text); } catch { /* status is best-effort */ }
     },
-    requestUI: () => {
-      // Only expose the interactive dialogs when the current ui context really
-      // has them. The interactive TUI and rpc both provide the trio (rpc
-      // translates select/input/confirm into extension_ui_request/response and
-      // sets ctx.hasUI = true, per pi docs/rpc.md); print/headless contexts may
-      // not (issue #51).
-      const u = currentUi;
-      if (!u || typeof u.select !== "function" || typeof u.input !== "function" || typeof u.confirm !== "function") {
-        return undefined;
-      }
-      return { select: u.select, input: u.input, confirm: u.confirm } satisfies SettingsUI;
-    },
+    commandUI: () => activeInvocation,
+    hostBridge: () => hostModules(),
   };
 
   const cleanup = wireApi(adapter, rt);

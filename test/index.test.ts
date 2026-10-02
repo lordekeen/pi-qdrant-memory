@@ -5,7 +5,9 @@ import { dirname, join } from "node:path";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { wireApi } from "../src/index.ts";
-import type { WireApi } from "../src/index.ts";
+import type { CommandUi, WireApi } from "../src/index.ts";
+import type { CustomFactoryArgs, MountFn, SettingsComponent } from "../src/settings-ui.ts";
+import type { SettingsUI } from "../src/handlers.ts";
 import type { Config, RuntimeDeps } from "../src/types.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
 import { QdrantError } from "../src/qdrant.ts";
@@ -42,6 +44,18 @@ function fakeApi(): WireApi & { tools: unknown[]; commands: unknown[]; events: R
     setStatus(t: string) { (api.statuses as string[]).push(t); },
   };
   return api as WireApi & typeof api;
+}
+
+/**
+ * A live command-UI view for the CURRENT invocation (#56). The wireApi seam is
+ * `commandUI()`, never a captured ctx, so a test states the mode/hasUI of the
+ * invocation it is simulating.
+ */
+function withCommandUI(
+  api: ReturnType<typeof fakeApi>,
+  view: Partial<CommandUi> & { dialogs?: SettingsUI; custom?: MountFn },
+): ReturnType<typeof fakeApi> {
+  return { ...api, commandUI: () => view as CommandUi };
 }
 
 const qdrant: QdrantLike = {
@@ -328,7 +342,7 @@ test("/qdrant clear with a missing, unknown or over-long modifier never clears",
     assert.equal(tooMany.text, "error: unexpected arguments — try /qdrant clear all");
     assert.equal(cleared, 0, "no malformed invocation may delete anything");
 
-    // This fake api has no requestUI: `clear all` must refuse, not delete.
+    // This fake api has no commandUI: `clear all` must refuse, not delete.
     await qdrantCmd(api)("clear all");
     const refused = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
     assert.equal(refused.kind, "error");
@@ -341,14 +355,10 @@ test("/qdrant clear all dispatches the live dialog UI and clears on confirm", as
   let cleared = 0;
   const recording: QdrantLike = { ...qdrant, async count() { return 2; }, async clearCollection() { cleared++; } };
   let confirms = 0;
-  const api = {
-    ...fakeApi(),
-    requestUI: () => ({
-      async select() { return undefined; },
-      async input() { return undefined; },
-      async confirm() { confirms++; return true; },
-    }),
-  };
+const api = withCommandUI(fakeApi(), {
+      hasUI: true, mode: "tui",
+      dialogs: { async select() { return undefined; }, async input() { return undefined; }, async confirm() { confirms++; return true; } },
+    });
   const cleanup = wireApi(api, { ...rt, qdrant: recording });
   try {
     await qdrantCmd(api)("clear all");
@@ -365,14 +375,10 @@ test("/qdrant clear ALL clears after confirmation — case variants are not reje
     let cleared = 0;
     const recording: QdrantLike = { ...qdrant, async count() { return 2; }, async clearCollection() { cleared++; } };
     let confirms = 0;
-    const api = {
-      ...fakeApi(),
-      requestUI: () => ({
-        async select() { return undefined; },
-        async input() { return undefined; },
-        async confirm() { confirms++; return true; },
-      }),
-    };
+    const api = withCommandUI(fakeApi(), {
+      hasUI: true, mode: "tui",
+      dialogs: { async select() { return undefined; }, async input() { return undefined; }, async confirm() { confirms++; return true; } },
+    });
     const cleanup = wireApi(api, { ...rt, qdrant: recording });
     try {
       await qdrantCmd(api)(`clear ${token}`);
@@ -1028,4 +1034,123 @@ test("a corrupt config file is reported once, on session_start, naming the path 
       } finally { cleanup2(); }
     } finally { cleanup(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── Bare /qdrant settings: mode routing (plan B.5, #56) ─────────────────────
+//
+// The decision comes from the LIVE ctx of the invocation, read through
+// `commandUI()` — never from a previously captured one. Three outcomes:
+//   mode === "tui" + the host bridge → the SettingsList modal
+//   hasUI (rpc)                   → the select → input → confirm form
+//   no dialog UI                  → the usage entry
+
+/** A host bridge fake good enough for the dispatch to consider mounting. */
+function fakeBridge() {
+  return {
+    SettingsList: class { render() { return []; } invalidate() {} handleInput() {} updateValue() {} } as never,
+    Input: class { getValue() { return ""; } setValue() {} handleInput() {} render() { return []; } invalidate() {} } as never,
+    getSettingsListTheme: () => ({
+      label: (t: string) => t, value: (t: string) => t, description: (t: string) => t, cursor: "", hint: (t: string) => t,
+    }),
+  };
+}
+
+test("bare /qdrant settings in tui mode mounts the SettingsList screen", async () => {
+  let mounted = 0;
+  let seenTheme: unknown;
+  const api = withCommandUI(fakeApi(), {
+    hasUI: true,
+    mode: "tui",
+    dialogs: { async select() { return undefined; }, async input() { return undefined; }, async confirm() { return false; } },
+    custom: (async (factory: (args: CustomFactoryArgs) => SettingsComponent) => {
+      mounted++;
+      const component = factory({
+        tui: {},
+        theme: { fg: (_c: string, t: string) => t },
+        keybindings: { matches: () => false },
+        done: () => {},
+      });
+      seenTheme = component === undefined ? undefined : "mounted";
+      return undefined;
+    }) as unknown as MountFn,
+  });
+  const withBridge = { ...api, hostBridge: () => fakeBridge() };
+  const cleanup = wireApi(withBridge, rt);
+  try {
+    await qdrantCmd(withBridge)("settings");
+    assert.equal(mounted, 1, "tui mode mounts the modal");
+    assert.ok(seenTheme, "the screen is handed the host theme");
+    // The dialog form must NOT also run.
+    assert.ok(!entryTexts(withBridge).some((t) => t.startsWith("settings: usage")));
+  } finally { cleanup(); }
+});
+
+test("bare /qdrant settings in rpc mode runs the dialog form, never the modal", async () => {
+  let mounted = 0;
+  let selects = 0;
+  const api = withCommandUI(fakeApi(), {
+    hasUI: true,
+    mode: "rpc",
+    dialogs: {
+      async select() { selects++; return undefined; },
+      async input() { return undefined; },
+      async confirm() { return false; },
+    },
+    custom: (async () => { mounted++; return undefined; }) as unknown as MountFn,
+  });
+  const withBridge = { ...api, hostBridge: () => fakeBridge() };
+  const cleanup = wireApi(withBridge, rt);
+  try {
+    await qdrantCmd(withBridge)("settings");
+    assert.equal(selects, 1, "rpc keeps the dialog sequence");
+    assert.equal(mounted, 0, "rpc's ctx.ui.custom is a silent no-op, so it must never be mounted");
+  } finally { cleanup(); }
+});
+
+test("bare /qdrant settings with no dialog UI falls back to the usage entry", async () => {
+  const api = withCommandUI(fakeApi(), { hasUI: false, mode: "print" });
+  const cleanup = wireApi(api, rt);
+  try {
+    await qdrantCmd(api)("settings");
+    assert.ok(
+      entryTexts(api).some((t) => t.startsWith("settings: usage")),
+      `expected the usage entry, got ${JSON.stringify(entryTexts(api))}`,
+    );
+  } finally { cleanup(); }
+});
+
+test("tui mode with an unresolved host bridge degrades to the dialog form (never throws)", async () => {
+  let selects = 0;
+  let mounted = 0;
+  // mode is tui, but the bridge resolved nothing — SettingsList is missing.
+  const api = withCommandUI(fakeApi(), {
+    hasUI: true,
+    mode: "tui",
+    dialogs: {
+      async select() { selects++; return undefined; },
+      async input() { return undefined; },
+      async confirm() { return false; },
+    },
+    custom: (async () => { mounted++; return undefined; }) as unknown as MountFn,
+  });
+  const cleanup = wireApi({ ...api, hostBridge: () => ({}) }, rt);
+  try {
+    await qdrantCmd(api)("settings");
+    assert.equal(mounted, 0, "an incomplete bridge must not mount a half-built screen");
+    assert.equal(selects, 1, "it degrades to the dialog form instead");
+  } finally { cleanup(); }
+});
+
+test("commandUI() is only defined DURING the handler, never after it (#56)", async () => {
+  const base = fakeApi();
+  const api: WireApi = { ...base, commandUI: () => undefined };
+  const cleanup = wireApi(api, rt);
+  try {
+    const cmd = (base.commands as Array<{ name: string; execute: (args: string) => Promise<void> }>).find((c) => c.name === "qdrant")!;
+    // The seam is a closure over the invocation; with no invocation it is
+    // undefined, which is what stops a later handler reading a stale ctx.
+    assert.equal(api.commandUI!(), undefined, "no invocation → no ctx-derived view");
+    await cmd.execute("help");
+    assert.equal(api.commandUI!(), undefined, "released in finally after the handler returns");
+  } finally { cleanup(); }
 });

@@ -199,16 +199,62 @@ export interface SettingsScopeRow {
   overridden: boolean;
 }
 
+/** The config keys whose value is a credential. A secret is NEVER rendered as
+ *  a value, prefilled into an input, or placed in a confirm message — only its
+ *  set-state is shown (#58, audit M3). Mirrors the nullable keys
+ *  `setConfigField` accepts `null` for, so the two lists cannot drift. */
+export const SECRET_SETTING_FIELDS: readonly string[] = ["qdrantApiKey", "embeddingApiKey"];
+
+export function isSecretSettingField(key: string): boolean {
+  return SECRET_SETTING_FIELDS.includes(key);
+}
+
+/** The set-state a secret field may show in place of its value. Never the
+ *  value itself, on any surface. */
+export function secretDisplayValue(value: string | number | null): string {
+  return value === null ? "not set" : "set";
+}
+
 /**
  * Shared scope annotation for one settings row. `noOverrideText` carries the
  * one wording difference between the two surfaces (usage: "inherited from
  * global"; form pick labels: "global").
+ *
+ * A secret row shows its set-state instead of its value (#58) — the same
+ * wording the settings screen's mapping uses, so both surfaces agree.
  */
 export function settingsScopeLabel(r: SettingsScopeRow, noOverrideText = "global"): string {
   const scope = r.overridden
     ? `this project; global: ${displayValue(r.globalValue)}`
     : noOverrideText;
-  return `${r.key} = ${displayValue(r.value)} (${scope})`;
+  const value = isSecretSettingField(r.key) ? secretDisplayValue(r.value) : displayValue(r.value);
+  return `${r.key} = ${value} (${scope})`;
+}
+
+/**
+ * Every settings cancellation says something. `key` is absent only when the
+ * user left the form before choosing a field (Esc on the picker), where no
+ * field is in question (#58 / audit L1). Deliberately one builder so no cancel
+ * path can be silent by omission.
+ */
+export function settingsCancelledText(key?: string): string {
+  return key ? `settings: ${key} unchanged (cancelled)` : "settings: unchanged (cancelled)";
+}
+
+/** The settings screen's key hint line: the two keys that leave the screen.
+ *  `keyText` supplies the real labels; when the host package has not resolved
+ *  the screen degrades to listing the actions instead of the keys. */
+export function settingsScreenHintText(keys: { confirm?: string; cancel?: string }): string {
+  const confirm = keys.confirm && keys.confirm.length > 0 ? keys.confirm : "enter";
+  const cancel = keys.cancel && keys.cancel.length > 0 ? keys.cancel : "esc";
+  return `${confirm} to change · ${cancel} to close`;
+}
+
+/** The submenu prompt line: the field, its editor rule and the value in effect
+ *  right now. `currentValue` is the DISPLAYED value — for a secret that is
+ *  `set`/`not set`, so this line can never print a credential (#58). */
+export function valuePromptText(prompt: string, currentValue: string): string {
+  return `${prompt} — current: ${currentValue}`;
 }
 
 /** Bare `/qdrant settings` usage: the scope rule, both absolute file paths, and

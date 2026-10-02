@@ -504,7 +504,7 @@ test("runSettingsForm edits a numeric field after confirm", async () => {
   assert.match(d.printed.join("\n"), /scoreThreshold updated/);
 });
 
-test("runSettingsForm Esc on the field list writes nothing", async () => {
+test("runSettingsForm Esc on the field list writes nothing, and says so (#58)", async () => {
   const d = io();
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -514,7 +514,12 @@ test("runSettingsForm Esc on the field list writes nothing", async () => {
   await runSettingsForm(ui, d);
   assert.equal(d.globalWrites.length, 0);
   assert.equal(d.projectWrites.length, 0);
-  assert.equal(d.printed.length, 0);
+  // #58: this path used to return silently. Esc before a field is chosen has no
+  // key to name, so it reports the form as a whole.
+  assert.deepEqual(
+    d.emitted.map((e) => outText(e)),
+    ["settings: unchanged (cancelled)"],
+  );
 });
 
 test("runSettingsForm rejects an invalid value before confirming", async () => {
@@ -1437,3 +1442,117 @@ test("clearHandler with 'code' emits error when deletePointsBySourceKind is abse
   assert.match(d.printed.join("\n"), /error: clear failed: client does not support deletion by source kind/);
 });
 
+
+// ── #58: secrets and cancellation on the DIALOG form path ────────────────────
+//
+// The SettingsList screen masks secrets at the mapping level (settings-ui.ts),
+// but this form is the fallback path and used to print the credential twice:
+// once in the pick label and once as the input's placeholder.
+
+const FORM_SECRET = "sk-form-secret-never-show-4242";
+
+test("runSettingsForm pick labels never render a secret value (#58)", async () => {
+  const d = io({ cfg: { ...cfg, qdrantApiKey: FORM_SECRET, embeddingApiKey: null } });
+  let labels: string[] = [];
+  const ui: SettingsUI = {
+    async select(_title, options) { labels = options; return undefined; },
+    async input() { return undefined; },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.ok(labels.length === 12);
+  const rendered = labels.join("\n");
+  assert.ok(!rendered.includes(FORM_SECRET), `secret leaked into the picker: ${rendered}`);
+  // The set-state still carries the fact the user needs.
+  assert.ok(labels.some((l) => l.startsWith("qdrantApiKey = set")), rendered);
+  assert.ok(labels.some((l) => l.startsWith("embeddingApiKey = not set")), rendered);
+  // Non-secret fields still show their real value.
+  assert.ok(labels.some((l) => l.startsWith("expectedDimension = 768")), rendered);
+});
+
+test("runSettingsForm never prefills a secret into the prompt (#58)", async () => {
+  const d = io({ cfg: { ...cfg, qdrantApiKey: FORM_SECRET } });
+  let placeholder: string | undefined = "unset";
+  const ui: SettingsUI = {
+    async select(_title, options) { return options.find((o) => o.startsWith("qdrantApiKey =")); },
+    async input(_title, ph) { placeholder = ph; return undefined; },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(placeholder, undefined, "a secret must not be the placeholder");
+});
+
+test("a non-secret field is still prefilled, so the form stays usable", async () => {
+  const d = io();
+  let placeholder: string | undefined;
+  const ui: SettingsUI = {
+    async select(_title, options) { return options.find((o) => o.startsWith("expectedDimension =")); },
+    async input(_title, ph) { placeholder = ph; return undefined; },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(placeholder, "768");
+});
+
+test("Esc at the input step is a visible cancellation (#58)", async () => {
+  const d = io();
+  let confirms = 0;
+  const ui: SettingsUI = {
+    async select(_title, options) { return options.find((o) => o.startsWith("scoreThreshold =")); },
+    async input() { return undefined; },
+    async confirm() { confirms++; return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(confirms, 0);
+  assert.equal(d.globalWrites.length, 0);
+  assert.deepEqual(d.emitted.map((e) => outText(e)), ["settings: scoreThreshold unchanged (cancelled)"]);
+});
+
+test("empty input on a NON-nullable field is a cancellation, not silence (#58)", async () => {
+  const d = io();
+  let confirms = 0;
+  const ui: SettingsUI = {
+    async select(_title, options) { return options.find((o) => o.startsWith("maxResults =")); },
+    async input() { return ""; },
+    async confirm() { confirms++; return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(confirms, 0, "an empty value on a non-nullable field never confirms");
+  assert.equal(d.globalWrites.length, 0);
+  assert.deepEqual(d.emitted.map((e) => outText(e)), ["settings: maxResults unchanged (cancelled)"]);
+});
+
+test("empty input on a SECRET field still clears it (not a cancellation)", async () => {
+  const d = io({ cfg: { ...cfg, qdrantApiKey: FORM_SECRET } });
+  const ui: SettingsUI = {
+    async select(_title, options) { return options.find((o) => o.startsWith("qdrantApiKey =")); },
+    async input() { return ""; },
+    async confirm() { return true; },
+  };
+  await runSettingsForm(ui, d);
+  assert.equal(d.globalWrites.length, 1);
+  assert.equal(d.globalWrites[0].qdrantApiKey, null, "empty clears the key");
+  // And the confirmation must not echo the old secret either.
+  assert.ok(!d.emitted.map((e) => outText(e)).join("\n").includes(FORM_SECRET));
+});
+
+test("a declined confirm still names the field (#58)", async () => {
+  const d = io();
+  const ui: SettingsUI = {
+    async select(_title, options) { return options.find((o) => o.startsWith("memoryForget =")); },
+    async input() { return undefined; },
+    async confirm() { return false; },
+  };
+  // memoryForget is a select-driven enum; drive the value step then decline.
+  const ui2: SettingsUI = {
+    async select(title: string, options: string[]) {
+      return options.includes("on") && title.includes("memoryForget") ? "on" : "memoryForget = off (global)";
+    },
+    async input() { return undefined; },
+    async confirm() { return false; },
+  };
+  await runSettingsForm(ui2, d);
+  assert.equal(d.globalWrites.length, 0);
+  assert.deepEqual(d.emitted.map((e) => outText(e)), ["settings: memoryForget unchanged (cancelled)"]);
+  void ui;
+});

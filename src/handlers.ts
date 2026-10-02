@@ -27,12 +27,14 @@ import {
   formNumericPrompt,
   formSaveMessage,
   helpEntry,
+  isSecretSettingField,
   message,
   modeOwnConflictNotice,
   outText,
   resetOptionLabel,
   searchEntry,
   searchHitView,
+  settingsCancelledText,
   settingsGlobalUpdatedText,
   settingsOverrideClearedText,
   settingsScopeLabel,
@@ -306,9 +308,11 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
     return label;
   });
   const pick = await ui.select("Qdrant Memory — choose a setting to edit", options);
-  if (!pick) return; // Esc cancels the whole form
+  // #58: every exit from the form is visible. Esc before a field was chosen has
+  // no key to name, so it reports the form as a whole.
+  if (!pick) { io.emit(message(settingsCancelledText())); return; }
   const key = optionToKey.get(pick);
-  if (!key) return;
+  if (!key) { io.emit(message(settingsCancelledText())); return; }
   const cur = cfgField(effective, key);
   const globalVal = cfgField(globalForLabels, key) as string | number;
   const projectScoped = isProjectOverridable(key);
@@ -333,15 +337,19 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
       raw = await ui.input(`${key} (${positive ? "positive " : ""}number)`, String(cur));
     }
   } else {
-    const nullable = key === "qdrantApiKey" || key === "embeddingApiKey";
-    const prompt = nullable ? `${key} (clear to remove)` : key;
-    raw = await ui.input(prompt, cur === null ? undefined : String(cur));
+    // #58: a secret is NEVER prefilled — the placeholder would print the
+    // credential. Its pick label already carries the "currently set" fact, and
+    // an empty value is the documented clear path.
+    const secret = isSecretSettingField(key);
+    const prompt = secret ? `${key} (clear to remove)` : key;
+    raw = await ui.input(prompt, secret || cur === null ? undefined : String(cur));
   }
   const value = raw === undefined ? undefined : raw.trim();
-  if (value === undefined) return; // Esc — genuine cancellation
+  if (value === undefined) { io.emit(message(settingsCancelledText(key))); return; } // Esc
   if (value === "") {
-    const nullable = key === "qdrantApiKey" || key === "embeddingApiKey";
-    if (!nullable) return;
+    // Empty input clears a secret; on every other field it is a cancellation
+    // ("leave unchanged"), which must be visible like every other cancel (#58).
+    if (!isSecretSettingField(key)) { io.emit(message(settingsCancelledText(key))); return; }
   }
   const resolvedValue = value === "" ? "null" : value;
 
@@ -349,7 +357,7 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
     // Reserved token, matched before validation — mirrors the CLI clear path.
     const before = io.cfg.codeKnowledge;
     const ok = await ui.confirm("Clear the project override?", formClearMessage(key, globalVal));
-    if (!ok) { io.emit(message(`settings: ${key} unchanged (cancelled)`)); return; }
+    if (!ok) { io.emit(message(settingsCancelledText(key))); return; }
     io.clearProjectSetting(key);
     io.emit(message(settingsOverrideClearedText(key, io.readGlobalConfig()[key], maskNote(key, io.env))));
     if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
@@ -364,7 +372,7 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
     `Save ${key}?`,
     formSaveMessage(key, nextValue, cur, projectScoped ? "project" : "global", globalVal),
   );
-  if (!ok) { io.emit(message(`settings: ${key} unchanged (cancelled)`)); return; }
+  if (!ok) { io.emit(message(settingsCancelledText(key))); return; }
   const before = io.cfg.codeKnowledge;
   if (projectScoped) {
     io.writeProjectSettings(projectOverride(applied.next, key));
