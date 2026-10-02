@@ -30,7 +30,12 @@ jobs:
       - id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          release-type: node
+          # Manifest config. `bump-minor-pre-major` makes a breaking commit land
+          # as a MINOR bump while pre-1.0 (the /qdrant-* -> /qdrant rename is
+          # 0.4.0 -> 0.5.0, not 1.0.0), and `include-component-in-tag: false`
+          # keeps the existing vX.Y.Z tag scheme.
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   publish:
     needs: release-please
