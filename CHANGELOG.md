@@ -5,6 +5,26 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.5.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.4.1...v0.5.0) (2026-10-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* the eight /qdrant-* commands are replaced by one /qdrant command: /qdrant-status -> /qdrant status, /qdrant-search -> /qdrant search, /qdrant-remember -> /qdrant remember, /qdrant-forget -> /qdrant forget, /qdrant-settings -> /qdrant settings, /qdrant-clear -> /qdrant clear all, /qdrant-help -> /qdrant help, /qdrant-index-code -> /qdrant index code. The old names are no longer registered and a session-start notice announces the migration until the first successful /qdrant command.
+
+### Features
+
+* add the /qdrant argument grammar and completions ([a0556bd](https://github.com/lordekeen/pi-qdrant-memory/commit/a0556bdb36df46024421a8cf7c411de1ff963e69))
+* add the settings-item mapping for the host SettingsList screen ([24fdad8](https://github.com/lordekeen/pi-qdrant-memory/commit/24fdad85f72a2c743b18b547846def8350a10cfe))
+* add the TUI settings screen on pi's own SettingsList ([93b0dd6](https://github.com/lordekeen/pi-qdrant-memory/commit/93b0dd659ba739542da0c89559e7757895fbee0a))
+* replace the /qdrant-* commands with one /qdrant command ([ffeb5f3](https://github.com/lordekeen/pi-qdrant-memory/commit/ffeb5f3189febb7e77b9745af0e04ce93e284391))
+* show the /qdrant migration notice and harden persisted state ([6283670](https://github.com/lordekeen/pi-qdrant-memory/commit/628367042fc58cafe5431b69554ee3e491759a9e))
+
+
+### Bug Fixes
+
+* name the real expand key and never split graphemes ([#53](https://github.com/lordekeen/pi-qdrant-memory/issues/53), [#59](https://github.com/lordekeen/pi-qdrant-memory/issues/59)) ([31b3b2f](https://github.com/lordekeen/pi-qdrant-memory/commit/31b3b2f97bad48978402f79f11fe676556039804))
+
 ## [0.4.1](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.4.0...v0.4.1) (2026-09-19)
 
 
