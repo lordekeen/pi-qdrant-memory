@@ -13,6 +13,23 @@ import {
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
 import {
   EMPTY_SEARCH_TEXT,
+  alreadySavedText,
+  clearCodeUnsupportedText,
+  clearFailedText,
+  clearNoCodeText,
+  clearedAllText,
+  clearedCodeText,
+  forgetCancelledText,
+  forgetFailedText,
+  forgetNoMatchText,
+  forgetRequiresUiText,
+  forgetUnsupportedText,
+  forgetUsageText,
+  forgottenText,
+  rememberFailedText,
+  rememberedText,
+  searchFailedText,
+  settingsWriteErrorText,
   clearAlreadyEmptyText,
   clearAllConfirmMessage,
   clearAllConfirmTitle,
@@ -217,7 +234,7 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
         return { exit: false };
       }
       const applied = setConfigField(io.readGlobalConfig(), field, value); // same errors as a global write
-      if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return { exit: false }; }
+      if (!applied.ok) { io.emit(errorEntry(settingsWriteErrorText(applied.error))); return { exit: false }; }
       io.writeProjectSettings(projectOverride(applied.next, field));       // typed partial, JSON number
       io.emit(message(settingsUpdatedText(field, applied.next[field], io.readGlobalConfig()[field], maskNote(field, io.env))));
       if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
@@ -226,7 +243,7 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
     // Non-allowlisted key: today's global path, persisted from the GLOBAL reader
     // (D10) — never the effective config.
     const applied = setConfigField(io.readGlobalConfig(), field, value);
-    if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return { exit: false }; }
+    if (!applied.ok) { io.emit(errorEntry(settingsWriteErrorText(applied.error))); return { exit: false }; }
     io.writeGlobalConfig(applied.next);
     io.emit(message(settingsGlobalUpdatedText(field)));
     // #50: forcing own while pi-blackhole is operational makes both extensions
@@ -366,7 +383,7 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
 
   const globalNow = io.readGlobalConfig(); // re-read: never persist a stale/effective Config
   const applied = setConfigField(globalNow, key, resolvedValue);
-  if (!applied.ok) { io.emit(errorEntry(`error: ${applied.error}`)); return; }
+  if (!applied.ok) { io.emit(errorEntry(settingsWriteErrorText(applied.error))); return; }
   const nextValue = cfgField(applied.next, key);
   const ok = await ui.confirm(
     `Save ${key}?`,
@@ -398,10 +415,10 @@ export async function rememberHandler(io: HandlerIO, text: string, type?: Memory
   // deterministic point id — it is never echoed to the human; only the
   // LLM-facing memory_save return names it (DESIGN.md agent-tool-results).
   if (res.ok) {
-    if (res.value.skipped) io.emit(message(`already saved: ${res.value.text}`));
-    else io.emit(message(`remembered: ${res.value.text}`));
+    if (res.value.skipped) io.emit(message(alreadySavedText(res.value.text)));
+    else io.emit(message(rememberedText(res.value.text)));
   } else {
-    io.emit(errorEntry(`error: remember failed: ${res.error}`));
+    io.emit(errorEntry(rememberFailedText(res.error)));
   }
   return { exit: false };
 }
@@ -416,7 +433,7 @@ export async function searchHandler(io: HandlerIO, query: string, type?: MemoryT
     // longer prefixes a tool name), so no prefix-stripping is needed here — the
     // LLM tool's "memory_search failed:" lead lives only on the memory_search
     // tool return (DESIGN.md agent-tool-results).
-    io.emit(errorEntry(`error: search failed: ${res.error}`));
+    io.emit(errorEntry(searchFailedText(res.error)));
   }
   return { exit: false };
 }
@@ -455,7 +472,7 @@ export async function clearHandler(io: HandlerIO, target?: string, ui?: Settings
       if (err instanceof QdrantError && err.status === 404) {
         count = 0;
       } else {
-        io.emit(errorEntry(`error: clear failed: ${String(err)}`));
+        io.emit(errorEntry(clearFailedText(String(err))));
         return { exit: false };
       }
     }
@@ -475,9 +492,9 @@ export async function clearHandler(io: HandlerIO, target?: string, ui?: Settings
     try {
       await io.qdrant.clearCollection(io.projectId);
       resetCodeMemoryCaches(io);
-      io.emit(message(`cleared: collection ${io.projectId} reset`));
+      io.emit(message(clearedAllText(io.projectId)));
     } catch (err) {
-      io.emit(errorEntry(`error: clear failed: ${String(err)}`));
+      io.emit(errorEntry(clearFailedText(String(err))));
     }
     return { exit: false };
   }
@@ -485,18 +502,18 @@ export async function clearHandler(io: HandlerIO, target?: string, ui?: Settings
     try {
       const count = await io.qdrant.countBySourceKind(io.projectId, "code_summary");
       if (count === 0) {
-        io.emit(message("clear: no code points indexed"));
+        io.emit(message(clearNoCodeText()));
         return { exit: false };
       }
       if (!io.qdrant.deletePointsBySourceKind) {
-        io.emit(errorEntry("error: clear failed: client does not support deletion by source kind"));
+        io.emit(errorEntry(clearCodeUnsupportedText()));
         return { exit: false };
       }
       await io.qdrant.deletePointsBySourceKind(io.projectId, "code_summary");
       resetCodeMemoryCaches(io);
-      io.emit(message(`cleared: ${count} code memory point${count === 1 ? "" : "s"} removed`));
+      io.emit(message(clearedCodeText(count)));
     } catch (err) {
-      io.emit(errorEntry(`error: clear failed: ${String(err)}`));
+      io.emit(errorEntry(clearFailedText(String(err))));
     }
     return { exit: false };
   }
@@ -509,7 +526,7 @@ export const FORGET_MAX_HITS = 5;
 export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsUI): Promise<HandlerResult> {
   const trimmed = query.trim();
   if (!trimmed) {
-    io.emit(message("usage: /qdrant forget <search query>"));
+    io.emit(message(forgetUsageText()));
     return { exit: false };
   }
   // Probe one hit beyond the cap: a hit at index FORGET_MAX_HITS proves more
@@ -517,15 +534,15 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
   // untouched. Only `targets` are ever shown or deleted (#48).
   const res = await memorySearchLogic(io, trimmed, undefined, FORGET_MAX_HITS + 1);
   if (!res.ok) {
-    io.emit(errorEntry(`error: forget failed: ${res.error}`));
+    io.emit(errorEntry(forgetFailedText(res.error)));
     return { exit: false };
   }
   if (res.value.length === 0) {
-    io.emit(message(`forget: no memories matched "${trimmed}"`));
+    io.emit(message(forgetNoMatchText(trimmed)));
     return { exit: false };
   }
   if (!ui) {
-    io.emit(errorEntry("error: /qdrant forget requires interactive UI confirmation"));
+    io.emit(errorEntry(forgetRequiresUiText()));
     return { exit: false };
   }
   const capped = res.value.length > FORGET_MAX_HITS;
@@ -534,19 +551,19 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
   io.emit(searchEntry(views));
   const confirmed = await ui.confirm("Remove memories?", forgetConfirmMessage(views, capped));
   if (!confirmed) {
-    io.emit(message("forget: unchanged (cancelled)"));
+    io.emit(message(forgetCancelledText()));
     return { exit: false };
   }
   const hitIds = targets.map((h) => h.id);
   if (!io.qdrant.deletePointsByIds) {
-    io.emit(errorEntry("error: forget failed: client does not support point deletion by id"));
+    io.emit(errorEntry(forgetUnsupportedText()));
     return { exit: false };
   }
   try {
     const count = await io.qdrant.deletePointsByIds(io.projectId, hitIds);
-    io.emit(message(`forgotten: ${count} memories removed`));
+    io.emit(message(forgottenText(count)));
   } catch (err) {
-    io.emit(errorEntry(`error: forget failed: ${err instanceof Error ? err.message : String(err)}`));
+    io.emit(errorEntry(forgetFailedText(err instanceof Error ? err.message : String(err))));
   }
   return { exit: false };
 }

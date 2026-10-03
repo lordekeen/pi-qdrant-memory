@@ -306,6 +306,108 @@ export function clearUsageText(): string {
   ].join("\n");
 }
 
+// ── Command result lines ────────────────────────────────────────────────────
+// Success/failure lines for the remember / search / settings / clear / forget /
+// index commands. Handlers only `emit(...)` these — no transcript string is
+// built inline (DESIGN.md "content-first chrome").
+
+/** A settings field write rejected by validation: the reader's own reason,
+ * never reworded. Shared by the project, global and form write paths. */
+export function settingsWriteErrorText(detail: string): string {
+  return `error: ${detail}`;
+}
+
+/** `/qdrant remember` confirmation: the stored text, verbatim. */
+export function rememberedText(text: string): string {
+  return `remembered: ${text}`;
+}
+
+/** Re-saving text already stored at the same deterministic id — not "remembered". */
+export function alreadySavedText(text: string): string {
+  return `already saved: ${text}`;
+}
+
+/** `/qdrant remember` failure: the bare reason from tools-core. */
+export function rememberFailedText(detail: string): string {
+  return `error: remember failed: ${detail}`;
+}
+
+/** `/qdrant search` failure: the bare reason from tools-core. */
+export function searchFailedText(detail: string): string {
+  return `error: search failed: ${detail}`;
+}
+
+/** `/qdrant clear` failure (any target): the thrown value stringified. */
+export function clearFailedText(detail: string): string {
+  return `error: clear failed: ${detail}`;
+}
+
+/** `/qdrant clear all` success: names the wiped collection. */
+export function clearedAllText(projectId: string): string {
+  return `cleared: collection ${projectId} reset`;
+}
+
+/** `/qdrant clear code` on a project with no indexed code points. */
+export function clearNoCodeText(): string {
+  return "clear: no code points indexed";
+}
+
+/** `/qdrant clear code` refused: the client cannot delete by source kind. */
+export function clearCodeUnsupportedText(): string {
+  return "error: clear failed: client does not support deletion by source kind";
+}
+
+/** `/qdrant clear code` success: the removed point count, singularised. */
+export function clearedCodeText(count: number): string {
+  return `cleared: ${count} code memory point${count === 1 ? "" : "s"} removed`;
+}
+
+/** Bare `/qdrant forget` usage: the command needs a search query. */
+export function forgetUsageText(): string {
+  return "usage: /qdrant forget <search query>";
+}
+
+/** `/qdrant forget` failure: the bare reason from tools-core. */
+export function forgetFailedText(detail: string): string {
+  return `error: forget failed: ${detail}`;
+}
+
+/** `/qdrant forget` with zero matches: the query, quoted back. */
+export function forgetNoMatchText(query: string): string {
+  return `forget: no memories matched "${query}"`;
+}
+
+/** `/qdrant forget` with no dialog-capable UI: a destructive delete always
+ *  confirms, so it refuses instead (mirrors the clear refusal). */
+export function forgetRequiresUiText(): string {
+  return "error: /qdrant forget requires interactive UI confirmation";
+}
+
+/** `/qdrant forget` declined — mirrors the clear cancellation wording. */
+export function forgetCancelledText(): string {
+  return "forget: unchanged (cancelled)";
+}
+
+/** `/qdrant forget` refused: the client cannot delete points by id. */
+export function forgetUnsupportedText(): string {
+  return "error: forget failed: client does not support point deletion by id";
+}
+
+/** `/qdrant forget` success: the removed memory count. */
+export function forgottenText(count: number): string {
+  return `forgotten: ${count} memories removed`;
+}
+
+/** `/qdrant index` on a kind whose live feature gate is off: names the gate. */
+export function codeMemoryDisabledText(gate: string): string {
+  return `code memory is disabled (${gate}: off)`;
+}
+
+/** `/qdrant index` failure: the runner's error, or the fallback wording. */
+export function codeMemorySyncFailedText(error?: string): string {
+  return `code memory: sync failed — ${error ?? "unknown error"}`;
+}
+
 /** Bare `/qdrant index` usage: the key's own line, then one line per kind.
  *  `kinds` is the `INDEX_KINDS` registry (commands.ts) passed in — out.ts stays
  *  free of runtime imports, and the list can never drift from what is accepted. */

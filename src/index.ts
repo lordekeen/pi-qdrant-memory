@@ -40,6 +40,8 @@ import {
   unexpectedArgumentText,
   unknownKeyText,
   unknownValueText,
+  codeMemoryDisabledText,
+  codeMemorySyncFailedText,
   codeMemorySyncMessage,
 } from "./out.ts";
 import type { CodeMemoryHealth } from "./out.ts";
@@ -498,12 +500,12 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
         // still requires the session reload. Declared per kind via INDEX_KINDS.
         const gate = INDEX_KINDS[kind].gate;
         if (rt.cfg[gate] !== "on") {
-          io.emit(message(`code memory is disabled (${gate}: off)`));
+          io.emit(message(codeMemoryDisabledText(gate)));
           return;
         }
         const r = await indexRunners[kind]();
         if (!r.ok) {
-          io.emit(errorEntry(`code memory: sync failed — ${r.error ?? "unknown error"}`));
+          io.emit(errorEntry(codeMemorySyncFailedText(r.error)));
           return;
         }
         io.emit(message(codeMemorySyncMessage({
