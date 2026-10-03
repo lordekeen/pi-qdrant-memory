@@ -93,15 +93,18 @@ One command, `/qdrant`, with a key as its first argument:
 
 - `/qdrant` — the status block plus this list (bare form is self-documenting).
 - `/qdrant status` — connection health + active mode + collection point count.
-- `/qdrant settings [key] [value]` — open the settings screen, or persist a config field. `codeKnowledge` and `codeScoreThreshold` apply to this project (an override); every other key (`mode`, `embeddingBaseURL`, `embeddingModel`, `expectedDimension`, `scoreThreshold`, `maxResults`, `memoryForget`, …) writes the global config file. `<key> default` clears an allowlisted override; for the other keys `default` is an ordinary value. Bare `/qdrant settings` prints usage. Only the `<key>` token is bounded — the value is the rest of the line, so URLs and model names keep their punctuation.
+- `/qdrant settings [key] [value]` — open the settings screen, or persist a config field. `codeKnowledge` and `codeScoreThreshold` apply to this project (an override); every other key (`mode`, `embeddingBaseURL`, `embeddingModel`, `expectedDimension`, `scoreThreshold`, `maxResults`, `memoryForget`, …) writes the global config file. `<key> default` clears an allowlisted override; for the other keys `default` is an ordinary value. Only the `<key>` token is bounded — the value is the rest of the line, so URLs and model names keep their punctuation.
+  - Bare `/qdrant settings` opens the **settings screen** in the TUI: pi's own settings list with all twelve fields (type-ahead search, enum values cycled with Enter, single-line editors for the rest). API keys are shown only as `set`/`not set` — never the value — and an empty editor value clears a key. Esc closes the screen and prints `settings: unchanged (cancelled)`; invalid values are rejected with an error and the row rolls back. In RPC the same bare form falls back to the interactive dialog sequence, and in print/headless modes it prints the usage message.
 - `/qdrant remember <text>` — manual durable save. The text is used verbatim.
 - `/qdrant search <query>` — manual semantic search. The query is used verbatim.
 - `/qdrant forget <query>` — search matching memories and delete them interactively with confirmation. The dialog lists the matches (type, score, 60-char preview) and one confirmation deletes at most the 5 closest matches.
-- `/qdrant clear all | code` — reset the current project's entire memory collection (`all`) or purge indexed code summaries (`code`). Exactly one modifier; bare `/qdrant clear` displays usage guidance.
+- `/qdrant clear all | code` — reset the current project's entire memory collection (`all`) or purge indexed code summaries (`code`). Exactly one modifier; bare `/qdrant clear` displays usage guidance. `clear all` asks for confirmation first (naming the project and the exact count it would delete) and refuses outright in headless modes rather than delete blindly; an empty collection is reported with no dialog.
 - `/qdrant index code` — re-index code summaries now (the `index` key takes a kind; today `code` is the only one). Exactly one kind; bare `/qdrant index` lists the kinds. Answers "code memory is disabled" rather than indexing when `codeKnowledge` is off.
 - `/qdrant help` — list all commands available.
 
 An unrecognised key, or too many tokens where only one is accepted, produces one error entry naming the correction — the command never guesses. Completion is two-level: keys for `/qdrant `, then the accepted values for `clear`, `index` and `settings`.
+
+**Migration notice.** Until you run your first `/qdrant` command, each session start shows a one-line notice that `/qdrant-*` is now `/qdrant <key>` (pointing at `/qdrant help`). It is a transcript message, not an error, and it stops after the first *successful* `/qdrant` dispatch — a failed one (unknown key, bad arguments) does not count. The "already shown" flag lives in `~/.pi/agent/pi-qdrant-memory/state.json` (honors `PI_CODING_AGENT_DIR`); deleting that file re-arms the notice. Headless (`json`/`print`) sessions never show it.
 
 ## Statusline
 

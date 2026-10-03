@@ -84,7 +84,8 @@ The extension produces three kinds of surface, all hosted by pi:
    `🧠 Memory ({points}): <mode> (<collection>)`, resolved at session start and
    repainted after successful writes (see footer-status); the host owns
    footer teardown.
-3. **Settings form** — host dialogs, always walked in the fixed order
+3. **Settings surface** — pi's own `SettingsList` screen in the TUI (a list,
+   not dialogs), and host dialogs in RPC, always walked in the fixed order
    **pick → edit → confirm**. One field per invocation; never more than three
    dialogs per command.
 
@@ -104,7 +105,8 @@ collapse/expand:
   `🧠 Memory: <mode> (<collection>)` header — the footer-status string without
   its `({points})` segment.
 - Search results are expandable entries: a collapsed summary line, with the full
-  verbatim text behind an Enter-to-expand gesture.
+  verbatim text behind the host's expand gesture (the `app.tools.expand`
+  keybinding — `ctrl+o` by default, user-remappable).
 - Do not add borders, box-drawing frames, horizontal rules, or background fills
   anywhere — every entry is unboxed text.
 
@@ -260,16 +262,21 @@ One entry per query. **Collapsed** (default) is a single summary line ending in
 a preview of the top hit's text:
 
 ```
-2 results · top [constraint] 0.91 · Score thresholds are shared…   (enter to expand)
+2 results · top [constraint] 0.91 · Score thresholds are shared…   (ctrl+o to expand)
 ```
 
 - The per-type tag on the "top" hit is colored per the Colors map; count and
   score are plain/dim.
 - The preview shows the top hit's text — default-colored and unadorned
-  (verbatim invariant) — truncated at 200 chars with `…` when longer. This is
-  the one truncation the extension ever does; expanding never truncates.
+  (verbatim invariant) — truncated at 200 chars with `…` when longer, on a
+  grapheme-safe cut (a multi-codepoint emoji or combining sequence is never
+  split). This is the one truncation the extension ever does; expanding never
+  truncates.
 - Only expandable when hits exist (the preview hides the rest of every hit, so
-  the hint is legitimate).
+  the hint is legitimate). The hint is the host's own `keyHint("app.tools.expand",
+  "to expand")` — dim key + muted description, coloured by the host, wrapped in
+  plain parentheses. When the host package has not resolved (plain-node runs)
+  the hint is omitted entirely: an invented key name is worse than no hint.
 
 **Expanded** renders every hit, verbatim and never truncated:
 
@@ -317,6 +324,24 @@ clear: usage — /qdrant clear all | code
        code — remove all indexed code summaries for this project
 ```
 
+`/qdrant clear all` is destructive, so it **cannot delete anything without a
+confirmation** — and it says so when it cannot ask:
+
+- With a dialog-capable UI and a non-empty collection: a host confirm dialog,
+  title `Reset <collection> and delete all <count> stored memories?` (the
+  exact count; `memory` at one), body `Deletes every memory and code summary
+  for this project from Qdrant. This cannot be undone.` Accept runs the reset
+  and then the existing `cleared: collection pi-mem-… reset` entry; declining
+  emits `clear: unchanged (cancelled)`. The default action is cancel (Esc/No);
+  nothing auto-dismisses into a commit.
+- Empty (or absent) collection: `clear: collection pi-mem-… is already empty`
+  and it **stops** — no dialog is ever opened when there is nothing to act on.
+- No dialog-capable UI: `error: /qdrant clear all requires interactive UI
+  confirmation` — a destructive wipe is never attempted blind (mirrors the
+  forget refusal).
+- `code` is unchanged: far less destructive, no confirmation, and `clear: no
+  code points indexed` already handles the empty case.
+
 Bare `/qdrant index` prints its own usage line plus one line per registered kind,
 generated from the kind registry:
 
@@ -362,6 +387,29 @@ The `/qdrant remember` confirmation is command voice: plain `remembered:`
 without echoing the stored point's internal source kind (the memory_save tool
 return is the one surface that names it — see agent-tool-results).
 
+### migration-notice
+
+A one-shot session-start entry announcing the `/qdrant-*` → `/qdrant <key>`
+rename. It is a `message` entry — nothing failed — and the copy is what the
+rule literally does:
+
+```
+commands: /qdrant-* is now /qdrant <key> — e.g. /qdrant status, /qdrant search <query>.
+          Run /qdrant help for the full list. Shown each session until your first /qdrant command.
+```
+
+Two lines, because the entry renderer does not wrap prose and the host
+truncates at the terminal edge. Shown on `session_start` until the first
+**successful** `/qdrant` dispatch of the session — a failed dispatch (unknown
+key, bad arguments) does not set the flag, because that user has
+demonstrably not migrated — then never again. The flag lives in
+`<agentDir>/pi-qdrant-memory/state.json` (honors `PI_CODING_AGENT_DIR`, same
+directory and `0600` discipline as the config, tolerant read: corrupt or
+absent means "not shown yet", never a throw). Never emitted in `json`/`print`
+sessions (there is no transcript to show it in), never written in headless
+sessions (a command cannot be invoked there), and never blocks or throws on
+`session_start`.
+
 The `/qdrant forget` confirmation is never a bare count: the dialog message
 lists every memory a Yes deletes — one line per hit, `[<type>] <score> —
 "<60-char one-line preview>"` — and the search entry above it shows the same
@@ -382,17 +430,82 @@ Rendered from command failures (including a thrown handler) and from
 `/qdrant search`/`/qdrant remember` failures. It is data, not a dialog or a
 crash — commands always exit normally with the error as content.
 
-### settings-form
+### settings-screen (TUI)
 
-Interactive config editing. Only reachable from the `/qdrant settings` command
-with no arguments, and only when `ctx.ui` dialogs exist. That includes the
-interactive TUI **and RPC**: rpc sets `ctx.hasUI = true` and translates
-`select`/`input`/`confirm` into `extension_ui_request`/`extension_ui_response`,
-so the form runs there too. Print/headless contexts without the dialog trio fall
-back to the usage message. `/qdrant settings <key> <value>` bypasses the UI
-entirely. The form displays the **effective** value (this project's override,
-else the global value) and the pick labels also name the layer, so the
-destination is never ambiguous.
+Bare `/qdrant settings` in the interactive TUI mounts pi's own `SettingsList`
+modal (the same primitive pi's built-in `/settings` uses) instead of any dialog
+sequence — decided from the **live** command ctx, never a cached probe:
+
+| Mode | Surface |
+|---|---|
+| `ctx.mode === "tui"` (and the host bridge resolved) | the `SettingsList` screen |
+| `ctx.hasUI` (RPC, dialog trio available) | the pick → edit → confirm form below |
+| otherwise (print/headless, or no dialogs) | the usage message |
+
+The modal is gated on `mode`, not `hasUI`: `ctx.ui.custom` is a silent no-op
+under RPC, so mounting there would open nothing and the command would look
+dead. If the host bridge has not resolved (plain node, old host) the screen is
+unreachable and the form/usage fallbacks take over.
+
+What the screen shows — one row per editable key, in the stable
+`SETTING_FIELDS` order (twelve fields):
+
+- **label** is the key, **currentValue** is the **effective** value (env →
+  project override → global), so the row shows what is in force, not one
+  layer.
+- **enum fields** (`mode`, `memoryForget`, `codeKnowledge`) carry a `values`
+  list — Enter cycles through them; `codeKnowledge`'s third value is
+  `default (inherit global: <g>)`, the clear-override entry, normalised back to
+  the reserved `default` token on write.
+- **other fields** (numbers, URL/model, secrets) open a one-line value submenu:
+  a dim prompt line `<prompt> — current: <value>` above pi-tui's own `Input`,
+  confirm/cancel matched through the injected `keybindings` object. The input
+  starts **empty** — the current value is shown on the prompt line, never
+  prefilled.
+- **secrets** (`qdrantApiKey`, `confirm`/`embeddingApiKey` — never the value,
+  on any surface): the row shows `set` or `not set`, the prompt reads
+  `<key> (clear to remove)`, and an empty committed value clears the key (the
+  write path turns it into `null`). The description says `Stored in the global
+  config file, never displayed.` Even after a write the row is re-shown as
+  `set`/`not set`, because the host copies the typed value into the row before
+  the extension gets a say.
+- **descriptions** carry scope and rule (`Global. 0–1.`, `Per project. Global:
+  off. Takes effect at the next session start.`) and, when an env var masks the
+  field, the same env-mask note the confirmations use.
+- The list is framed by the host's `DynamicBorder` (as pi's own settings
+  overlay does) and closes with a one-line key hint — `<confirm> to change ·
+  <cancel> to close`, labelled by the host's own `keyText`. The hint line is
+  omitted entirely when `keyText` has not resolved.
+
+Feedback and safety — every change goes through the **same** `setConfigField`
+validator and the **same** routing rule as `/qdrant settings <key> <value>`
+(allowlisted keys → this project's store, the rest → the global config file),
+so the two surfaces cannot diverge:
+
+- **Successful write** → the existing confirmation entries (`settings: <key> =
+  <new> (this project; global: <g>)` / `settings: <key> updated (global config;
+  reloaded at runtime)` / `settings: <key> override cleared (now using global:
+  <g>)`), plus the direction-aware `codeKnowledge` reload notice when the
+  effective value actually changed, plus the pi-blackhole conflict warning when
+  `mode = own` is set while pi-blackhole is operational.
+- **Rejected value** → an `error:` entry **and** the row is rolled back to the
+  previous displayed value (mandatory: the host mutates the row before calling
+  the extension, so without the rollback the list would display a value that
+  was never persisted).
+- **Esc anywhere** → the modal closes and emits `settings: unchanged
+  (cancelled)` — no silent exit. Feedback entries go out while the modal is up
+  and land in the transcript when it closes.
+
+### settings-form (RPC)
+
+Interactive config editing for RPC sessions. Reached from the `/qdrant
+settings` command with no arguments when `ctx.hasUI` dialogs exist but the mode
+is not `tui` — rpc sets `ctx.hasUI = true` and translates `select`/
+`input`/`confirm` into `extension_ui_request`/`extension_ui_response`. Print/
+headless contexts without the dialog trio fall back to the usage message.
+`/qdrant settings <key> <value>` bypasses the UI entirely. The form displays
+the **effective** value (this project's override, else the global value) and
+the pick labels also name the layer, so the destination is never ambiguous.
 
 Fixed flow, Esc cancels at any step:
 
