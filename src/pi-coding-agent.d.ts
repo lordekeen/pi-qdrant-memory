@@ -11,9 +11,14 @@
  * row or a silently unstyled hint.
  */
 declare module "@earendil-works/pi-coding-agent" {
-  /** Render a keybinding-aware hint ("⏎ to expand") for the given binding id.
-   *  `dist/modes/interactive/components/keybinding-hints.d.ts:11` — the second
-   *  argument is a DESCRIPTION, not a fallback key string. */
+  /** Render a keybinding-aware hint for the given binding id, e.g.
+   *  `keyHint("app.tools.expand", "to expand")` → dim `ctrl+o` (the host's own
+   *  resolution of the user's keybindings) + muted ` to expand`.
+   *  `dist/modes/interactive/components/keybinding-hints.js:30-31` returns
+   *  `theme.fg("dim", keyText(keybinding)) + theme.fg("muted", " " +
+   *  description)` — the second argument is a DESCRIPTION appended after the
+   *  host-resolved key, never a fallback key string, and the output is
+   *  already two-toned: callers must not re-wrap it in a theme slot. */
   export function keyHint(keybinding: string, description: string): string;
 
   /** The key label for one binding id, e.g. `keyText("tui.select.cancel")`

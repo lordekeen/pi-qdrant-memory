@@ -7,7 +7,7 @@
  * directly under plain node.
  */
 import type { MemoryType, PointPayload, SearchHit } from "./types.ts";
-import { PREVIEW_MAX, sourcePointer, truncatePreview } from "./render.ts";
+import { PREVIEW_MAX, graphemeLength, padEndGraphemes, sourcePointer, truncatePreview } from "./render.ts";
 
 // ── Entry model ──────────────────────────────────────────────────────────────
 
@@ -310,10 +310,15 @@ export function clearUsageText(): string {
  *  `kinds` is the `INDEX_KINDS` registry (commands.ts) passed in — out.ts stays
  *  free of runtime imports, and the list can never drift from what is accepted. */
 export function indexUsageText(kinds: Record<string, { summary: string }>): string {
-  const width = Math.max(...Object.keys(kinds).map((k) => k.length), 0);
+  // The kinds are grammar tokens from the INDEX_KINDS registry — internal,
+  // ASCII by construction, never user- or model-authored — so a code-unit
+  // padEnd would be safe in practice today. The grapheme-safe helpers are used
+  // anyway (#59): they are byte-identical for ASCII, and any future
+  // alignment added here is covered by the same justification by construction.
+  const width = Math.max(...Object.keys(kinds).map((k) => graphemeLength(k)), 0);
   return [
     "index: usage — /qdrant index <kind>",
-    ...Object.entries(kinds).map(([kind, info]) => `${kind.padEnd(width)} — ${info.summary}`),
+    ...Object.entries(kinds).map(([kind, info]) => `${padEndGraphemes(kind, width)} — ${info.summary}`),
   ].join("\n");
 }
 
@@ -522,11 +527,14 @@ function searchExpanded(hits: SearchHitView[]): OutLine[] {
 
 function helpLines(rows: HelpRow[]): OutLine[] {
   // Align to the longest command; the host truncates at the terminal edge — the
-  // extension never chooses a truncating width (DESIGN.md Layout).
-  const width = Math.max(...rows.map((r) => r.cmd.length), 0) + 2;
+  // extension never chooses a truncating width (DESIGN.md Layout). Command
+  // strings come from COMMAND_ROWS — internal, ASCII by construction — so a
+  // code-unit padEnd would be safe in practice; grapheme-safe math is used
+  // anyway (#59), byte-identical for ASCII.
+  const width = Math.max(...rows.map((r) => graphemeLength(r.cmd)), 0) + 2;
   const lines: OutLine[] = [{ spans: [s("commands", "bold")] }];
   for (const r of rows) {
-    lines.push({ spans: [s(r.cmd.padEnd(width)), s(r.desc, "dim")] });
+    lines.push({ spans: [s(padEndGraphemes(r.cmd, width)), s(r.desc, "dim")] });
   }
   return lines;
 }

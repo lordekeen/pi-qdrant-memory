@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderHits } from "../src/render.ts";
+import { renderHits, truncatePreview, graphemeLength, truncateGraphemes, padEndGraphemes } from "../src/render.ts";
 import type { PointPayload } from "../src/types.ts";
 
 test("renderHits shows type, score, text, and source pointer", () => {
@@ -66,4 +66,59 @@ test("renderHits does not truncate text longer than 200 chars (OI-017)", () => {
 test("renderHits distinguishes zero stored vs zero matched count (OI-018)", () => {
   assert.equal(renderHits([], 0), "No memories stored yet for this project.");
   assert.equal(renderHits([], 5), "No memories matched query above scoreThreshold (total stored: 5).");
+});
+
+// ── #59: grapheme-safe truncation ────────────────────────────────────────────
+
+test("truncatePreview is byte-identical for ASCII", () => {
+  assert.equal(truncatePreview("A".repeat(200)), "A".repeat(200));
+  assert.equal(truncatePreview("A".repeat(201)), "A".repeat(200) + "\u2026");
+  assert.equal(truncatePreview("short", 3), "sho\u2026");
+});
+
+test("truncatePreview never splits a surrogate pair at the cut", () => {
+  // 199 ASCII chars + 🚀 (1 grapheme, 2 code units) + "bc" = 202 graphemes,
+  // 203 code units. A code-unit cut at 200 would end mid-emoji; the grapheme
+  // cut keeps the emoji whole as the 200th grapheme.
+  const rocket = "\uD83D\uDE80"; // 🚀 U+1F680, a surrogate pair
+  const text = "A".repeat(199) + rocket + "bc";
+  assert.equal(truncatePreview(text, 200), "A".repeat(199) + rocket + "\u2026");
+  // No lone high surrogate at the cut (that would split the pair).
+  const cut = truncatePreview(text, 200).slice(0, -1);
+  const last = cut.codePointAt(cut.length - 1)!;
+  assert.ok(last < 0xd800 || last > 0xdbff, "cut must not end on a lone high surrogate");
+  // Result is valid UTF-8 (no lone surrogate left behind).
+  assert.doesNotThrow(() => new TextEncoder().encode(truncatePreview(text, 200)));
+});
+
+test("truncatePreview never splits a multi-codepoint emoji cluster", () => {
+  // Family emoji: 4 code points + 3 ZWJ, one grapheme.
+  const family = "\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67\u200D\uD83D\uDC66";
+  assert.equal(graphemeLength(family), 1);
+  // 198 + 1 + 2 = 201 graphemes; the 200-grapheme cut lands on "x", right
+  // after the cluster — so the cluster must survive whole.
+  const text = "A".repeat(198) + family + "xy";
+  assert.equal(truncatePreview(text, 200), "A".repeat(198) + family + "x\u2026");
+  // And a cut that would have landed INSIDE the cluster keeps it whole by
+  // cutting before it: 197 + 1 + 1 = 199 graphemes, no truncation at all.
+  assert.equal(truncatePreview("A".repeat(197) + family, 200), "A".repeat(197) + family);
+});
+
+test("truncatePreview never splits a base + combining-mark sequence", () => {
+  const eacute = "e\u0301"; // e + combining acute: 2 code points, 1 grapheme
+  assert.equal(graphemeLength(eacute), 1);
+  const text = "A".repeat(199) + eacute + "x"; // 201 graphemes
+  assert.equal(truncatePreview(text, 200), "A".repeat(199) + eacute + "\u2026");
+});
+
+test("truncateGraphemes and padEndGraphemes measure in graphemes", () => {
+  const family = "\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67\u200D\uD83D\uDC66";
+  assert.equal(graphemeLength("abc"), 3);
+  assert.equal(graphemeLength("abc" + family), 4);
+  assert.equal(truncateGraphemes("abc" + family, 3), "abc");
+  assert.equal(truncateGraphemes("abc" + family, 4), "abc" + family);
+  // Code-unit padEnd would under-pad the emoji (6 code units, not 4
+  // graphemes); the grapheme pad fills to exactly 8.
+  assert.equal(padEndGraphemes(family, 8), family + " ".repeat(7));
+  assert.equal(padEndGraphemes("abcd", 3), "abcd");
 });

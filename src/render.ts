@@ -5,9 +5,57 @@ import type { PointPayload, SearchHit } from "./types.ts";
  * entry-outlinemodel. */
 export const PREVIEW_MAX = 200;
 
+/**
+ * Grapheme-safe measurement (#59). `String.length` counts UTF-16 code units,
+ * so it can cut mid-surrogate-pair and mid-cluster (family emoji, base +
+ * combining mark), leaving a preview ending in half a character. Model- and
+ * user-authored text flows through here, so cuts go by *graphemes*:
+ * `Intl.Segmenter` is a Node built-in (zero dependencies). The budget stays a
+ * character budget, not a layout decision — the host's width-aware
+ * `visibleWidth`/`truncateToWidth` is deliberately NOT used, because the
+ * outline model is width-agnostic. For ASCII, grapheme count === code-unit
+ * count, so every previously pinned output stays byte-identical.
+ */
+let graphemeSegmenter: Intl.Segmenter | undefined;
+
+function toGraphemes(text: string): string[] {
+  if (graphemeSegmenter === undefined) {
+    // SAFETY: Intl.Segmenter is a stable Node built-in; the guard only
+    // protects exotic runtimes without it, where the fallback splits by code
+    // point (never mid-surrogate-pair) instead of by grapheme cluster.
+    if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
+      graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    }
+  }
+  const out: string[] = [];
+  if (graphemeSegmenter) {
+    for (const seg of graphemeSegmenter.segment(text)) out.push(seg.segment);
+  } else {
+    for (const codePoint of text) out.push(codePoint);
+  }
+  return out;
+}
+
+/** Grapheme count — the `String.length` replacement for width/alignment math. */
+export function graphemeLength(text: string): number {
+  return toGraphemes(text).length;
+}
+
+/** Cut to at most `max` graphemes, never mid-cluster or mid-surrogate-pair. */
+export function truncateGraphemes(text: string, max: number): string {
+  const units = toGraphemes(text);
+  return units.length <= max ? text : units.slice(0, max).join("");
+}
+
+/** `String.prototype.padEnd` by grapheme count instead of code units. */
+export function padEndGraphemes(text: string, width: number): string {
+  const n = graphemeLength(text);
+  return n >= width ? text : `${text}${" ".repeat(width - n)}`;
+}
+
 /** Truncate to a collapsed preview, appending `…` only when truncated. */
 export function truncatePreview(text: string, max: number = PREVIEW_MAX): string {
-  return text.length > max ? `${text.slice(0, max)}…` : text;
+  return graphemeLength(text) > max ? `${truncateGraphemes(text, max)}…` : text;
 }
 
 /** Source pointer for a hit's payload — single source shared by tool text + entry outlines.

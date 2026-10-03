@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { message, errorEntry, helpEntry, statusEntry, searchEntry, searchHitView } from "../src/out.ts";
 import type { StatusHealth } from "../src/out.ts";
 import type { PointPayload, SearchHit } from "../src/types.ts";
-import { renderEntryComponent, loadHostModules, textComponentResolved } from "../src/entry-render.ts";
+import { renderEntryComponent, loadHostModules, textComponentResolved, hostModules } from "../src/entry-render.ts";
 import type { RendererOptions, TextCtor } from "../src/entry-render.ts";
 
 const health: StatusHealth = {
@@ -136,13 +136,66 @@ test("message and error render verbatim through role slots", () => {
   assert.deepEqual(err.render(60), ["<error>error: search failed: down</error>"]);
 });
 
-test("collapsed search appends the expand hint to the summary line only", () => {
-  const entry = searchEntry([searchHitView(hit(payload("decision", "use REST"), 0.9))]);
-  const collapsed = renderEntryComponent(entry, seam, IDENTITY_THEME);
-  assert.ok(collapsed, "expected a search component");
-  const lines = collapsed.render(60);
-  assert.equal(lines.length, 1);
-  assert.ok(lines[0].endsWith("(enter to expand)"), `hint on summary: ${lines[0]}`);
+/**
+ * A fake `keyHint` reproducing the host's REAL output
+ * (`dist/modes/interactive/components/keybinding-hints.js:30-31`):
+ * dim key + muted description, with the host's default `app.tools.expand`
+ * keys (`ctrl+o`). The old test ran without pi resolved and asserted the
+ * dead fallback string, so it could never see the wrong description or the
+ * double colouring (#53) — this fake makes both regressions fail.
+ */
+const DIM = "\u001b[2m";
+const MUTED = "\u001b[9m";
+const RESET = "\u001b[0m";
+function fakeKeyHint(_keybinding: string, description: string): string {
+  return `${DIM}ctrl+o${RESET}${MUTED} ${description}${RESET}`;
+}
+
+/** Swap the host bridge's keyHint for the fake and restore it afterwards.
+ * Explicitly overriding (not just deleting) matters: under an environment
+ * where the real pi packages resolve, loadHostModules would otherwise leave
+ * the real function in place. */
+async function withFakeKeyHint(fn: (hintFn: (kb: string, desc: string) => string) => void): Promise<void> {
+  const bridge = hostModules();
+  const previous = bridge.keyHint;
+  try {
+    bridge.keyHint = fakeKeyHint;
+    fn(fakeKeyHint);
+  } finally {
+    bridge.keyHint = previous;
+  }
+}
+
+test("collapsed search appends the host's two-tone expand hint, un-recoloured", async () => {
+  await withFakeKeyHint(() => {
+    const entry = searchEntry([searchHitView(hit(payload("decision", "use REST"), 0.9))]);
+    const collapsed = renderEntryComponent(entry, seam, IDENTITY_THEME);
+    assert.ok(collapsed, "expected a search component");
+    const lines = collapsed.render(60);
+    assert.equal(lines.length, 1);
+    // The description is "to expand", and the host's two-tone output must be
+    // intact: dim key + muted description, no wrapping escapes around them
+    // (a muted role span would re-wrap the whole string and flatten the key).
+    assert.ok(lines[0].endsWith(` (${DIM}ctrl+o${RESET}${MUTED} to expand${RESET})`),
+      `hint on summary: ${JSON.stringify(lines[0])}`);
+  });
+});
+
+test("collapsed search shows NO hint when keyHint has not resolved (plain node)", async () => {
+  const bridge = hostModules();
+  const previous = bridge.keyHint;
+  try {
+    bridge.keyHint = undefined; // plain-node run: the host package never resolved
+    const entry = searchEntry([searchHitView(hit(payload("decision", "use REST"), 0.9))]);
+    const collapsed = renderEntryComponent(entry, seam, new WrapTheme());
+    assert.ok(collapsed, "expected a search component");
+    const lines = collapsed.render(60);
+    assert.equal(lines.length, 1);
+    // No invented key name, no fallback wording, no muted wrap: bare summary.
+    assert.ok(!lines.some((l) => l.includes("expand")), `no hint expected: ${lines.join("\n")}`);
+  } finally {
+    bridge.keyHint = previous;
+  }
 });
 
 test("expanded search shows every hit with no hint", () => {
@@ -152,7 +205,7 @@ test("expanded search shows every hit with no hint", () => {
   const lines = expanded.render(60);
   assert.equal(lines.length, 2); // meta + text
   assert.equal(lines[1], "use REST");
-  assert.ok(!lines.some((l) => l.includes("enter to expand")));
+  assert.ok(!lines.some((l) => l.includes("to expand")));
 });
 
 test("zero-hit search and message entries get no expand hint", () => {
@@ -162,7 +215,7 @@ test("zero-hit search and message entries get no expand hint", () => {
 
   const msg = renderEntryComponent(message("remembered: x"), seam, IDENTITY_THEME);
   assert.ok(msg, "expected a message component");
-  assert.ok(!msg.render(60).some((l) => l.includes("enter to expand")));
+  assert.ok(!msg.render(60).some((l) => l.includes("to expand")));
 });
 
 test("every entry is built with zero padding — the host defaults to 1 and pads it (#54)", () => {

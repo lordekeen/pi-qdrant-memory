@@ -111,15 +111,4 @@ declare module "@earendil-works/pi-tui" {
     handleInput(data: string): void;
   }
 
-  /** Container that applies padding + background to its children (vertical). */
-  export class Box implements Component {
-    constructor(paddingX?: number, paddingY?: number, bgFn?: (text: string) => string);
-    children: unknown[];
-    addChild(component: unknown): void;
-    removeChild(component: unknown): void;
-    clear(): void;
-    setBgFn(bgFn?: (text: string) => string): void;
-    invalidate(): void;
-    render(width: number): string[];
-  }
 }

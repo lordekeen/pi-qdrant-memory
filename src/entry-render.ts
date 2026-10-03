@@ -10,10 +10,11 @@
  * (src/out.ts, fully unit-tested); here each role becomes a host-theme slot.
  * Every entry — /qdrant status included — renders as one multi-line styled
  * `Text` (DESIGN.md: no cards, no background fills, no boxes, no self-drawn
- * shapes). Only collapsed search summaries append a muted expand hint.
+ * shapes). Only collapsed search summaries append the host's expand hint
+ * (dim key + muted description, coloured by the host's own `keyHint`).
  */
 import { renderOut } from "./out.ts";
-import type { OutEntry, OutLine, OutlineRole } from "./out.ts";
+import type { OutEntry, OutLine } from "./out.ts";
 
 export interface RendererTheme {
   fg(slot: string, text: string): string;
@@ -29,8 +30,12 @@ export interface RendererOptions {
   TextCtor?: TextCtor;
 }
 
-const EXPAND_HINT_FALLBACK = "enter to expand";
 const EXPAND_KEYBINDING = "app.tools.expand";
+/** The DESCRIPTION passed to the host's `keyHint` — the host resolves and
+ * colours the key itself, then appends `" " + description` in its muted slot
+ * (`dist/modes/interactive/components/keybinding-hints.js:30-31`). Never a
+ * fallback key string (#53). */
+const EXPAND_HINT_DESCRIPTION = "to expand";
 
 /** The slice of a pi-tui component this renderer produces. */
 export interface EntryComponent {
@@ -207,28 +212,30 @@ function styledLines(lines: OutLine[], theme: RendererTheme): string[] {
 }
 
 /**
- * One muted `(enter to expand)` fragment when a collapsed search summary hides
- * the hits. Status is never expandable (DESIGN.md status) — nothing else gets
- * a hint.
+ * The host's own expand hint for the expand binding — `keyHint` already
+ * returns the two-tone result (dim key + muted description), so this returns
+ * it untouched. Empty when `keyHint` has not resolved (plain-node runs) or
+ * threw: an invented key name would be worse than no hint (#53).
  */
-function searchExpandHint(entry: OutEntry, expanded: boolean): string {
-  if (expanded) return "";
-  if (entry.kind !== "search" || entry.hits.length === 0) return "";
-  let hint = EXPAND_HINT_FALLBACK;
+function searchExpandHint(): string {
   const hintFn = host.keyHint;
-  if (hintFn) {
-    try { hint = hintFn(EXPAND_KEYBINDING, EXPAND_HINT_FALLBACK); } catch { /* fallback */ }
-  }
-  return ` (${hint})`;
+  if (!hintFn) return "";
+  try { return hintFn(EXPAND_KEYBINDING, EXPAND_HINT_DESCRIPTION); } catch { return ""; }
 }
 
-/** Append the muted expand hint to the collapsed search summary line. */
+/** Append the expand hint to the collapsed search summary line. Status is
+ * never expandable (DESIGN.md status) — nothing else gets a hint. The host's
+ * `keyHint` output is already themed (dim key + muted description), so the
+ * spans carry NO role — wrapping it in a muted span would re-wrap the whole
+ * two-tone string and flatten the key's dim colour (#53). */
 function withSearchHint(linesIn: OutLine[], entry: OutEntry, expanded: boolean): OutLine[] {
-  const hint = searchExpandHint(entry, expanded);
+  if (expanded) return linesIn;
+  if (entry.kind !== "search" || entry.hits.length === 0) return linesIn;
+  const hint = searchExpandHint();
   if (!hint || linesIn.length === 0) return linesIn;
   const lines = [...linesIn];
   const last = lines.at(-1)!;
-  lines[lines.length - 1] = { spans: [...last.spans, { text: hint, role: "muted" as OutlineRole }] };
+  lines[lines.length - 1] = { spans: [...last.spans, { text: " (" }, { text: hint }, { text: ")" }] };
   return lines;
 }
 

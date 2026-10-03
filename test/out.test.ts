@@ -10,6 +10,7 @@ import {
   commandUsageText, clearRequiresUiText, commandFormatNoticeEntry, COMMAND_FORMAT_NOTICE_TEXT, loadWarningText,
 } from "../src/out.ts";
 import { ARG_SHAPE, USAGE_KEYS } from "../src/commands.ts";
+import { graphemeLength } from "../src/render.ts";
 import type { OutEntry, OutLine, Span } from "../src/out.ts";
 import type { PointPayload, SearchHit } from "../src/types.ts";
 
@@ -75,6 +76,23 @@ test("help aligns usage commands past 26 chars without jamming the description",
   assert.equal(spanText(lines[2]), `${"/qdrant status".padEnd(width)}connection health + active mode + collection status`);
   assert.equal(spanText(lines[3]), `${"/qdrant settings [key] [value]".padEnd(width)}persist a config field (e.g. scoreThreshold 0.2)`);
   assert.equal(spanText(lines[3]).indexOf("persist"), width);
+});
+
+test("help column alignment is grapheme-safe (#59)", () => {
+  // "/qdrant 🚀" is 9 graphemes (10 code units); "/qdrant status" is 14.
+  // width = 14 + 2 = 16 graphemes → pad the emoji row to 16 graphemes
+  // (7 spaces). A code-unit padEnd would under-pad it by one, shifting the
+  // description column by one cell.
+  const family = "\uD83D\uDE80";
+  const lines = renderOut(helpEntry([
+    { cmd: `/qdrant ${family}`, desc: "tail" },
+    { cmd: "/qdrant status", desc: "b" },
+  ], { mode: "mode2", collection: "pi-mem-abc" }));
+  assert.equal(spanText(lines[2]), `/qdrant ${family}${" ".repeat(7)}tail`);
+  // The description column starts at grapheme 16 (9 + 7 spaces). `indexOf`
+  // counts UTF-16 code units, so measure the prefix in graphemes instead.
+  const prefix = spanText(lines[2]).slice(0, spanText(lines[2]).indexOf("tail"));
+  assert.equal(graphemeLength(prefix), 16);
 });
 
 test("status renders one plain always-visible block headed by the memory header", () => {
@@ -434,6 +452,20 @@ test("indexUsageText renders one aligned line per kind it is given", () => {
     "index: usage — /qdrant index <kind>",
     "code      — Re-index code summaries now",
     "documents — Index project documents",
+  ].join("\n"));
+});
+
+test("indexUsageText aligns by grapheme count, not code units (#59)", () => {
+  // "🙂kind" is 6 graphemes (7 code units); "code" is 4. width = 6 → pad
+  // "code" to 6 graphemes. A code-unit padEnd would size the column at 7 and
+  // shift the second row's description by one cell.
+  assert.equal(indexUsageText({
+    code: { summary: "s1" },
+    "\u2026kind": { summary: "s2" },
+  }), [
+    "index: usage — /qdrant index <kind>",
+    "code  — s1",
+    "\u2026kind — s2",
   ].join("\n"));
 });
 
