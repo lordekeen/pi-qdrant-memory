@@ -64,7 +64,8 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | --- | --- |
 | `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, the single `/qdrant` command, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). |
 | `src/commands.ts` | The `/qdrant <key>` grammar, pure: `QdrantKey`, `ArgShape`/`ARG_SHAPE`, the `INDEX_KINDS` registry, `parseQdrantArgs`, `checkArgShape`, `splitKeyedArg`, `getQdrantCompletions`. No pi imports, no runtime. |
-| `src/handlers.ts` | Handlers for the `/qdrant <key>` cases (status/settings/remember/search/forget/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. |
+| `src/handlers.ts` | Handlers for the `/qdrant <key>` cases (status/settings/remember/search/forget/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. Settings writes delegate to `settings-write.ts`. |
+| `src/settings-write.ts` | The one settings-write policy shared by the CLI, the RPC form and the TUI settings screen: the reserved `default` clear (matched before validation, idempotent), `setConfigField` validation, allowlist → project store vs global file routing (D10: global writes persist through the GLOBAL reader), empty-secret → `null`, and every settings emission (confirmations, error, pi-blackhole conflict, `codeKnowledge` reload notice). Synchronous; call sites keep interaction only. |
 | `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested. |
 | `src/config.ts` | `DEFAULTS`, `readGlobalConfig` (the global layer: defaults → file → env; `loadConfig` is its historical alias), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form), `SETTING_FIELDS` (the one editable-key list, read by the form and the `/qdrant settings` grammar). Knows nothing about projects. |
 | `src/project-settings.ts` | Per-project override store (allowlisted keys only): `PROJECT_OVERRIDABLE_FIELDS`, `loadProjectSettings` / `saveProjectSettings` / `clearProjectField`, and `readEffectiveConfig` (env → project → global → `DEFAULTS`). Lives here, not `config.ts`, to keep imports one-directional (`config.ts` ← `project-settings.ts`, no ESM cycle). |
@@ -105,7 +106,10 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
   `test/handlers.test.ts` and `test/index.test.ts`. Completion and usage text
   derive from the table, so they update for free.
 - **Changing config**: update `Config` in `types.ts`, `DEFAULTS`+`readGlobalConfig`
-  precedence and `SETTING_FIELDS` in `config.ts` so the form covers it. Validation goes in `setConfigField` — CLI and form share it. Adding
+  precedence and `SETTING_FIELDS` in `config.ts` so the form covers it. Validation goes in `setConfigField` — CLI and form share it, and every write
+  runs through `applySettingWrite` (`src/settings-write.ts`), which owns the
+  reserved `default` clear, scope routing, the empty-secret → `null` rule and
+  all emissions; the CLI, RPC form and TUI screen contribute interaction only. Adding
   an **overridable** field is a `PROJECT_OVERRIDABLE_FIELDS` entry in
   `project-settings.ts` plus the `Config`/`DEFAULTS`/`SETTING_FIELDS` updates, and
   `/qdrant settings` routes it to the project layer (add project-store +

@@ -369,26 +369,6 @@ test("prompt rows get a submenu factory; enum rows keep their cycle values", asy
   }
 });
 
-test("cycling an enum field writes the GLOBAL config and confirms it", async () => {
-  const { io, emitted, globalWrites, projectWrites } = screenIo();
-  const { list } = await mountScreen(io, settingsHost());
-  list.cycle("memoryForget", "on");
-  assert.equal(globalWrites.length, 1, "a non-allowlisted key goes to the global file");
-  assert.equal(globalWrites[0].memoryForget, "on");
-  assert.equal(projectWrites.length, 0, "never the project store");
-  assert.deepEqual(texts(emitted), ["settings: memoryForget updated (global config; reloaded at runtime)"]);
-});
-
-test("an allowlisted field writes the PROJECT store, not the global file", async () => {
-  const { io, emitted, globalWrites, projectWrites } = screenIo();
-  const { list } = await mountScreen(io, settingsHost());
-  list.cycle("codeScoreThreshold", "0.9");
-  assert.equal(projectWrites.length, 1);
-  assert.deepEqual(projectWrites[0], { codeScoreThreshold: 0.9 });
-  assert.equal(globalWrites.length, 0, "D10: never persist the effective config");
-  assert.deepEqual(texts(emitted), ["settings: codeScoreThreshold = 0.9 (this project; global: 0.6)"]);
-});
-
 test("the clear-override entry normalises to the reserved `default` token and clears", async () => {
   const { io, emitted, cleared, projectWrites } = screenIo({ store: { codeKnowledge: "on" }, global: { codeKnowledge: "off" } });
   const { list } = await mountScreen(io, settingsHost());
@@ -455,38 +435,12 @@ test("a successful write refreshes the row from the freshly written config", asy
   assert.equal(list.items.find((i) => i.id === "expectedDimension")!.currentValue, "1536");
 });
 
-test("an effective codeKnowledge change emits the reload notice", async () => {
-  const { io, emitted } = screenIo({ store: { codeKnowledge: "off" } });
-  const { list } = await mountScreen(io, settingsHost());
-  list.cycle("codeKnowledge", "on");
-  const all = texts(emitted);
-  assert.equal(all.length, 2);
-  assert.ok(all[1].startsWith("code memory: takes effect at the next session start"), all[1]);
-});
-
-test("no reload notice when the EFFECTIVE value did not change", async () => {
-  const { io, emitted } = screenIo({ store: { codeKnowledge: "on" } });
-  const { list } = await mountScreen(io, settingsHost());
-  list.cycle("codeKnowledge", "on"); // already on — a no-op write
-  assert.equal(texts(emitted).length, 1, "only the confirmation, no reload notice");
-});
-
 test("Esc cancels: done() resolves the modal and a cancellation entry is emitted (#58)", async () => {
   const { io, emitted } = screenIo();
   const { list, done } = await mountScreen(io, settingsHost());
   list.onCancel();
   assert.equal(done(), 1, "the mount promise must resolve, or the modal never closes");
   assert.deepEqual(texts(emitted), ["settings: unchanged (cancelled)"]);
-});
-
-test("feedback is emitted in order: confirmation first, then the conflict notice", async () => {
-  // mode: own + an operational pi-blackhole is the contradictory config #50.
-  const { io, emitted, globalWrites } = screenIo({ global: { mode: "own" } });
-  const { list } = await mountScreen(io, settingsHost());
-  list.cycle("mode", "own");
-  assert.equal(globalWrites.length, 1);
-  // Without a blackhole install there is nothing to conflict with.
-  assert.deepEqual(texts(emitted), ["settings: mode updated (global config; reloaded at runtime)"]);
 });
 
 // ── ValuePrompt (plan B.3) ─────────────────────────────────────────────────

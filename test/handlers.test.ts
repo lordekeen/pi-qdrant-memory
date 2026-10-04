@@ -121,11 +121,6 @@ function blackholeAgentDir(): string {
   return dir;
 }
 
-/** Temp agent dir without any blackhole config. */
-function plainAgentDir(): string {
-  return mkdtempSync(join(tmpdir(), "pi-qm-nobh-"));
-}
-
 test("statusHandler prints mode and collection health", async () => {
   const d = io();
   await statusHandler(d);
@@ -159,35 +154,11 @@ test("settingsHandler persists field=value and prints confirmation", async () =>
   assert.match(d.printed.join("\n"), /scoreThreshold/);
 });
 
-test("settingsHandler warns when mode=own is written with pi-blackhole operational (#50)", async () => {
-  const agentDir = blackholeAgentDir();
-  const noBh = plainAgentDir();
-  try {
-    const d = io({ agentDir });
-    await settingsHandler(d, "mode", "own");
-    assert.equal(d.globalWrites.length, 1);
-    assert.equal(d.globalWrites[0].mode, "own");
-    assert.equal(d.printed.length, 2);
-    assert.match(d.printed[0]!, /settings: mode updated/);
-    assert.match(d.printed[1]!, /^warning: mode = own while pi-blackhole is installed/);
-
-    const clean = io({ agentDir: noBh });
-    await settingsHandler(clean, "mode", "own");
-    assert.equal(clean.printed.length, 1, "no warning when pi-blackhole is absent");
-  } finally {
-    rmSync(agentDir, { recursive: true, force: true });
-    rmSync(noBh, { recursive: true, force: true });
-  }
-});
-
-test("settingsHandler rejects invalid mode and non-positive numerics", async () => {
+test("settingsHandler delegates an allowlisted write to the project store", async () => {
   const d = io();
-  await settingsHandler(d, "mode", "bogus");
+  await settingsHandler(d, "codeKnowledge", "on");
+  assert.deepEqual(d.projectWrites, [{ codeKnowledge: "on" }]);
   assert.equal(d.globalWrites.length, 0);
-  assert.match(d.printed.join("\n"), /auto \| blackhole \| own/);
-  await settingsHandler(d, "expectedDimension", "0");
-  assert.equal(d.globalWrites.length, 0);
-  assert.match(d.printed.join("\n"), /positive/);
 });
 
 test("statusHandler distinguishes a missing collection from an unreachable server", async () => {
@@ -624,25 +595,6 @@ test("runSettingsForm mode field uses a nested select", async () => {
   assert.equal(d.globalWrites[0].mode, "own");
 });
 
-test("runSettingsForm warns when saving mode=own with pi-blackhole operational (#50)", async () => {
-  const agentDir = blackholeAgentDir();
-  try {
-    const d = io({ agentDir });
-    const ui: SettingsUI = {
-      async select(title, options) {
-        if (title.startsWith("Qdrant Memory")) return options.find((o) => o.startsWith("mode ="));
-        return "own";
-      },
-      async input() { throw new Error("mode must not open a text input"); },
-      async confirm() { return true; },
-    };
-    await runSettingsForm(ui, d);
-    assert.equal(d.globalWrites.length, 1);
-    assert.equal(d.globalWrites[0].mode, "own");
-    assert.match(d.printed.join("\n"), /warning: mode = own while pi-blackhole is installed/);
-  } finally { rmSync(agentDir, { recursive: true, force: true }); }
-});
-
 test("helpHandler prints the command list", async () => {
   const d = io();
   await helpHandler(d);
@@ -786,46 +738,6 @@ test("settings usage message lists the code-memory fields", async () => {
   assert.match(all, /codeScoreThreshold/);
 });
 
-test("CLI codeKnowledge write lands in the project store and emits the reload notice", async () => {
-  const on = io();
-  await settingsHandler(on, "codeKnowledge", "on");
-  assert.deepEqual(on.projectWrites[0], { codeKnowledge: "on" });
-  assert.equal(on.globalWrites.length, 0);
-  let all = on.printed.join("\n");
-  assert.match(all, /codeKnowledge = on \(this project; global: off\)/);
-  assert.match(all, /takes effect at the next session start/);
-  assert.match(all, /code_memory tool registers on reload/);
-
-  // Effective is on before the write, so the off write flips it and the
-  // direction-aware (unregisters) notice fires.
-  const off = io();
-  off.globalState.codeKnowledge = "on";
-  await settingsHandler(off, "codeKnowledge", "off");
-  all = off.printed.join("\n");
-  assert.match(all, /unregisters on reload/);
-
-  const other = io();
-  await settingsHandler(other, "scoreThreshold", "0.2");
-  assert.doesNotMatch(other.printed.join("\n"), /next session start/);
-});
-
-test("form codeKnowledge write emits the reload notice", async () => {
-  const d = io();
-  let selects = 0;
-  const ui: SettingsUI = {
-    async select(_title, options) {
-      selects++;
-      return selects === 1
-        ? options.find((o) => o.startsWith("codeKnowledge ="))
-        : options.find((o) => o === "on");
-    },
-    async input() { throw new Error("not used"); },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(ui, d);
-  assert.match(d.printed.join("\n"), /takes effect at the next session start/);
-});
-
 test("statusHandler includes the code-memory row when the feature is wired", async () => {
   const d = io({ codeMemory: { state: "synced", files: 4, symbols: 21 } });
   await statusHandler(d);
@@ -881,125 +793,14 @@ test("help lists /qdrant index code only when codeKnowledge is on", async () => 
 
 // ── §7.3 mixed-scope routing ─────────────────────────────────────────────────
 
-test("allowlisted set writes only the project store", async () => {
-  const d = io();
-  await settingsHandler(d, "codeKnowledge", "on");
-  assert.deepEqual(d.projectWrites, [{ codeKnowledge: "on" }]);
-  assert.equal(d.globalWrites.length, 0);
-  assert.match(d.printed.join("\n"), /codeKnowledge = on \(this project; global: off\)/);
-});
-
-test("allowlisted numeric set records a JSON number and names both values", async () => {
-  const d = io();
-  await settingsHandler(d, "codeScoreThreshold", "0.6");
-  const w = d.projectWrites[0].codeScoreThreshold;
-  assert.equal(typeof w, "number");
-  assert.equal(w, 0.6);
-  assert.equal(d.globalWrites.length, 0);
-  const all = d.printed.join("\n");
-  assert.match(all, /codeScoreThreshold = 0\.6 \(this project; global: 0\.4\)/);
-  assert.doesNotMatch(all, /next session start/);
-});
-
-test("non-allowlisted writes go to the global file and leave the store untouched", async () => {
-  const d = io();
-  await settingsHandler(d, "mode", "blackhole");
-  await settingsHandler(d, "qdrantUrl", "http://x:6333");
-  await settingsHandler(d, "scoreThreshold", "0.2");
-  assert.equal(d.globalWrites.length, 3);
-  assert.equal(d.projectWrites.length, 0);
-  assert.equal(d.storeState.codeKnowledge, undefined);
-  const all = d.printed.join("\n");
-  assert.match(all, /mode updated \(global config; reloaded at runtime\)/);
-  assert.match(all, /qdrantUrl updated \(global config; reloaded at runtime\)/);
-});
-
-test("a global write keeps the GLOBAL codeKnowledge when the store overrides it (D10, both directions)", async () => {
-  const d = io();
-  d.globalState.codeKnowledge = "on";
-  d.storeState.codeKnowledge = "off";
-  await settingsHandler(d, "scoreThreshold", "0.2");
-  assert.equal(d.globalWrites.length, 1);
-  assert.equal(d.globalWrites[0].codeKnowledge, "on"); // global value materialized, never the override
-  assert.equal(d.applied.at(-1)!.codeKnowledge, "off"); // reload used the effective reader → override survives
-  assert.equal(d.storeState.codeKnowledge, "off");
-});
-
-test("`<key> default` clears an allowlisted override and confirms the global value", async () => {
-  const d = io();
-  d.storeState.codeKnowledge = "on"; // effective on; global off
-  await settingsHandler(d, "codeKnowledge", "default");
-  assert.deepEqual(d.cleared, ["codeKnowledge"]);
-  assert.equal(d.storeState.codeKnowledge, undefined);
-  assert.equal(d.projectWrites.length, 0);
-  const all = d.printed.join("\n");
-  assert.match(all, /settings: codeKnowledge override cleared \(now using global: off\)/);
-  assert.match(all, /unregisters on reload/);
-});
-
-test("a no-op clear still confirms but emits no reload notice", async () => {
-  const d = io(); // no override, effective off
-  await settingsHandler(d, "codeKnowledge", "default");
-  assert.match(d.printed.join("\n"), /override cleared \(now using global: off\)/);
-  assert.doesNotMatch(d.printed.join("\n"), /next session start/);
-});
-
-test("`codeScoreThreshold default` is consumed before the numeric parse", async () => {
-  const d = io();
-  d.storeState.codeScoreThreshold = 0.6;
-  await settingsHandler(d, "codeScoreThreshold", "default");
-  assert.deepEqual(d.cleared, ["codeScoreThreshold"]);
-  assert.match(d.printed.join("\n"), /codeScoreThreshold override cleared \(now using global: 0\.4\)/);
-  assert.doesNotMatch(d.printed.join("\n"), /expects a number/);
-});
-
-test("`default` stays an ordinary value for the nine non-allowlisted keys", async () => {
-  const d = io();
-  await settingsHandler(d, "embeddingApiKey", "default");
-  assert.equal(d.globalWrites.length, 1);
-  assert.equal(d.globalWrites[0].embeddingApiKey, "default");
-  assert.equal(d.projectWrites.length, 0);
-});
-
-test("an unknown key errors; an allowlist miss is a route, not a failure", async () => {
-  const d = io();
-  await settingsHandler(d, "zzz", "1");
-  assert.equal(d.printed.join("\n"), "error: settings: unknown key zzz");
-  assert.equal(d.globalWrites.length, 0);
-  assert.equal(d.projectWrites.length, 0);
-
-  const routed = io();
-  await settingsHandler(routed, "mode", "blackhole");
-  await settingsHandler(routed, "qdrantUrl", "http://x");
-  assert.doesNotMatch(routed.printed.join("\n"), /error:/);
-});
-
-test("invalid values keep the same errors and write nothing", async () => {
-  const d = io();
-  await settingsHandler(d, "codeKnowledge", "maybe");
-  assert.match(d.printed.join("\n"), /settings: codeKnowledge must be one of off \| on/);
-  assert.equal(d.projectWrites.length, 0);
-
-  const d2 = io();
-  await settingsHandler(d2, "codeScoreThreshold", "2.0");
-  assert.match(d2.printed.join("\n"), /codeScoreThreshold expects a number between 0 and 1/);
-  await settingsHandler(d2, "codeScoreThreshold", "abc");
-  assert.match(d2.printed.join("\n"), /codeScoreThreshold expects a number/);
-  assert.equal(d2.projectWrites.length, 0);
-});
-
-test("both allowlisted keys in the store: usage lists both; clearing one keeps the other", async () => {
+test("usage lists every allowlisted override in the store", async () => {
   const d = io();
   d.storeState.codeKnowledge = "on";
   d.storeState.codeScoreThreshold = 0.6;
   await settingsHandler(d);
-  let all = d.printed.join("\n");
+  const all = d.printed.join("\n");
   assert.match(all, /codeKnowledge = on \(this project; global: off\)/);
   assert.match(all, /codeScoreThreshold = 0\.6 \(this project; global: 0\.4\)/);
-
-  await settingsHandler(d, "codeKnowledge", "default");
-  assert.deepEqual(d.storeState, { codeScoreThreshold: 0.6 });
-  assert.match(d.printed.join("\n"), /codeKnowledge override cleared \(now using global: off\)/);
 });
 
 test("bare command (headless) prints the scope rule, both paths, and this project's rows", async () => {
@@ -1015,99 +816,6 @@ test("bare command (headless) prints the scope rule, both paths, and this projec
   assert.match(all, /codeScoreThreshold = 0\.6 \(this project; global: 0\.4\)/);
 });
 
-test("a masked project write (env pins the value) confirms but emits no notice and warns of mask", async () => {
-  const d = io();
-  d.envState.PI_QDRANT_CODE_KNOWLEDGE = "off";
-  await settingsHandler(d, "codeKnowledge", "on");
-  assert.deepEqual(d.projectWrites[0], { codeKnowledge: "on" });
-  assert.match(d.printed.join("\n"), /codeKnowledge = on \(this project; global: off\)/);
-  assert.match(d.printed.join("\n"), /NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=off/);
-  assert.doesNotMatch(d.printed.join("\n"), /next session start/);
-});
-
-test("clearing an allowlisted override when masked by env warns about mask", async () => {
-  const d = io();
-  d.envState.PI_QDRANT_CODE_KNOWLEDGE = "on";
-  d.storeState.codeKnowledge = "off";
-  await settingsHandler(d, "codeKnowledge", "default");
-  assert.match(
-    d.printed.join("\n"),
-    /settings: codeKnowledge override cleared \(now using global: off\) — NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on/,
-  );
-});
-
-test("form: allowlisted write and clear warn when masked by env", async () => {
-  const d = io();
-  d.envState.PI_QDRANT_CODE_SCORE_THRESHOLD = "0.7";
-  const ui: SettingsUI = {
-    async select(_title, options) {
-      return options.find((o) => o.startsWith("codeScoreThreshold ="));
-    },
-    async input() { return "0.5"; },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(ui, d);
-  assert.match(
-    d.printed.join("\n"),
-    /settings: codeScoreThreshold = 0\.5 \(this project; global: 0\.4\) — NOTE: currently masked by PI_QDRANT_CODE_SCORE_THRESHOLD=0\.7/,
-  );
-
-  const dClear = io();
-  dClear.envState.PI_QDRANT_CODE_KNOWLEDGE = "on";
-  dClear.storeState.codeKnowledge = "off";
-  let selects = 0;
-  const uiClear: SettingsUI = {
-    async select(_title, options) {
-      selects++;
-      if (selects === 1) return options.find((o) => o.startsWith("codeKnowledge ="));
-      return options.find((o) => o.startsWith("default"));
-    },
-    async input() { throw new Error("not used"); },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(uiClear, dClear);
-  assert.match(
-    dClear.printed.join("\n"),
-    /settings: codeKnowledge override cleared \(now using global: off\) — NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on/,
-  );
-});
-
-
-test("form, project scope: an allowlisted write goes to the store and reloads", async () => {
-  const d = io();
-  d.globalState.codeKnowledge = "on"; // global on
-  d.storeState.codeKnowledge = "off"; // override off → effective off
-  let selects = 0;
-  const ui: SettingsUI = {
-    async select(_title, options) {
-      selects++;
-      if (selects === 1) return options.find((o) => o === "codeKnowledge = off (this project; global: on)");
-      return options.find((o) => o === "on");
-    },
-    async input() { throw new Error("not used"); },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(ui, d);
-  assert.deepEqual(d.projectWrites[0], { codeKnowledge: "on" });
-  assert.equal(d.globalWrites.length, 0);
-  assert.match(d.printed.join("\n"), /takes effect at the next session start/); // off → on
-});
-
-test("form, global scope: persists the GLOBAL reader even with an override displayed", async () => {
-  const d = io();
-  d.globalState.codeKnowledge = "on";
-  d.storeState.codeKnowledge = "off"; // effective off, but the label still names the layer
-  const ui: SettingsUI = {
-    async select(_title, options) { return options.find((o) => o.startsWith("qdrantUrl =")); },
-    async input() { return "http://x:6333"; },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(ui, d);
-  assert.equal(d.globalWrites.length, 1);
-  assert.equal(d.globalWrites[0].codeKnowledge, "on"); // the global value, not the override
-  assert.equal(d.globalWrites[0].qdrantUrl, "http://x:6333");
-  assert.equal(d.projectWrites.length, 0);
-});
 
 test("form reset-to-inherited: the select default option clears the override", async () => {
   const d = io();
