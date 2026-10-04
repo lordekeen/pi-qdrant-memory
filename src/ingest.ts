@@ -1,8 +1,9 @@
 import { artifactToPayload } from "./blackhole.ts";
 import type { BlackholeArtifact } from "./blackhole.ts";
 import { pointId } from "./ids.ts";
-import type { QdrantLike, QdrantPoint } from "./qdrant.ts";
+import type { QdrantLike } from "./qdrant.ts";
 import type { PointPayload, SourceKind } from "./types.ts";
+import { applyWrites } from "./writes.ts";
 
 /**
  * An item ready for ingestion. `payload` intentionally excludes `text` — the
@@ -24,6 +25,12 @@ export interface IngestDeps {
   projectId: string;
 }
 
+/**
+ * Ensure the project collection at `dim` under the throwing dimension policy.
+ * Kept as the ingest module's public ensure contract (tests import it); the
+ * `ingestItems` pipeline itself lets `applyWrites` own the ensure-before-write
+ * ordering, after the first successful embed.
+ */
 export async function ensureAndGet(deps: IngestDeps, dim: number): Promise<void> {
   await deps.qdrant.ensureCollection(deps.projectId, dim);
 }
@@ -38,8 +45,6 @@ export async function ingestItems(
   dim: number,
   items: IngestItem[],
 ): Promise<{ attempted: number; ingested: number }> {
-  await ensureAndGet(deps, dim);
-
   const itemsWithIds = items.map((item) => ({
     item,
     id: pointId(item.text, item.sourceKind, item.contextId),
@@ -61,64 +66,47 @@ export async function ingestItems(
     return { attempted: items.length, ingested: 0 };
   }
 
-  const points: QdrantPoint[] = [];
-  let ingested = 0;
+  // One batch: embed (chunked at the shared cap, or per item without a batch
+  // client) → ensure → supersede-delete → one upsert of every survivor. The
+  // supersede ids are derived from the items that actually embedded, so a
+  // failed chunk never deletes a revision it could not replace.
+  const report = await applyWrites(
+    {
+      embed: deps.embed,
+      embedBatch: deps.embedBatch,
+      qdrant: deps.qdrant,
+      projectId: deps.projectId,
+      dimension: dim,
+    },
+    [{
+      items: needed.map((x) => ({ id: x.id, text: x.item.text, payload: x.item.payload })),
+      invalidate: "source-entry-ids",
+    }],
+  );
 
-  if (deps.embedBatch) {
-    for (let i = 0; i < needed.length; i += 32) {
-      const chunk = needed.slice(i, i + 32);
-      try {
-        const vectors = await deps.embedBatch(chunk.map((x) => x.item.text));
-        for (let j = 0; j < chunk.length; j++) {
-          const entry = chunk[j]!;
-          points.push({
-            id: entry.id,
-            vector: vectors[j]!,
-            payload: { ...entry.item.payload, text: entry.item.text } as PointPayload,
-          });
-          ingested++;
-        }
-      } catch (err) {
-        console.error(`pi-qdrant-memory: ingest batch skipped (embed failed): ${String(err)}`);
-      }
+  const outcome = report.batches[0];
+  if (report.error !== undefined) {
+    // The ensure is fatal by contract — previously it threw out of this
+    // function; the caller's sentence lives here now.
+    console.error(`pi-qdrant-memory: ingest failed (non-fatal): ${report.error}`);
+    return { attempted: items.length, ingested: 0 };
+  }
+  if (outcome) {
+    for (const error of outcome.embedErrors) {
+      // The sentence names the route the module actually took: a chunked
+      // embedBatch request, or the per-item `embed` fallback.
+      console.error(deps.embedBatch
+        ? `pi-qdrant-memory: ingest batch skipped (embed failed): ${error}`
+        : `pi-qdrant-memory: ingest skipped (embed failed): ${error}`);
     }
-  } else {
-    for (const entry of needed) {
-      try {
-        const vector = await deps.embed(entry.item.text);
-        points.push({
-          id: entry.id,
-          vector,
-          payload: { ...entry.item.payload, text: entry.item.text } as PointPayload,
-        });
-        ingested++;
-      } catch (err) {
-        console.error(`pi-qdrant-memory: ingest skipped (embed failed): ${String(err)}`);
-      }
+    if (outcome.invalidateError !== undefined) {
+      console.error(`pi-qdrant-memory: supersede delete failed (non-fatal): ${outcome.invalidateError}`);
+    }
+    if (outcome.upsertError !== undefined) {
+      console.error(`pi-qdrant-memory: upsert failed: ${outcome.upsertError}`);
     }
   }
-
-  if (points.length) {
-    if (deps.qdrant.deletePointsBySourceEntryIds) {
-      const sourceEntryIds = Array.from(new Set(
-        points
-          .map((p) => p.payload.source_entry_id)
-          .filter((id): id is string => typeof id === "string" && id.length > 0),
-      ));
-      if (sourceEntryIds.length > 0) {
-        try {
-          await deps.qdrant.deletePointsBySourceEntryIds(deps.projectId, sourceEntryIds);
-        } catch (err) {
-          console.error(`pi-qdrant-memory: supersede delete failed (non-fatal): ${String(err)}`);
-        }
-      }
-    }
-    try {
-      await deps.qdrant.upsert(deps.projectId, points);
-    } catch (err) {
-      console.error(`pi-qdrant-memory: upsert failed: ${String(err)}`);
-      ingested = 0;
-    }
-  }
-  return { attempted: items.length, ingested };
+  // `report.written` only counts points whose upsert succeeded, so a failed
+  // upsert yields 0 exactly as before.
+  return { attempted: items.length, ingested: report.written };
 }

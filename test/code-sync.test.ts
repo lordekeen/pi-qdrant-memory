@@ -10,8 +10,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { syncCodeKnowledge, SYNC_BATCH_SIZE } from "../src/code-sync.ts";
+import { syncCodeKnowledge, planSync, SYNC_BATCH_SIZE } from "../src/code-sync.ts";
 import type { SyncDeps } from "../src/code-sync.ts";
+import type { ScannedFile } from "../src/codescan.ts";
 import { createHash } from "node:crypto";
 import { createMemoryStore } from "./support/memory-store.ts";
 import type { MemoryStore } from "./support/memory-store.ts";
@@ -89,6 +90,8 @@ test("first sync indexes everything: no deletes, node + file points per file", a
     // Node summary carries a symbol; the file anchor does not.
     assert.equal(points[0]!.payload.symbol, "alpha");
     assert.equal(points[1]!.payload.symbol, undefined);
+    // One pass shares one `ts` across every point it writes.
+    assert.equal(new Set(points.map((p) => p.payload.ts)).size, 1);
     // The freshly upserted points must survive the pass (delete precedes upsert).
     assert.equal(store.points().length, 2);
     const deleteAt = store.indexOfOp((op) => op.op === "delete" && op.by === "files");
@@ -452,4 +455,89 @@ test("large file definitions are chunked so embedBatch never exceeds SYNC_BATCH_
     }
     assert.equal(store.points().length, 71);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// ── planSync: the pure diff/group/batch planner ──────────────────────────────
+// Fixtures only — no store, no filesystem.
+
+/** A scanned file with `nodeCount` deterministic function nodes. */
+function scanned(filePath: string, sha: string, nodeCount: number): ScannedFile {
+  return {
+    filePath,
+    sha,
+    nodes: Array.from({ length: nodeCount }, (_v, i) => ({
+      kind: "function" as const,
+      name: `fn${String(i)}`,
+      filePath,
+      startLine: i + 1,
+      endLine: i + 1,
+      exported: true,
+      doc: "",
+      signature: `export function fn${String(i)}()`,
+    })),
+  };
+}
+
+test("planSync skips unchanged shas and surfaces vanished paths", () => {
+  const scan = { files: [scanned("src/a.ts", "sha-a", 2)], capped: false };
+  const plan = planSync(scan, new Map([["src/a.ts", "sha-a"], ["src/gone.ts", "sha-g"]]));
+  assert.deepEqual(plan.vanished, ["src/gone.ts"]);
+  assert.deepEqual(plan.changed, []);
+  assert.equal(plan.skipped, 1);
+  assert.deepEqual(plan.batches, []);
+});
+
+test("planSync keeps a changed file's summaries contiguous and appends its file anchor", () => {
+  const plan = planSync(
+    { files: [scanned("src/a.ts", "new-sha", 2)], capped: false },
+    new Map([["src/a.ts", "old-sha"]]),
+  );
+  assert.deepEqual(plan.vanished, []);
+  assert.deepEqual(plan.changed.map((f) => f.filePath), ["src/a.ts"]);
+  assert.equal(plan.skipped, 0);
+  assert.equal(plan.batches.length, 1);
+  const batch = plan.batches[0]!;
+  assert.equal(batch.length, 3, "2 node summaries + the file anchor");
+  assert.deepEqual(batch.map((s) => s.file.filePath), ["src/a.ts", "src/a.ts", "src/a.ts"]);
+  assert.deepEqual(batch.map((s) => s.symbol), ["fn0", "fn1", undefined]);
+  assert.match(batch[2]!.text, /^file src\/a\.ts — 2 definitions$/);
+});
+
+test("planSync reprocesses zero-definition files only when the snapshot knows them", () => {
+  const scan = { files: [scanned("src/docs.ts", "docs-sha", 0)], capped: false };
+  const cold = planSync(scan, new Map());
+  assert.deepEqual(cold.changed, []);
+  assert.equal(cold.skipped, 1);
+  assert.deepEqual(cold.batches, []);
+
+  const known = planSync(scan, new Map([["src/docs.ts", "old-sha"]]));
+  assert.equal(known.skipped, 0);
+  assert.deepEqual(known.changed.map((f) => f.filePath), ["src/docs.ts"]);
+  assert.deepEqual(known.batches, [], "a zero-definition file has no summaries to batch");
+});
+
+test("planSync never splits a file across batches and an oversized group is its own batch", () => {
+  const plan = planSync(
+    {
+      files: [
+        scanned("src/f1.ts", "new-1", 3), // group of 4 summaries
+        scanned("src/f2.ts", "new-2", 3), // group of 4 summaries
+        scanned("src/big.ts", "new-big", SYNC_BATCH_SIZE + 1), // group of cap + 2
+      ],
+      capped: false,
+    },
+    new Map([["src/f1.ts", "old"], ["src/f2.ts", "old"], ["src/big.ts", "old"]]),
+  );
+  // f1 + f2 fit together (8 ≤ cap); big cannot join them and becomes its own
+  // batch — never split, however large the group.
+  assert.deepEqual(
+    plan.batches.map((b) => [...new Set(b.map((s) => s.file.filePath))]),
+    [["src/f1.ts", "src/f2.ts"], ["src/big.ts"]],
+  );
+  assert.equal(plan.batches[1]!.length, SYNC_BATCH_SIZE + 2, "the oversized group is never split");
+  // f1's whole group stays contiguous at the head of the first batch.
+  assert.deepEqual(
+    plan.batches[0]!.slice(0, 4).map((s) => s.file.filePath),
+    ["src/f1.ts", "src/f1.ts", "src/f1.ts", "src/f1.ts"],
+  );
 });

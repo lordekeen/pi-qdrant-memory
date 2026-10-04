@@ -4,6 +4,7 @@ import { ingestItems, ensureAndGet } from "../src/ingest.ts";
 import { pointId } from "../src/ids.ts";
 import { createMemoryStore } from "./support/memory-store.ts";
 import type { MemoryStore } from "./support/memory-store.ts";
+import type { QdrantLike } from "../src/qdrant.ts";
 import type { PointPayload } from "../src/types.ts";
 
 const PROJECT = "pi-mem-abc";
@@ -214,4 +215,71 @@ test("ingestItems skips deletePointsBySourceEntryIds for items without source_en
   assert.equal(res.ingested, 1);
   assert.equal(store.indexOfOp((op) => op.op === "delete"), -1, "items without source_entry_id must not trigger delete");
   assert.equal(store.points().length, 1);
+});
+
+test("ingestItems maps an upsert failure to ingested: 0 with attempted unchanged", async () => {
+  const store = newStore();
+  const broken: QdrantLike = {
+    ...store,
+    async upsert() { throw new Error("store down"); },
+  };
+  const deps = { embed: async () => new Array(DIM).fill(0.1), qdrant: broken, projectId: PROJECT };
+
+  const res = await ingestItems(deps, DIM, [
+    { text: "one", sourceKind: "remember_tool" as const, contextId: "s1",
+      payload: { type: "decision" as const, project_id: PROJECT, ts: 1, source_kind: "remember_tool" as const } },
+    { text: "two", sourceKind: "remember_tool" as const, contextId: "s2",
+      payload: { type: "decision" as const, project_id: PROJECT, ts: 2, source_kind: "remember_tool" as const } },
+  ]);
+
+  assert.equal(res.attempted, 2);
+  assert.equal(res.ingested, 0, "a failed upsert discards the whole write count");
+  assert.equal(store.points().length, 0);
+});
+
+test("ingestItems skips only a failed embed chunk's items and upserts the survivors", async () => {
+  const store = newStore();
+  let calls = 0;
+  const deps = {
+    embed: async () => { throw new Error("should not be called"); },
+    embedBatch: async (texts: string[]) => {
+      calls++;
+      if (calls === 2) throw new Error("chunk down");
+      return texts.map(() => new Array(DIM).fill(0.3));
+    },
+    qdrant: store,
+    projectId: PROJECT,
+  };
+  const items = Array.from({ length: 40 }, (_v, i) => ({
+    text: `item ${String(i)}`,
+    sourceKind: "remember_tool" as const,
+    contextId: `s${String(i)}`,
+    payload: { type: "decision" as const, project_id: PROJECT, ts: i, source_kind: "remember_tool" as const },
+  }));
+
+  const res = await ingestItems(deps, DIM, items);
+
+  assert.equal(res.attempted, 40);
+  assert.equal(res.ingested, 32, "only the failed chunk's items are skipped");
+  assert.equal(store.upsertBatches().length, 1, "all survivors land in one upsert");
+  assert.equal(store.points().length, 32);
+});
+
+test("ingestItems never throws when ensure fails: the collection is left untouched", async () => {
+  // A collection from a previous embedding model: the background write path
+  // must not recreate it (and must not throw out of ingestItems).
+  const store = createMemoryStore({ name: PROJECT, dimension: 384 });
+  store.seed([{ id: "keep", payload: payload({ text: "keep me" }) }]);
+  const deps = { embed: async () => new Array(DIM).fill(0.1), qdrant: store, projectId: PROJECT };
+
+  const res = await ingestItems(deps, DIM, [
+    { text: "new fact", sourceKind: "remember_tool" as const, contextId: "s1",
+      payload: { type: "decision" as const, project_id: PROJECT, ts: 1, source_kind: "remember_tool" as const } },
+  ]);
+
+  assert.equal(res.attempted, 1);
+  assert.equal(res.ingested, 0);
+  assert.equal(store.dimensionOf(), 384, "the background path never recreates on mismatch");
+  assert.equal(store.points().length, 1);
+  assert.equal(store.points()[0]!.id, "keep");
 });

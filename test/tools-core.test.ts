@@ -85,6 +85,20 @@ test("rememberLogic embeds before ensureCollection so a failed embed leaves coll
   assert.equal(d.q.points().length, 0);
 });
 
+test("rememberLogic reports an ensure failure as a bare reason (no throw)", async () => {
+  const store = createMemoryStore({ name: PROJECT });
+  const broken: QdrantLike = {
+    ...store,
+    async ensureCollection() { throw new Error("collection boom"); },
+  };
+  const d = deps({ qdrant: broken });
+  const res = await rememberLogic(d, "important fact");
+  assert.ok(!res.ok);
+  assert.equal((res as { error: string }).error, "Error: collection boom");
+  assert.equal(store.dimensionOf(), undefined, "a failed ensure leaves no collection behind");
+  assert.equal(store.points().length, 0);
+});
+
 test("rememberLogic passes onDimensionMismatch: 'recreate' so a mismatched collection is rebuilt on write (OI-001)", async () => {
   // A collection created by a previous embedding model (384 dims).
   const store = createMemoryStore({ name: PROJECT, dimension: 384 });

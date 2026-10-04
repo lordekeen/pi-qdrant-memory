@@ -1,5 +1,6 @@
 import { pointId } from "./ids.ts";
 import type { MemoryType, PointPayload, SearchHit, ToolDeps } from "./types.ts";
+import { applyWrites } from "./writes.ts";
 
 export type ToolResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -12,13 +13,15 @@ export async function rememberLogic(deps: ToolDeps, text: string, type?: MemoryT
   // never carries a tool name or a `failed:` prefix of its own.
   if (!trimmed) return { ok: false, error: "text is empty" };
   if (trimmed.length > MAX_TEXT) return { ok: false, error: `text too long (>${MAX_TEXT} chars)` };
-  const payload: PointPayload = {
+  // `payload` carries the canonical text; `stored` is its `text`-less twin —
+  // `applyWrites` injects the text it embedded, so callers never set it.
+  const stored: Omit<PointPayload, "text"> = {
     type: type ?? "decision",
-    text: trimmed,
     project_id: deps.projectId,
     ts: Date.now(),
     source_kind: "remember_tool",
   };
+  const payload: PointPayload = { ...stored, text: trimmed };
   const id = pointId(trimmed, "remember_tool", "");
   if (deps.qdrant.existingPointIds) {
     try {
@@ -30,27 +33,30 @@ export async function rememberLogic(deps: ToolDeps, text: string, type?: MemoryT
       // Non-fatal: if precheck fails, proceed with embed + ensureCollection + upsert
     }
   }
-  try {
-    // G1: the collection may not exist yet on a fresh project (e.g. the first
-    // `/qdrant remember` after install) — ensure it before writing.
-    // NOTE on idempotency: the canonical point id is (text, "remember_tool", "")
-    // — `type` is deliberately not part of it. Re-saving the same text with a
-    // different type UPSERTS over the earlier point rather than creating a
-    // duplicate.
-    // Embed first so a failure to embed never triggers collection recreation
-    // or modifies collection state.
-    const vector = await deps.embed(trimmed);
-    if (!deps.collectionReady?.has(deps.projectId)) {
-      await deps.qdrant.ensureCollection(deps.projectId, deps.cfg.expectedDimension, {
-        onDimensionMismatch: "recreate",
-      });
-      deps.collectionReady?.add(deps.projectId);
-    }
-    await deps.qdrant.upsert(deps.projectId, [{ id, vector, payload }]);
-    return { ok: true, value: payload };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+  // G1: the collection may not exist yet on a fresh project (e.g. the first
+  // `/qdrant remember` after install) — ensure it before writing.
+  // NOTE on idempotency: the canonical point id is (text, "remember_tool", "")
+  // — `type` is deliberately not part of it. Re-saving the same text with a
+  // different type UPSERTS over the earlier point rather than creating a
+  // duplicate.
+  // Embed first so a failure to embed never triggers collection recreation
+  // or modifies collection state; `applyWrites` owns that ordering (and the
+  // "recreate" policy this interactive write uses).
+  const report = await applyWrites(
+    {
+      embed: deps.embed,
+      qdrant: deps.qdrant,
+      projectId: deps.projectId,
+      dimension: deps.cfg.expectedDimension,
+      onDimensionMismatch: "recreate",
+      collectionReady: deps.collectionReady,
+    },
+    [{ items: [{ id, text: trimmed, payload: stored }] }],
+  );
+  if (report.written === 1) return { ok: true, value: payload };
+  const outcome = report.batches[0];
+  const reason = report.error ?? outcome?.embedErrors[0] ?? outcome?.upsertError ?? "write failed";
+  return { ok: false, error: reason };
 }
 
 export async function memorySearchLogic(

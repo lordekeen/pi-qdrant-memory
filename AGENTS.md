@@ -75,12 +75,13 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | `src/qdrant.ts` | `QdrantClient` (REST) + `QdrantLike` interface (test seam). |
 | `src/embeddings.ts` | `EmbeddingClient` — OpenAI-compatible `/embeddings`, dimension checks. |
 | `src/ids.ts` | `normalizeText`, `contentHash`, `pointId` (deterministic ids). |
+| `src/writes.ts` | `applyWrites` — the one owner of the write protocol (embed → ensure → invalidate → upsert), per-call dimension policy (`recreate` for interactive, `error` for background), invalidation strategies (none / files / source-entry-ids), the shared write chunk cap (`WRITE_CHUNK_SIZE`), and the failure report. Never throws and never logs: callers map its report to their own results and `console.error` sentences. |
 | `src/blackhole.ts` | Read pi-blackhole pending artifacts (Mode 1) — `parseOmEntry`, `readPendingArtifacts`. |
-| `src/ingest.ts` | `ingestItems` batch upsert + `artifactToIngestItem`. |
-| `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic`, `forgetLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
+| `src/ingest.ts` | `ingestItems` — existing-point skip → one `applyWrites` batch with source-entry supersede; `artifactToIngestItem`, `ensureAndGet`. |
+| `src/tools-core.ts` | `rememberLogic` (existing-point skip → `applyWrites` with the interactive `recreate` policy), `memorySearchLogic`, `forgetLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
 | `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point). |
 | `src/codescan.ts` | Standalone structural code extractor (opt-in, zero-dep): repo walk + per-language line matchers → deterministic per-symbol/per-file summaries. |
-| `src/code-sync.ts` | `syncCodeKnowledge` — scan → Qdrant snapshot (file_path→file_sha) → per-file diff → per whole-file batch: embed → delete-by-file_path → upsert. Batches are built from whole files so each file is replaced atomically and a failed embed never deletes. Never throws; Qdrant is the cache. |
+| `src/code-sync.ts` | `planSync` (pure scan×snapshot diff + whole-file batching) and `syncCodeKnowledge` — ensure → scan → snapshot → plan → `applyWrites` → extras delete → totals. A file is never split across batches and a failed embed never deletes. Never throws; Qdrant is the cache. `SYNC_BATCH_SIZE` is re-exported from `writes.ts`. |
 | `src/render.ts` | Tool-path text blocks (`renderHits` + `sourcePointer`), LLM-facing — deliberately outside the entry UI. |
 | `src/entry-render.ts` | Lazy pi-tui renderer: maps an `OutEntry` (via `renderOut` roles) to one multi-line `Text` + `keyHint` (only collapsed search summaries expand). No Box/card machinery — status renders unboxed like every entry. `RendererOptions.TextCtor` is the unit-test seam. |
 | `src/deps.ts` | `makeRuntime` (resolves the project first, then the effective config; assembles cfg + clients + handlers IO through the shared `buildClients` path), `applyConfig` (hot reload after settings writes; same client path), `writeGlobalConfigAndReload` (D10: persist the global file through `readGlobalConfig`, then re-apply the effective reader). |
