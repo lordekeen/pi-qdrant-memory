@@ -165,6 +165,8 @@ OpenAI-compatible embeddings endpoint (defaults `:8080/v1`, `nomic-embed-text`,
   delete-after-upsert wipe was invisible to a fully green suite. Make store fakes
   actually add/remove, and where ordering matters assert an operation timeline
   (e.g. a file's delete must precede its upsert) rather than just call shape.
+  Write-path tests share the stateful adapter in `test/support/memory-store.ts`
+  (`createMemoryStore`) instead of hand-rolling a `QdrantLike` fake.
 
 ## Definition of done
 
