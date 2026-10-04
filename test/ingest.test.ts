@@ -265,6 +265,42 @@ test("ingestItems skips only a failed embed chunk's items and upserts the surviv
   assert.equal(store.points().length, 32);
 });
 
+test("#67: a fatal ensure still logs the chunk embed failures that preceded it", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { logged.push(args.map(String).join(" ")); });
+  // A collection from a previous embedding model: the ensure fails fatally
+  // AFTER the first chunk embedded and the second chunk failed — the state the
+  // embed → ensure ordering makes reachable.
+  const store = createMemoryStore({ name: PROJECT, dimension: 384 });
+  store.seed([{ id: "keep", payload: payload({ text: "keep me" }) }]);
+  let calls = 0;
+  const deps = {
+    embed: async () => { throw new Error("should not be called"); },
+    embedBatch: async (texts: string[]) => {
+      calls++;
+      if (calls === 2) throw new Error("chunk down");
+      return texts.map(() => new Array(DIM).fill(0.3));
+    },
+    qdrant: store,
+    projectId: PROJECT,
+  };
+  const items = Array.from({ length: 40 }, (_v, i) => ({
+    text: `item ${String(i)}`,
+    sourceKind: "remember_tool" as const,
+    contextId: `s${String(i)}`,
+    payload: { type: "decision" as const, project_id: PROJECT, ts: i, source_kind: "remember_tool" as const },
+  }));
+
+  const res = await ingestItems(deps, DIM, items);
+
+  assert.equal(res.attempted, 40);
+  assert.equal(res.ingested, 0);
+  assert.equal(calls, 2);
+  assert.equal(logged.length, 2, "both the chunk embed failure and the fatal ensure are reported");
+  assert.equal(logged[0], "pi-qdrant-memory: ingest batch skipped (embed failed): Error: chunk down");
+  assert.match(logged[1]!, /^pi-qdrant-memory: ingest failed \(non-fatal\): .*dim 384 ≠ expectedDimension 768/);
+});
+
 test("ingestItems never throws when ensure fails: the collection is left untouched", async () => {
   // A collection from a previous embedding model: the background write path
   // must not recreate it (and must not throw out of ingestItems).

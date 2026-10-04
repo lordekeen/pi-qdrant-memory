@@ -51,15 +51,15 @@ export async function ingestItems(
   }));
 
   let needed = itemsWithIds;
-  if (deps.qdrant.existingPointIds) {
-    try {
-      const existing = await deps.qdrant.existingPointIds(deps.projectId, itemsWithIds.map((x) => x.id));
-      if (existing.size > 0) {
-        needed = itemsWithIds.filter((x) => !existing.has(x.id));
-      }
-    } catch {
-      // Non-fatal: fall back to processing all items
+  // `existingPointIds` is required by the total `QdrantLike` seam (ADR 0001),
+  // so the call is unconditional; only a store error is tolerated.
+  try {
+    const existing = await deps.qdrant.existingPointIds(deps.projectId, itemsWithIds.map((x) => x.id));
+    if (existing.size > 0) {
+      needed = itemsWithIds.filter((x) => !existing.has(x.id));
     }
+  } catch {
+    // Non-fatal: fall back to processing all items
   }
 
   if (!needed.length) {
@@ -85,12 +85,10 @@ export async function ingestItems(
   );
 
   const outcome = report.batches[0];
-  if (report.error !== undefined) {
-    // The ensure is fatal by contract — previously it threw out of this
-    // function; the caller's sentence lives here now.
-    console.error(`pi-qdrant-memory: ingest failed (non-fatal): ${report.error}`);
-    return { attempted: items.length, ingested: 0 };
-  }
+  // Log the chunk embed failures BEFORE the fatal ensure return (#67): with
+  // the embed → ensure order both can coexist (survivors embedded, then the
+  // ensure fails), and a fatal abort is the worst moment to drop the chunk
+  // diagnostics that explain why some items never made it into the batch.
   if (outcome) {
     for (const error of outcome.embedErrors) {
       // The sentence names the route the module actually took: a chunked
@@ -99,6 +97,14 @@ export async function ingestItems(
         ? `pi-qdrant-memory: ingest batch skipped (embed failed): ${error}`
         : `pi-qdrant-memory: ingest skipped (embed failed): ${error}`);
     }
+  }
+  if (report.error !== undefined) {
+    // The ensure is fatal by contract — previously it threw out of this
+    // function; the caller's sentence lives here now.
+    console.error(`pi-qdrant-memory: ingest failed (non-fatal): ${report.error}`);
+    return { attempted: items.length, ingested: 0 };
+  }
+  if (outcome) {
     if (outcome.invalidateError !== undefined) {
       console.error(`pi-qdrant-memory: supersede delete failed (non-fatal): ${outcome.invalidateError}`);
     }
