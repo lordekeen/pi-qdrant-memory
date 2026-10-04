@@ -20,6 +20,10 @@ const fakeQdrant: QdrantLike = {
   async codeIndexSnapshot() { return new Map(); },
   async countBySourceKind() { return 0; },
   async countCodeSymbols() { return 0; },
+  async deletePointsBySourceKind() {},
+  async deletePointsBySourceEntryIds() {},
+  async deletePointsByIds(_name, ids) { return ids.length; },
+  async existingPointIds() { return new Set<string>(); },
 };
 
 /** Injected fake clients: preserved across reloads (OI-002). */

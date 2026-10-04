@@ -9,9 +9,9 @@ import {
   forgetConfirmMessage, indexUsageText, unknownKeyText, unknownValueText, noArgumentText, unexpectedArgumentText,
   commandUsageText, clearRequiresUiText, commandFormatNoticeEntry, COMMAND_FORMAT_NOTICE_TEXT, loadWarningText,
   settingsWriteErrorText, rememberedText, alreadySavedText, rememberFailedText, searchFailedText,
-  clearFailedText, clearedAllText, clearNoCodeText, clearCodeUnsupportedText, clearedCodeText,
+  clearFailedText, clearedAllText, clearNoCodeText, clearedCodeText,
   forgetUsageText, forgetFailedText, forgetNoMatchText, forgetRequiresUiText, forgetCancelledText,
-  forgetUnsupportedText, forgottenText, codeMemoryDisabledText, codeMemorySyncFailedText,
+  forgottenText, codeMemoryDisabledText, codeMemorySyncFailedText,
 } from "../src/out.ts";
 import { ARG_SHAPE, USAGE_KEYS } from "../src/commands.ts";
 import { graphemeLength } from "../src/render.ts";
@@ -535,7 +535,6 @@ test("clear result builders keep the transcript wording byte-for-byte", () => {
   assert.equal(clearFailedText("timeout"), "error: clear failed: timeout");
   assert.equal(clearedAllText("pi-mem-abc"), "cleared: collection pi-mem-abc reset");
   assert.equal(clearNoCodeText(), "clear: no code points indexed");
-  assert.equal(clearCodeUnsupportedText(), "error: clear failed: client does not support deletion by source kind");
   assert.equal(clearedCodeText(1), "cleared: 1 code memory point removed");
   assert.equal(clearedCodeText(3), "cleared: 3 code memory points removed");
 });
@@ -546,7 +545,6 @@ test("forget result builders keep the transcript wording byte-for-byte", () => {
   assert.equal(forgetNoMatchText("deploy plan"), 'forget: no memories matched "deploy plan"');
   assert.equal(forgetRequiresUiText(), "error: /qdrant forget requires interactive UI confirmation");
   assert.equal(forgetCancelledText(), "forget: unchanged (cancelled)");
-  assert.equal(forgetUnsupportedText(), "error: forget failed: client does not support point deletion by id");
   assert.equal(forgottenText(1), "forgotten: 1 memories removed");
   assert.equal(forgottenText(4), "forgotten: 4 memories removed");
 });

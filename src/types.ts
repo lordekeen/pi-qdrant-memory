@@ -71,8 +71,6 @@ export interface RuntimeDeps {
   /** Re-resolve env → project → global → DEFAULTS for the current `projectId`
    * and swap it into the live runtime (swap clients, never re-register). */
   reloadEffectiveConfig(): void;
-  /** Memoized verified collection existence set (OI-010). */
-  collectionReady?: Set<string>;
   /** Cached embedding probe result (OI-011). */
   embedProbeCache?: EmbedProbeCacheEntry;
   /** Injectable clock for probe TTL (tests). */
@@ -91,6 +89,4 @@ export interface ToolDeps {
   projectId: string;
   embed(text: string): Promise<number[]>;
   qdrant: QdrantLike;
-  /** Memoized verified collection existence set (OI-010). */
-  collectionReady?: Set<string>;
 }

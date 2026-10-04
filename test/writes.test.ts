@@ -189,20 +189,27 @@ test("'recreate' rebuilds a dimension-mismatched collection; the default 'error'
   assert.equal(untouched.points().length, 1, "the stored points are untouched");
 });
 
-test("a ready set short-circuits ensure and is filled by the first write", async () => {
+test("a source-entry-ids batch always supersedes through the store interface, before its upsert", async () => {
   const store = newStore();
-  const ready = new Set<string>();
-  const first = await applyWrites(deps(store, { collectionReady: ready }), [{ items: [item("a")] }]);
-  assert.equal(first.written, 1);
-  assert.equal(ready.has(PROJECT), true, "a successful ensure marks the project ready");
-  assert.equal(store.timeline.filter((op) => op.op === "ensure").length, 1);
+  const stale: PointPayload = {
+    type: "fact", text: "old revision", project_id: PROJECT, ts: 0,
+    source_kind: "blackhole_observation", source_entry_id: "entry-1",
+  };
+  store.seed([{ id: "stale-entry-1", payload: stale }]);
 
-  const store2 = newStore();
-  store2.seed([]); // collection exists, created outside the timeline
-  const ready2 = new Set([PROJECT]);
-  const second = await applyWrites(deps(store2, { collectionReady: ready2 }), [{ items: [item("a")] }]);
-  assert.equal(second.written, 1);
-  assert.equal(store2.timeline.filter((op) => op.op === "ensure").length, 0, "a ready project skips ensure");
+  const report = await applyWrites(deps(store), [{
+    items: [item("new revision", {
+      type: "fact", source_kind: "blackhole_observation", source_entry_id: "entry-1",
+    })],
+    invalidate: "source-entry-ids",
+  }]);
+
+  assert.equal(report.written, 1);
+  assert.equal(report.invalidateFailed, 0);
+  assert.equal(store.points().some((p) => p.id === "stale-entry-1"), false, "the superseded revision really left");
+  const deleteAt = store.indexOfOp((op) => op.op === "delete" && op.by === "source_entry_ids");
+  const upsertAt = store.indexOfOp((op) => op.op === "upsert");
+  assert.ok(deleteAt >= 0 && upsertAt >= 0 && deleteAt < upsertAt, "the supersede delete must precede the upsert");
 });
 
 test("a failed invalidation is tolerated: the upsert still lands and the report carries the reason", async () => {

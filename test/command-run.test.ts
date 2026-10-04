@@ -35,6 +35,10 @@ const qdrant: QdrantLike = {
   codeIndexSnapshot: async () => new Map(),
   countBySourceKind: async () => 0,
   countCodeSymbols: async () => 0,
+  deletePointsBySourceKind: async () => {},
+  deletePointsBySourceEntryIds: async () => {},
+  deletePointsByIds: async (_name, ids) => ids.length,
+  existingPointIds: async () => new Set<string>(),
 };
 
 interface FakeIO extends HandlerIO {

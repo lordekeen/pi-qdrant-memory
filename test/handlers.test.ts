@@ -135,7 +135,9 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
     async countBySourceKind() { return 0; },
     async countCodeSymbols() { return 0; },
     async deletePointsBySourceKind() { codeKindDeletes++; },
+    async deletePointsBySourceEntryIds() {},
     async deletePointsByIds(_name, ids) { deletedIds.push(...ids); return ids.length; },
+    async existingPointIds() { return new Set<string>(); },
   };
   return {
     get cfg() { return effective(); },
@@ -223,6 +225,10 @@ test("statusHandler distinguishes a missing collection from an unreachable serve
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
     async countCodeSymbols() { return 0; },
+    async deletePointsBySourceKind() {},
+    async deletePointsBySourceEntryIds() {},
+    async deletePointsByIds(_name, ids) { return ids.length; },
+    async existingPointIds() { return new Set<string>(); },
   };
   const d = io({ qdrant: qdrant404 });
   await statusHandler(d);
@@ -681,6 +687,10 @@ test("searchHandler emits an error entry when the search fails", async () => {
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
     async countCodeSymbols() { return 0; },
+    async deletePointsBySourceKind() {},
+    async deletePointsBySourceEntryIds() {},
+    async deletePointsByIds(_name, ids) { return ids.length; },
+    async existingPointIds() { return new Set<string>(); },
   };
   const d = io({ qdrant: qdrantErr });
   await searchHandler(d, "query");
@@ -707,6 +717,10 @@ test("searchHandler emits an error entry on dimension mismatch (OI-001)", async 
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
     async countCodeSymbols() { return 0; },
+    async deletePointsBySourceKind() {},
+    async deletePointsBySourceEntryIds() {},
+    async deletePointsByIds(_name, ids) { return ids.length; },
+    async existingPointIds() { return new Set<string>(); },
   };
   const d = io({ qdrant: qdrantMismatch });
   await searchHandler(d, "query");
@@ -960,12 +974,8 @@ test("forgetHandler emits message when no memories match query", async () => {
 });
 
 test("forgetHandler emits error when search fails", async () => {
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { throw new Error("qdrant down"); },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.qdrant.search = async () => { throw new Error("qdrant down"); };
   await forgetHandler(d, "test");
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "error");
@@ -974,12 +984,8 @@ test("forgetHandler emits error when search fails", async () => {
 
 test("forgetHandler requires interactive UI when hits match", async () => {
   const hit = { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } };
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return [hit]; },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.qdrant.search = async () => [hit];
   await forgetHandler(d, "auth");
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "error");
@@ -988,13 +994,8 @@ test("forgetHandler requires interactive UI when hits match", async () => {
 
 test("forgetHandler cancels when user declines confirmation", async () => {
   const hit = { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } };
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return [hit]; },
-      async deletePointsByIds(_n: string, ids: string[]) { d.deletedIds.push(...ids); return ids.length; },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.qdrant.search = async () => [hit];
   const ui: SettingsUI = {
     async select() { return undefined; },
     async input() { return undefined; },
@@ -1013,13 +1014,8 @@ test("forgetHandler deletes points and emits confirmation when confirmed", async
     { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } },
     { id: "pt-2", score: 0.85, payload: { type: "decision" as const, text: "session tokens expire in 1h", project_id: "p", ts: 2, source_kind: "remember_tool" as const } },
   ];
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return hits; },
-      async deletePointsByIds(_n: string, ids: string[]) { d.deletedIds.push(...ids); return ids.length; },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.qdrant.search = async () => hits;
   let confirmTitle = "";
   let confirmMessage = "";
   const ui: SettingsUI = {
@@ -1046,13 +1042,8 @@ test("forgetHandler caps at FORGET_MAX_HITS and says further matches are untouch
     score: 0.9 - i * 0.01,
     payload: { type: "fact" as const, text: `match ${String(i + 1)}`, project_id: "p", ts: i, source_kind: "remember_tool" as const },
   }));
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return hits; },
-      async deletePointsByIds(_n: string, ids: string[]) { d.deletedIds.push(...ids); return ids.length; },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.qdrant.search = async () => hits;
   let confirmMessage = "";
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -1076,13 +1067,9 @@ test("forgetHandler emits error when deletePointsByIds throws", async () => {
   const hits = [
     { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } },
   ];
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return hits; },
-      async deletePointsByIds() { throw new Error("Qdrant write failed: timeout"); },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.qdrant.search = async () => hits;
+  d.qdrant.deletePointsByIds = async () => { throw new Error("Qdrant write failed: timeout"); };
   const ui: SettingsUI = {
     async select() { return undefined; },
     async input() { return undefined; },
@@ -1093,29 +1080,6 @@ test("forgetHandler emits error when deletePointsByIds throws", async () => {
   assert.equal(d.emitted[0].kind, "search");
   assert.equal(d.emitted[1].kind, "error");
   assert.match(d.printed[1], /error: forget failed: Qdrant write failed: timeout/);
-});
-
-test("forgetHandler emits error when deletePointsByIds is absent", async () => {
-  const hits = [
-    { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } },
-  ];
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return hits; },
-      // deletePointsByIds omitted
-    } as unknown as QdrantLike,
-  });
-  const ui: SettingsUI = {
-    async select() { return undefined; },
-    async input() { return undefined; },
-    async confirm() { return true; },
-  };
-  await forgetHandler(d, "auth", ui);
-  assert.equal(d.emitted.length, 2);
-  assert.equal(d.emitted[0].kind, "search");
-  assert.equal(d.emitted[1].kind, "error");
-  assert.match(d.printed[1], /error: forget failed: client does not support point deletion by id/);
 });
 
 test("clearHandler resets codeMemory counters to 0 on clear code and clear all", async () => {
@@ -1156,26 +1120,6 @@ test("clearHandler resets stale codeMemory counters on the empty-collection path
   assert.equal(d.qdrantClears, 0, "nothing to delete means nothing is deleted");
 });
 
-test("clearHandler resets the collectionReady cache on every successful clear path (#61)", async () => {
-  const ui: SettingsUI = {
-    async select() { return undefined; },
-    async input() { return undefined; },
-    async confirm() { return true; },
-  };
-  // Empty path: a stale "collection exists" memo must not survive.
-  const d = io({ collectionReady: new Set([PROJECT_ID]) });
-  d.qdrant.count = async () => 0;
-  await clearHandler(d, "all", ui);
-  assert.equal(d.collectionReady?.has(PROJECT_ID), false);
-
-  // Confirmed path: the memo is dropped there too (existing #44 behaviour).
-  const d2 = io({ collectionReady: new Set([PROJECT_ID]), codeMemory: { state: "synced", files: 1, symbols: 2 } });
-  d2.qdrant.count = async () => 5;
-  await clearHandler(d2, "all", ui);
-  assert.equal(d2.collectionReady?.has(PROJECT_ID), false);
-  assert.equal(d2.codeMemory?.files, 0);
-});
-
 test("clearHandler leaves stale counters alone when the clear is refused or declined (#61)", async () => {
   // The refusal and the declined-confirm paths delete nothing, so they must not
   // claim the inventory is empty.
@@ -1193,15 +1137,6 @@ test("clearHandler leaves stale counters alone when the clear is refused or decl
   assert.equal(declined.codeMemory?.files, 3);
   assert.equal(declined.codeMemory?.symbols, 9);
 });
-
-test("clearHandler with 'code' emits error when deletePointsBySourceKind is absent", async () => {
-  const d = io();
-  d.qdrant.countBySourceKind = async () => 3;
-  delete (d.qdrant as { deletePointsBySourceKind?: unknown }).deletePointsBySourceKind;
-  await clearHandler(d, "code");
-  assert.match(d.printed.join("\n"), /error: clear failed: client does not support deletion by source kind/);
-});
-
 
 // ── #58: secrets and cancellation on the DIALOG form path ────────────────────
 //

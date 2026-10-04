@@ -9,8 +9,8 @@
  * - Embed before ensure: a failed embed must never create or recreate a
  *   collection (the order `rememberLogic` documents, OI-001). Ensure runs once
  *   per call, right before the first upsert whose batch embedded successfully;
- *   an optional `collectionReady` set short-circuits it exactly as
- *   `rememberLogic` does today.
+ *   collection readiness is the adapter's own memo (`QdrantClient.ensured`),
+ *   not a caller-owned cache.
  * - An ensure failure is fatal: later batches are not attempted (nothing can
  *   be written into an unverified collection), and the reason is reported as
  *   `report.error`.
@@ -102,9 +102,6 @@ export interface WriteDeps {
   /** Dimension-mismatch policy: `"recreate"` only for interactive writes
    *  (remember); background paths keep the throwing `"error"` default. */
   onDimensionMismatch?: "error" | "recreate";
-  /** Memoized verified-collection set (OI-010); when set and containing the
-   *  project, ensure is skipped exactly as `rememberLogic` does today. */
-  collectionReady?: Set<string>;
 }
 
 /** Non-empty string payload fields, deduplicated in first-seen order. */
@@ -130,9 +127,9 @@ export async function applyWrites(deps: WriteDeps, batches: WriteBatch[]): Promi
     batches: [],
   };
   // The collection is ensured once, after the first successful embed — the
-  // order `rememberLogic` documents. A ready set is the caller's memo of that
-  // verification (OI-010).
-  let ensured = deps.collectionReady?.has(deps.projectId) ?? false;
+  // order `rememberLogic` documents. Readiness lives in the adapter, which
+  // memoizes it (`QdrantClient.ensured`).
+  let ensured = false;
 
   for (const batch of batches) {
     const outcome: WriteBatchOutcome = { written: 0, embedErrors: [] };
@@ -185,7 +182,6 @@ export async function applyWrites(deps: WriteDeps, batches: WriteBatch[]): Promi
           onDimensionMismatch: deps.onDimensionMismatch ?? "error",
         });
         ensured = true;
-        deps.collectionReady?.add(deps.projectId);
       } catch (err) {
         // Fatal: no later batch can write either.
         report.error = String(err);
@@ -207,7 +203,7 @@ export async function applyWrites(deps: WriteDeps, batches: WriteBatch[]): Promi
           outcome.invalidateError = String(err);
         }
       }
-    } else if (batch.invalidate === "source-entry-ids" && deps.qdrant.deletePointsBySourceEntryIds) {
+    } else if (batch.invalidate === "source-entry-ids") {
       const ids = uniqueStrings(embedded.map(({ item }) => item.payload.source_entry_id));
       if (ids.length) {
         try {

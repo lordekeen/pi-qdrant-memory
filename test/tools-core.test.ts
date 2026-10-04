@@ -274,18 +274,6 @@ test("forgetLogic deletes existing point without calling embed or ensureCollecti
   assert.equal(d.embeds.length, 0, "forgetLogic must never call embed");
 });
 
-test("ensureCollection is memoized across multiple calls when collectionReady is provided (OI-010)", async () => {
-  const collectionReady = new Set<string>();
-  const d = deps({ collectionReady });
-  await rememberLogic(d, "fact 1");
-  await rememberLogic(d, "fact 2");
-  await memorySearchLogic(d, "query 1");
-  await memorySearchLogic(d, "query 2");
-  const ensures = d.q.timeline.filter((op) => op.op === "ensure").length;
-  assert.equal(ensures, 1, "ensureCollection should only be called once when memoized");
-  assert.ok(collectionReady.has(d.projectId));
-});
-
 test("memorySearchLogic queries count and attaches totalCount when hits are empty (OI-018)", async () => {
   // Scores fixed below every threshold → no hits; the counts are real.
   const store = createMemoryStore({ name: PROJECT, scoreOf: () => 0 });
@@ -321,19 +309,6 @@ test("forgetLogic propagates error when existingPointIds fails", async () => {
   if (!res.ok) {
     assert.match(res.error, /Qdrant connection refused/);
   }
-});
-
-test("forgetLogic fails cleanly when deletePointsByIds is absent", async () => {
-  const store = createMemoryStore({ name: PROJECT });
-  const text = "important memory";
-  const id = pointId(text, "remember_tool", "");
-  store.seed([{ id, payload: payload({ text }) }]);
-  const q: QdrantLike = { ...store, deletePointsByIds: undefined };
-  const d = deps({ qdrant: q });
-  const res = await forgetLogic(d, text);
-  assert.equal(res.ok, false);
-  if (!res.ok) assert.equal(res.error, "client does not support point deletion by id");
-  assert.equal(store.points().length, 1, "nothing may be deleted");
 });
 
 test("forgetLogic with the shared stateful store actually removes the memory", async () => {

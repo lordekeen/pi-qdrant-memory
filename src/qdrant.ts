@@ -71,13 +71,13 @@ export interface QdrantLike {
   /** Count code-summary points that carry a `symbol` (per-file anchors carry none). */
   countCodeSymbols(name: string): Promise<number>;
   /** Delete points matching a source_kind filter. */
-  deletePointsBySourceKind?(name: string, kind: string): Promise<void>;
+  deletePointsBySourceKind(name: string, kind: string): Promise<void>;
   /** Delete points matching source_entry_id values (Layer 1 ingest supersede). */
-  deletePointsBySourceEntryIds?(name: string, ids: string[]): Promise<void>;
+  deletePointsBySourceEntryIds(name: string, ids: string[]): Promise<void>;
   /** Delete points by their point IDs. Returns the count of IDs deleted. */
-  deletePointsByIds?(name: string, ids: string[]): Promise<number>;
+  deletePointsByIds(name: string, ids: string[]): Promise<number>;
   /** Retrieve the subset of given point IDs that already exist in the collection. */
-  existingPointIds?(name: string, ids: string[]): Promise<Set<string>>;
+  existingPointIds(name: string, ids: string[]): Promise<Set<string>>;
 }
 
 type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;

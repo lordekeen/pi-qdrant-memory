@@ -23,15 +23,13 @@ export async function rememberLogic(deps: ToolDeps, text: string, type?: MemoryT
   };
   const payload: PointPayload = { ...stored, text: trimmed };
   const id = pointId(trimmed, "remember_tool", "");
-  if (deps.qdrant.existingPointIds) {
-    try {
-      const existing = await deps.qdrant.existingPointIds(deps.projectId, [id]);
-      if (existing.has(id)) {
-        return { ok: true, value: { ...payload, skipped: true } };
-      }
-    } catch {
-      // Non-fatal: if precheck fails, proceed with embed + ensureCollection + upsert
+  try {
+    const existing = await deps.qdrant.existingPointIds(deps.projectId, [id]);
+    if (existing.has(id)) {
+      return { ok: true, value: { ...payload, skipped: true } };
     }
+  } catch {
+    // Non-fatal: if precheck fails, proceed with embed + ensureCollection + upsert
   }
   // G1: the collection may not exist yet on a fresh project (e.g. the first
   // `/qdrant remember` after install) — ensure it before writing.
@@ -49,7 +47,6 @@ export async function rememberLogic(deps: ToolDeps, text: string, type?: MemoryT
       projectId: deps.projectId,
       dimension: deps.cfg.expectedDimension,
       onDimensionMismatch: "recreate",
-      collectionReady: deps.collectionReady,
     },
     [{ items: [{ id, text: trimmed, payload: stored }] }],
   );
@@ -69,13 +66,12 @@ export async function memorySearchLogic(
   if (!trimmed) return { ok: false, error: "query is empty" };
   const capped = Math.max(1, Math.min(limit ?? deps.cfg.maxResults, deps.cfg.maxResults));
   try {
-    // Read paths must never recreate or wipe the collection on dimension mismatch.
-    if (!deps.collectionReady?.has(deps.projectId)) {
-      await deps.qdrant.ensureCollection(deps.projectId, deps.cfg.expectedDimension, {
-        onDimensionMismatch: "error",
-      });
-      deps.collectionReady?.add(deps.projectId);
-    }
+    // Read paths must never recreate or wipe the collection on dimension
+    // mismatch. Readiness is the adapter's memo — a verified collection
+    // short-circuits inside `ensureCollection` (QdrantClient.ensured).
+    await deps.qdrant.ensureCollection(deps.projectId, deps.cfg.expectedDimension, {
+      onDimensionMismatch: "error",
+    });
     const vector = await deps.embed(trimmed);
     const hits = await deps.qdrant.search(deps.projectId, vector, {
       projectId: deps.projectId,
@@ -110,12 +106,9 @@ export async function forgetLogic(
   if (trimmed.length > MAX_TEXT) return { ok: false, error: `text exceeds ${MAX_TEXT} characters` };
   try {
     const id = pointId(trimmed, "remember_tool", "");
-    const existing = await deps.qdrant.existingPointIds?.(deps.projectId, [id]);
-    if (!existing || !existing.has(id)) {
+    const existing = await deps.qdrant.existingPointIds(deps.projectId, [id]);
+    if (!existing.has(id)) {
       return { ok: false, error: "no memory_save point with that exact text" };
-    }
-    if (!deps.qdrant.deletePointsByIds) {
-      return { ok: false, error: "client does not support point deletion by id" };
     }
     const removed = await deps.qdrant.deletePointsByIds(deps.projectId, [id]);
     return { ok: true, value: { text: trimmed, removed } };

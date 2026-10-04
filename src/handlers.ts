@@ -15,7 +15,6 @@ import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
 import {
   EMPTY_SEARCH_TEXT,
   alreadySavedText,
-  clearCodeUnsupportedText,
   clearFailedText,
   clearNoCodeText,
   clearedAllText,
@@ -24,7 +23,6 @@ import {
   forgetFailedText,
   forgetNoMatchText,
   forgetRequiresUiText,
-  forgetUnsupportedText,
   forgetUsageText,
   forgottenText,
   rememberFailedText,
@@ -83,8 +81,6 @@ export interface HandlerIO {
   codeMemory?: CodeMemoryHealth;
   /** Environment variables; defaults to process.env. */
   env?: NodeJS.ProcessEnv;
-  /** Memoized verified collection existence set (OI-010). */
-  collectionReady?: Set<string>;
   /** Cached embedding probe result (OI-011). */
   embedProbeCache?: EmbedProbeCacheEntry;
   /** Timeout budget for the status probe (OI-011, defaults to 5000ms). */
@@ -111,7 +107,6 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
     get embed() { return deps.embed; },
     get qdrant() { return deps.qdrant; },
     get env() { return deps.env ?? process.env; },
-    get collectionReady() { return deps.collectionReady; },
     get embedProbeCache() { return deps.embedProbeCache; },
     set embedProbeCache(v) { deps.embedProbeCache = v; },
     get now() { return deps.now; },
@@ -383,14 +378,13 @@ export async function searchHandler(io: HandlerIO, query: string, type?: MemoryT
 }
 
 /**
- * Drop the in-memory caches a clear invalidates (#44): the memoized
- * collection-existence set and the code-memory inventory counts that
- * `/qdrant status` reports. Called on **every** successful clear path — the
- * empty collection included, where the stored side is already empty but the
- * counters may be stale (#61).
+ * Drop the code-memory inventory counts a clear invalidates (#44). Called on
+ * **every** successful clear path — the empty collection included, where the
+ * stored side is already empty but the counters may be stale (#61). Collection
+ * readiness is the adapter's own concern (`QdrantClient.ensured`), invalidated
+ * by `clearCollection` itself.
  */
 function resetCodeMemoryCaches(io: HandlerIO): void {
-  io.collectionReady?.delete(io.projectId);
   if (io.codeMemory) {
     io.codeMemory.files = 0;
     io.codeMemory.symbols = 0;
@@ -449,10 +443,6 @@ export async function clearHandler(io: HandlerIO, target?: string, ui?: Settings
         io.emit(message(clearNoCodeText()));
         return;
       }
-      if (!io.qdrant.deletePointsBySourceKind) {
-        io.emit(errorEntry(clearCodeUnsupportedText()));
-        return;
-      }
       await io.qdrant.deletePointsBySourceKind(io.projectId, "code_summary");
       resetCodeMemoryCaches(io);
       io.emit(message(clearedCodeText(count)));
@@ -498,10 +488,6 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
     return;
   }
   const hitIds = targets.map((h) => h.id);
-  if (!io.qdrant.deletePointsByIds) {
-    io.emit(errorEntry(forgetUnsupportedText()));
-    return;
-  }
   try {
     const count = await io.qdrant.deletePointsByIds(io.projectId, hitIds);
     io.emit(message(forgottenText(count)));

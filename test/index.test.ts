@@ -67,6 +67,10 @@ const qdrant: QdrantLike = {
   codeIndexSnapshot: async () => new Map(),
   countBySourceKind: async () => 0,
   countCodeSymbols: async () => 0,
+  deletePointsBySourceKind: async () => {},
+  deletePointsBySourceEntryIds: async () => {},
+  deletePointsByIds: async (_name, ids) => ids.length,
+  existingPointIds: async () => new Set<string>(),
 };
 
 const rt: RuntimeDeps = {
@@ -613,6 +617,8 @@ test("memory_forget tool executes forgetLogic and retracts memory", async () => 
     async codeIndexSnapshot() { return new Map(); },
     async countBySourceKind() { return 0; },
     async countCodeSymbols() { return 0; },
+    async deletePointsBySourceKind() {},
+    async deletePointsBySourceEntryIds() {},
     async existingPointIds() { return new Set([id]); },
     async deletePointsByIds(_n, ids) { deleted.push(...ids); return ids.length; },
   };

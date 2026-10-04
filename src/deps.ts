@@ -59,7 +59,6 @@ export async function makeRuntime(
     env,
     resolvedIO,
     ...buildClients(cfg, resolvedIO),
-    collectionReady: new Set<string>(),
     embedProbeCache: undefined,
     readGlobalConfig: io.readGlobalConfig,
     writeGlobalConfig: io.writeGlobalConfig,
@@ -89,7 +88,6 @@ export function writeGlobalConfigAndReload(rt: RuntimeDeps, agentDir: string, ne
  */
 export function applyConfig(rt: RuntimeDeps, cfg: Config): void {
   rt.cfg = cfg;
-  rt.collectionReady?.clear();
   rt.embedProbeCache = undefined;
   const clients = buildClients(cfg, rt.resolvedIO);
   rt.embed = clients.embed;
