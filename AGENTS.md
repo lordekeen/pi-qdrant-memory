@@ -2,9 +2,10 @@
 
 Guidance for coding agents (and humans) making changes to this repository.
 Read [README.md](./README.md) for the product, [DESIGN.md](./DESIGN.md) for the
-extension's UI/interaction contract, and `docs/specs/` (design + implementation
-plan + plan review; **local-only and gitignored** — they are absent from a fresh
-clone) for the original intent and decision log.
+extension's UI/interaction contract, [GLOSSARY.md](./GLOSSARY.md) for the
+domain language, and `docs/adr/` for durable decisions. `docs/specs/` (design +
+implementation plan + plan review) is **local-only and gitignored** — absent
+from a fresh clone.
 
 ## What this is
 
@@ -62,7 +63,7 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 
 | File | Role |
 | --- | --- |
-| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, the single `/qdrant` command, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). The registered command is a thin per-invocation closure that resolves the LIVE UI (`commandUI`/`hostBridge`), the kind runners and the notice/status seams, then delegates all routing to `command-run.ts`. Re-exports `CommandUi`. |
+| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, the single `/qdrant` command, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, host bridge). The registered command is a thin per-invocation closure that resolves the LIVE UI (`commandUI`/`hostBridge`), the kind runners and the notice/status seams, then delegates all routing to `command-run.ts`. Re-exports `CommandUi`. |
 | `src/commands.ts` | The `/qdrant <key>` grammar **and the one command registry**, pure: `QdrantKey`, `ArgShape`/`ARG_SHAPE`, the `INDEX_KINDS` registry, `COMMAND_ROWS` (help text + completion summaries, keyed by `QdrantKey` so a missing/dead row is a build error), `parseQdrantArgs`, `checkArgShape`, `splitKeyedArg`, `getQdrantCompletions`. No pi imports, no runtime. |
 | `src/command-run.ts` | The `/qdrant <key>` dispatcher: `runQdrantCommand(args, CommandDeps)` owns the grammar gate (bare form, unknown key, every `checkArgShape` error row), the one-shot migration-notice call past the gate, every key's routing, the settings form/screen/usage decision (tui vs rpc vs usage) and the index gate + result rows. `CommandDeps` carries the handler IO, the LIVE invocation `CommandUi` (re-exported by `index.ts`), the optional host bridge, the kind runners and the notice/footer seams — no pi surface, fully unit-tested with fakes. |
 | `src/handlers.ts` | Handlers for the `/qdrant <key>` cases (status/settings/remember/search/forget/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. Settings writes delegate to `settings-write.ts`. No collection-readiness cache here (or anywhere in the runtime): the adapter owns readiness. |
@@ -90,7 +91,8 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | `src/pi-tui.d.ts` | Ambient types for the lazy `@earendil-works/pi-tui` import. |
 | `src/pi-coding-agent.d.ts` | Ambient types for the lazy `@earendil-works/pi-coding-agent` import (`keyHint`). |
 | `test/*.test.ts` | One test file per module, `node:test` + `node:assert/strict`. `integration.smoke.test.ts` is opt-in. |
-| `docs/specs/` | Original design doc, implementation plan, plan review. |
+| `docs/adr/` | Durable decisions with non-obvious trade-offs (tracked). Read before re-litigating an architecture choice. |
+| `docs/specs/` | Original design doc, implementation plan, plan review — local-only and gitignored. |
 
 ## Wiring pattern (when you add a feature)
 

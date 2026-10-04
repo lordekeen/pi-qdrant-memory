@@ -42,14 +42,16 @@ pi install /absolute/path/to/pi-qdrant-memory   # records the path; loads live f
 
 Then in a pi session:
 
-- `/qdrant-help` — command list
-- `/qdrant-status` — health + mode + collection
-- `/qdrant-settings` — interactive settings form (bare) or
-  `/qdrant-settings <key> <value>` (direct write)
-- `/qdrant-remember <text>` / `/qdrant-search <query>` — manual store/search
-- `/qdrant-forget <query>` — interactive memory search and removal
-- `/qdrant-clear all | code` — reset the project collection or purge code summaries
-- `/qdrant-index-code` — trigger immediate code re-indexing (when `codeKnowledge: on`)
+- `/qdrant` — status block + command list (bare form)
+- `/qdrant status` — health + mode + collection
+- `/qdrant settings` — interactive settings screen (TUI); the bare form falls
+  back to the dialog sequence in RPC and to usage in headless modes. With a key:
+  `/qdrant settings <key> <value>` writes directly.
+- `/qdrant remember <text>` / `/qdrant search <query>` — manual store/search
+- `/qdrant forget <query>` — interactive memory search and removal
+- `/qdrant clear all | code` — reset the project collection or purge code summaries
+- `/qdrant index code` — trigger immediate code re-indexing (when `codeKnowledge: on`)
+- `/qdrant help` — command list
 
 The agent tools `memory_save` and `memory_search` are what most users exercise (with `code_memory` and `memory_forget` available as opt-in tools).
 
@@ -99,6 +101,8 @@ It cleans up after itself. All other tests must stay green **without** servers.
    - behavior/commands/config → `README.md`
    - output text, prefixes, dialogs, flows → `DESIGN.md`
    - invariants/architecture → `AGENTS.md` (rarely)
+   - durable decisions with real trade-offs → a new ADR in `docs/adr/`
+   - domain language → `GLOSSARY.md`
 5. When the change is ready, open a PR with a description that states the
    problem, the fix, and how it was verified (paste the test/typecheck output).
 
@@ -111,7 +115,8 @@ Full detail in `AGENTS.md`. The rules that matter most:
   `src/pi-tui.d.ts`.
 - **Erasable TypeScript** — no enums/parameter properties/namespaces; `import
   type` for types; relative imports use the `.ts` extension.
-- **Single-token `/qdrant-*` commands** — no subcommand parsing.
+- **One `/qdrant <key>` command** — the key is the first argument; never
+  register another `qdrant-…` command name.
 - **Output via entries, never `sendMessage`** — keeps command output out of the
   LLM context.
 - **Idempotent, deterministic point ids** and **graceful degradation** when
@@ -123,7 +128,7 @@ Full detail in `AGENTS.md`. The rules that matter most:
 
 - File issues on GitHub: [https://github.com/lordekeen/pi-qdrant-memory/issues](https://github.com/lordekeen/pi-qdrant-memory/issues).
 - Good issues include: reproduction steps, expected vs actual behavior, the
-  `/qdrant-status` output, and the pi version (`pi --version`).
+  `/qdrant status` output, and the pi version (`pi --version`).
 
 ## License
 
