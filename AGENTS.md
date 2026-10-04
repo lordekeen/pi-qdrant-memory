@@ -62,8 +62,9 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 
 | File | Role |
 | --- | --- |
-| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, the single `/qdrant` command, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). |
-| `src/commands.ts` | The `/qdrant <key>` grammar, pure: `QdrantKey`, `ArgShape`/`ARG_SHAPE`, the `INDEX_KINDS` registry, `parseQdrantArgs`, `checkArgShape`, `splitKeyedArg`, `getQdrantCompletions`. No pi imports, no runtime. |
+| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, the single `/qdrant` command, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). The registered command is a thin per-invocation closure that resolves the LIVE UI (`commandUI`/`hostBridge`), the kind runners and the notice/status seams, then delegates all routing to `command-run.ts`. Re-exports `CommandUi`. |
+| `src/commands.ts` | The `/qdrant <key>` grammar **and the one command registry**, pure: `QdrantKey`, `ArgShape`/`ARG_SHAPE`, the `INDEX_KINDS` registry, `COMMAND_ROWS` (help text + completion summaries, keyed by `QdrantKey` so a missing/dead row is a build error), `parseQdrantArgs`, `checkArgShape`, `splitKeyedArg`, `getQdrantCompletions`. No pi imports, no runtime. |
+| `src/command-run.ts` | The `/qdrant <key>` dispatcher: `runQdrantCommand(args, CommandDeps)` owns the grammar gate (bare form, unknown key, every `checkArgShape` error row), the one-shot migration-notice call past the gate, every key's routing, the settings form/screen/usage decision (tui vs rpc vs usage) and the index gate + result rows. `CommandDeps` carries the handler IO, the LIVE invocation `CommandUi` (re-exported by `index.ts`), the optional host bridge, the kind runners and the notice/footer seams — no pi surface, fully unit-tested with fakes. |
 | `src/handlers.ts` | Handlers for the `/qdrant <key>` cases (status/settings/remember/search/forget/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. Settings writes delegate to `settings-write.ts`. |
 | `src/settings-write.ts` | The one settings-write policy shared by the CLI, the RPC form and the TUI settings screen: the reserved `default` clear (matched before validation, idempotent), `setConfigField` validation, allowlist → project store vs global file routing (D10: global writes persist through the GLOBAL reader), empty-secret → `null`, and every settings emission (confirmations, error, pi-blackhole conflict, `codeKnowledge` reload notice). Synchronous; call sites keep interaction only. |
 | `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested. |
@@ -99,12 +100,15 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
   conditionally and are session-fixed exactly like lifecycle hooks — a mid-session
   settings flip takes effect on reload, and the settings output says so.
 - **Adding a command**: add a key to `QdrantKey` + `ARG_SHAPE` and a case in
-  `runQdrantCommand` (`src/index.ts`) — never a new registered command name —
-  implement the handler in `handlers.ts`, emit one structured entry through
-  `io.emit(...)` (builders + role rules live in `src/out.ts`; DESIGN.md owns the
-  strings), add a `COMMAND_ROWS` row, and cover it in `test/commands.test.ts`,
-  `test/handlers.test.ts` and `test/index.test.ts`. Completion and usage text
-  derive from the table, so they update for free.
+  `runQdrantCommand` (`src/command-run.ts`) — never a new registered command
+  name — implement the handler in `handlers.ts`, emit one structured entry
+  through `io.emit(...)` (builders + role rules live in `src/out.ts`; DESIGN.md
+  owns the strings), add a `COMMAND_ROWS` entry in `src/commands.ts`, and cover
+  it in `test/commands.test.ts`, `test/handlers.test.ts` and
+  `test/command-run.test.ts`. Completion and usage text derive from the table,
+  so they update for free. Dispatch needs a runtime touchpoint? Add it to
+  `CommandDeps` and wire it in `wireApi`'s thin closure — never reach for
+  `rt`/`api` inside `command-run.ts`.
 - **Changing config**: update `Config` in `types.ts`, `DEFAULTS`+`readGlobalConfig`
   precedence and `SETTING_FIELDS` in `config.ts` so the form covers it. Validation goes in `setConfigField` — CLI and form share it, and every write
   runs through `applySettingWrite` (`src/settings-write.ts`), which owns the

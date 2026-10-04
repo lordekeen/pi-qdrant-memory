@@ -19,9 +19,8 @@ import { projectIdFrom } from "../src/project.ts";
 import { pointId } from "../src/ids.ts";
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
-import { COMMAND_ROWS } from "../src/handlers.ts";
-import { ARG_SHAPE, INDEX_KINDS, USAGE_KEYS } from "../src/commands.ts";
-import { commandUsageText, indexUsageText, COMMAND_FORMAT_NOTICE_TEXT } from "../src/out.ts";
+import { ARG_SHAPE } from "../src/commands.ts";
+import { COMMAND_FORMAT_NOTICE_TEXT } from "../src/out.ts";
 
 async function settle(): Promise<void> {
   // refreshStatus is fire-and-forget; yield two ticks so its awaits resolve.
@@ -94,16 +93,6 @@ test("wireApi registers exactly one /qdrant command (the hard cut)", () => {
     // One registration, no aliases: the eight /qdrant-* names are gone (A.4).
     assert.deepEqual((api.commands as Array<{ name: string }>).map((c) => c.name), ["qdrant"]);
     assert.ok(!(api.commands as Array<{ name: string }>).some((c) => c.name.startsWith("qdrant-")));
-  } finally { cleanup(); }
-});
-
-test("wireApi's help rows stay in parity with the dispatch grammar (OI-009)", () => {
-  const api = fakeApi();
-  const cleanup = wireApi(api, rt);
-  try {
-    // One documented row per ARG_SHAPE key, in the same order.
-    assert.deepEqual(COMMAND_ROWS.map((r) => r.name), Object.keys(ARG_SHAPE));
-    assert.ok(COMMAND_ROWS.every((r) => r.cmd.startsWith(`/qdrant ${r.name}`)), "every row names its key");
   } finally { cleanup(); }
 });
 
@@ -248,108 +237,11 @@ test("/qdrant index code emits the count message on success and an error entry o
 });
 
 // ── /qdrant dispatch ──────────────────────────────────────────────────────────
-
-test("bare /qdrant emits the status block and the command list (self-documenting)", async () => {
-  const api = fakeApi();
-  const cleanup = wireApi(api, rt);
-  try {
-    await qdrantCmd(api)("");
-    const kinds = (api.entries as Array<{ kind: string }>).map((e) => e.kind);
-    assert.deepEqual(kinds, ["status", "help"]);
-    const help = api.entries.at(-1) as { rows: Array<{ cmd: string }> };
-    assert.ok(help.rows.some((r) => r.cmd === "/qdrant status"), JSON.stringify(help.rows));
-    assert.ok(help.rows.some((r) => r.cmd.startsWith("/qdrant search")));
-  } finally { cleanup(); }
-});
-
-test("/qdrant status and /qdrant help each emit their one block", async () => {
-  const api = fakeApi();
-  const cleanup = wireApi(api, rt);
-  try {
-    await qdrantCmd(api)("status");
-    assert.deepEqual((api.entries as Array<{ kind: string }>).map((e) => e.kind), ["status"]);
-    api.entries.length = 0;
-    await qdrantCmd(api)("help");
-    assert.deepEqual((api.entries as Array<{ kind: string }>).map((e) => e.kind), ["help"]);
-  } finally { cleanup(); }
-});
-
-test("/qdrant search passes the query verbatim, spaces and quotes included", async () => {
-  // The embed call is the observable seam for the exact query text: a query with
-  // internal runs of spaces and embedded quotes must arrive intact.
-  const embedded: string[] = [];
-  const api = fakeApi();
-  const cleanup = wireApi(api, { ...rt, embed: async (t: string) => { embedded.push(t); return new Array(768).fill(0.1); } });
-  try {
-    await qdrantCmd(api)("search   the  \"exact  phrase\"   trailing   ");
-    assert.deepEqual(embedded, ["the  \"exact  phrase\"   trailing"]);
-    assert.match(entryTexts(api).join("\n"), /No relevant memory found/);
-  } finally { cleanup(); }
-});
-
-test("/qdrant remember passes its text verbatim", async () => {
-  const embedded: string[] = [];
-  const api = fakeApi();
-  const cleanup = wireApi(api, { ...rt, embed: async (t: string) => { embedded.push(t); return new Array(768).fill(0.1); } });
-  try {
-    await qdrantCmd(api)("remember   a  \"quoted  fact\"   ");
-    assert.deepEqual(embedded, ["a  \"quoted  fact\""]);
-    assert.match(entryTexts(api).join("\n"), /^remembered: a  "quoted  fact"/);
-  } finally { cleanup(); }
-});
-
-test("a none key with a remainder is corrected, not silently ignored", async () => {
-  const api = fakeApi();
-  const cleanup = wireApi(api, rt);
-  try {
-    await qdrantCmd(api)("status now");
-    const entries = api.entries as Array<{ kind: string; text?: string }>;
-    assert.equal(entries.length, 1);
-    assert.equal(entries[0].kind, "error");
-    assert.equal(entries[0].text, "error: /qdrant status takes no arguments — try /qdrant status");
-  } finally { cleanup(); }
-});
-
-test("an unknown key emits exactly one error entry carrying the derived usage line", async () => {
-  const api = fakeApi();
-  const cleanup = wireApi(api, rt);
-  try {
-    await qdrantCmd(api)("bogus thing");
-    const entries = api.entries as Array<{ kind: string; text?: string }>;
-    assert.equal(entries.length, 1);
-    assert.equal(entries[0].kind, "error");
-    // The key list is read from ARG_SHAPE, never restated here (#62).
-    assert.deepEqual([...USAGE_KEYS], Object.keys(ARG_SHAPE));
-    assert.equal(entries[0].text, `error: unknown key "bogus thing"\n${commandUsageText(USAGE_KEYS)}`);
-  } finally { cleanup(); }
-});
-
-test("/qdrant clear with a missing, unknown or over-long modifier never clears", async () => {
-  let cleared = 0;
-  const recording: QdrantLike = { ...qdrant, async clearCollection() { cleared++; } };
-  const api = fakeApi();
-  const cleanup = wireApi(api, { ...rt, qdrant: recording });
-  try {
-    await qdrantCmd(api)("clear");
-    assert.match(entryTexts(api).join("\n"), /^clear: usage — \/qdrant clear all \| code/m);
-    await qdrantCmd(api)("clear documents");
-    const unknown = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
-    assert.equal(unknown.kind, "error");
-    assert.match(unknown.text!, /unknown clear value "documents" — accepted: all, code/);
-    await qdrantCmd(api)("clear all extra");
-    const tooMany = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
-    assert.equal(tooMany.kind, "error");
-    assert.equal(tooMany.text, "error: unexpected arguments — try /qdrant clear all");
-    assert.equal(cleared, 0, "no malformed invocation may delete anything");
-
-    // This fake api has no commandUI: `clear all` must refuse, not delete.
-    await qdrantCmd(api)("clear all");
-    const refused = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
-    assert.equal(refused.kind, "error");
-    assert.equal(refused.text, "error: /qdrant clear all requires interactive UI confirmation");
-    assert.equal(cleared, 0);
-  } finally { cleanup(); }
-});
+// The argument-shape / verbatim-text / gate behavior of the dispatch lives in
+// test/command-run.test.ts, which drives `runQdrantCommand` directly with a
+// fake IO and a fake invocation UI. What remains here is the WireApi seam:
+// registration, the registered command's LIVE invocation-UI binding, the
+// lifecycle hooks and footer state.
 
 test("/qdrant clear all dispatches the live dialog UI and clears on confirm", async () => {
   let cleared = 0;
@@ -365,102 +257,6 @@ const api = withCommandUI(fakeApi(), {
     assert.equal(confirms, 1, "the dispatch passes the live UI into the handler");
     assert.equal(cleared, 1);
   } finally { cleanup(); }
-});
-
-test("/qdrant clear ALL clears after confirmation — case variants are not rejected (#61)", async () => {
-  // Regression: the old /qdrant-clear handler lowercased its target, so `ALL`
-  // worked; the refactor's shape check was case-sensitive and rejected it while
-  // completion (case-insensitive) kept suggesting the value.
-  for (const token of ["all", "ALL", "All"]) {
-    let cleared = 0;
-    const recording: QdrantLike = { ...qdrant, async count() { return 2; }, async clearCollection() { cleared++; } };
-    let confirms = 0;
-    const api = withCommandUI(fakeApi(), {
-      hasUI: true, mode: "tui",
-      dialogs: { async select() { return undefined; }, async input() { return undefined; }, async confirm() { confirms++; return true; } },
-    });
-    const cleanup = wireApi(api, { ...rt, qdrant: recording });
-    try {
-      await qdrantCmd(api)(`clear ${token}`);
-      assert.equal(confirms, 1, `clear ${token} must reach the confirm dialog`);
-      assert.equal(cleared, 1, `clear ${token} must clear`);
-      assert.ok(entryTexts(api).some((t) => t.includes("cleared: collection pi-mem-abc reset")));
-    } finally { cleanup(); }
-  }
-});
-
-test("/qdrant index CODE dispatches a real registry kind, not the typed token (#61)", async () => {
-  let snapshots = 0;
-  const recording: QdrantLike = { ...qdrant, async codeIndexSnapshot() { snapshots++; return new Map(); } };
-  const api = fakeApi();
-  const cleanup = wireApi(api, { ...onRt, qdrant: recording });
-  try {
-    await qdrantCmd(api)("index CODE");
-    // The guard reads INDEX_KINDS[kind]: a raw "CODE" would miss the registry
-    // and throw; the canonicalised spelling reaches the gate and the runner.
-    assert.equal(snapshots, 1, "a case variant runs the same kind as the lowercase form");
-    assert.ok(entryTexts(api).every((t) => !/unknown index value/.test(t)));
-  } finally { cleanup(); }
-});
-
-test("/qdrant clear ALL extra quotes the canonical command, not the typed one (#61)", async () => {
-  const api = fakeApi();
-  const cleanup = wireApi(api, rt);
-  try {
-    await qdrantCmd(api)("clear ALL extra");
-    const last = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
-    assert.equal(last.kind, "error");
-    assert.equal(last.text, "error: unexpected arguments — try /qdrant clear all");
-  } finally { cleanup(); }
-});
-
-test("/qdrant index prints its usage when the kind is missing, names kinds when unknown", async () => {
-  const api = fakeApi();
-  const cleanup = wireApi(api, onRt);
-  try {
-    await qdrantCmd(api)("index");
-    assert.equal(entryTexts(api).at(-1), indexUsageText(INDEX_KINDS));
-    await qdrantCmd(api)("index documents");
-    const unknown = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
-    assert.equal(unknown.kind, "error");
-    assert.equal(unknown.text, `error: unknown index value "documents" — accepted: ${Object.keys(INDEX_KINDS).join(", ")}\n${commandUsageText(USAGE_KEYS)}`);
-    await qdrantCmd(api)("index code extra");
-    const tooMany = (api.entries as Array<{ kind: string; text?: string }>).at(-1)!;
-    assert.equal(tooMany.text, "error: unexpected arguments — try /qdrant index code");
-  } finally { cleanup(); }
-});
-
-test("/qdrant index code answers the disabled guard instead of syncing", async () => {
-  let snapshots = 0;
-  const recording: QdrantLike = { ...qdrant, async codeIndexSnapshot() { snapshots++; return new Map(); } };
-  const api = fakeApi();
-  const cleanup = wireApi(api, { ...rt, qdrant: recording }); // codeKnowledge: "off"
-  try {
-    await qdrantCmd(api)("index code");
-    assert.deepEqual(entryTexts(api), ["code memory is disabled (codeKnowledge: off)"]);
-    assert.equal(snapshots, 0, "a disabled kind must not sync");
-  } finally { cleanup(); }
-});
-
-test("/qdrant settings <key> <value> routes to the shared write path", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-qm-set-"));
-  const prev = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = dir;
-  try {
-    const api = fakeApi();
-    const localRt: RuntimeDeps = { ...rt, agentDir: dir };
-    const cleanup = wireApi(api, localRt);
-    try {
-      await qdrantCmd(api)("settings maxResults not-a-number");
-      assert.match(entryTexts(api).join("\n"), /positive integer|maxResults/);
-      await qdrantCmd(api)("settings");
-      // No dialog-capable ui in the fake → the usage entry, not the form.
-      assert.match(entryTexts(api).at(-1)!, /settings: usage — \/qdrant settings opens the settings screen/);
-    } finally { cleanup(); }
-  } finally {
-    if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test("the qdrant command exposes two-level argument completion", async () => {

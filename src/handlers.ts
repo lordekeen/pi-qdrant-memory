@@ -1,5 +1,5 @@
 import { resolveMode, detectBlackhole } from "./mode.ts";
-import type { QdrantKey } from "./commands.ts";
+import { COMMAND_ROWS } from "./commands.ts";
 import { SETTING_FIELDS, configPath, setConfigField } from "./config.ts";
 import type { SettingField } from "./config.ts";
 import {
@@ -509,30 +509,13 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
   }
 }
 
-export interface CommandRow {
-  /** The `/qdrant` subcommand key this row documents — one per `ARG_SHAPE` key. */
-  name: QdrantKey;
-  cmd: string;
-  desc: string;
-  gated?: "codeKnowledge";
-}
-
-export const COMMAND_ROWS: readonly CommandRow[] = [
-  { name: "status", cmd: "/qdrant status", desc: "connection health + active mode + collection status" },
-  { name: "settings", cmd: "/qdrant settings [key] [value]", desc: "open the settings screen, or persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global" },
-  { name: "remember", cmd: "/qdrant remember <text>", desc: "save durable knowledge now" },
-  { name: "search", cmd: "/qdrant search <query>", desc: "semantic search of durable knowledge" },
-  { name: "forget", cmd: "/qdrant forget <query>", desc: "search and remove memories interactively" },
-  { name: "clear", cmd: "/qdrant clear all | code", desc: "reset entire collection (all) or purge code summaries (code)" },
-  { name: "index", cmd: "/qdrant index code", desc: "re-index code summaries now", gated: "codeKnowledge" },
-  { name: "help", cmd: "/qdrant help", desc: "this list" },
-];
-
 export async function helpHandler(io: HandlerIO): Promise<void> {
   // Brand the help block with the same header the footer statusline carries
   // (DESIGN.md footer-status) so the active mode + collection are visible here too.
   const mode = resolveMode(io.cfg, detectBlackhole(io.agentDir));
-  const rows: HelpRow[] = COMMAND_ROWS
+  // The rows come from the ONE command registry (commands.ts), in declaration
+  // order — the same table the argument completion reads its summaries from.
+  const rows: HelpRow[] = Object.values(COMMAND_ROWS)
     .filter((r) => !r.gated || (r.gated === "codeKnowledge" && io.cfg.codeKnowledge === "on"))
     .map(({ cmd, desc }) => ({ cmd, desc }));
   io.emit(helpEntry(rows, { mode, collection: io.projectId }));
