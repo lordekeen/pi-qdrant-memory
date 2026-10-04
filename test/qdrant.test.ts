@@ -148,6 +148,41 @@ test("payload index failures are non-fatal", async () => {
   assert.equal(await client.ensureCollection("pi-mem-abc", 768), "created");
 });
 
+test("collectionDimension reads the configured vector size via GET /collections/{name}", async () => {
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () =>
+    jsonRes({ result: { config: { params: { vectors: { size: 768, distance: "Cosine" } } } } }));
+  const client = makeClient(routes);
+  assert.equal(await client.collectionDimension("pi-mem-abc"), 768);
+});
+
+test("collectionDimension returns undefined for a missing collection (404)", async () => {
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () =>
+    jsonRes({ status: "error", message: "Not found" }, 404));
+  const client = makeClient(routes);
+  assert.equal(await client.collectionDimension("pi-mem-abc"), undefined);
+});
+
+test("collectionDimension returns undefined rather than throwing on unknown vector shapes", async () => {
+  // Named-vector configs are a map (`{name: {size, …}}`), not a plain
+  // `{size}`; a missing `result` is not a dimension either. Both are "unknown"
+  // for the advisory pre-flight, which falls through to the authoritative
+  // ensure instead of crashing the ingest.
+  const bodies: unknown[] = [
+    { result: { config: { params: { vectors: { text: { size: 768, distance: "Cosine" } } } } } },
+    { result: { config: { params: {} } } },
+    {},
+  ];
+  const routes = new Map<string, (u: string, i: RequestInit) => Response>();
+  routes.set("GET http://qdrant:6333/collections/pi-mem-abc", () => jsonRes(bodies.shift()));
+  const client = makeClient(routes);
+  assert.equal(await client.collectionDimension("pi-mem-abc"), undefined);
+  assert.equal(await client.collectionDimension("pi-mem-abc"), undefined);
+  assert.equal(await client.collectionDimension("pi-mem-abc"), undefined);
+  assert.equal(bodies.length, 0, "every shape was exercised");
+});
+
 test("upsert posts points with wait=true", async () => {
   let seen: { url: string; init: RequestInit } | undefined;
   const routes = new Map<string, (u: string, i: RequestInit) => Response>();

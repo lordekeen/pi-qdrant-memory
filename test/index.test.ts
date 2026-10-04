@@ -59,6 +59,7 @@ function withCommandUI(
 
 const qdrant: QdrantLike = {
   async ensureCollection() { return "exists"; },
+  async collectionDimension() { return undefined; },
   async upsert() {},
   async search() { return []; },
   async count() { return 0; },
@@ -609,6 +610,7 @@ test("memory_forget tool executes forgetLogic and retracts memory", async () => 
   const deleted: string[] = [];
   const q: QdrantLike = {
     async ensureCollection() { return "exists"; },
+    async collectionDimension() { return undefined; },
     async upsert() {},
     async search() { return []; },
     async count() { return 1; },

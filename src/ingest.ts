@@ -56,6 +56,25 @@ export async function ingestItems(
     return { attempted: items.length, ingested: 0 };
   }
 
+  // Read-only dimension pre-flight (#72): a collection whose stored dimension
+  // disagrees with the configured model can never accept these vectors, so
+  // surface that before paying the embedding cost on every ingest. Advisory
+  // only — the ensure inside applyWrites stays authoritative and its
+  // embed → ensure order (ADR 0002) is untouched.
+  try {
+    const storedDim = await deps.qdrant.collectionDimension(deps.projectId);
+    if (storedDim !== undefined && storedDim !== dim) {
+      console.error(
+        `pi-qdrant-memory: ingest skipped — collection ${deps.projectId} has dimension ${String(storedDim)} but the configured embedding model produces ${String(dim)}; move the collection aside or set the matching model`,
+      );
+      return { attempted: items.length, ingested: 0 };
+    }
+  } catch {
+    // Non-fatal, like the existing-point read above: an unreadable dimension
+    // falls through to applyWrites, whose ensure reports the mismatch after
+    // the embed.
+  }
+
   // One batch: embed (chunked at the shared cap, or per item without a batch
   // client) → ensure → supersede-delete → one upsert of every survivor. The
   // supersede ids are derived from the items that actually embedded, so a

@@ -56,6 +56,11 @@ export interface QdrantLike {
     dim: number,
     opts?: EnsureCollectionOptions,
   ): Promise<"created" | "exists" | "recreated">;
+  /** Read-only dimension probe (issue #72): the collection's configured vector
+   *  size, or `undefined` when the collection is missing or its vectors config
+   *  is not a plain `{size}` shape. Never creates or mutates anything — the
+   *  ensure in the write path stays authoritative. */
+  collectionDimension(name: string): Promise<number | undefined>;
   upsert(name: string, points: QdrantPoint[]): Promise<void>;
   search(name: string, vector: number[], opts: {
     projectId: string; type?: MemoryType; limit: number; threshold: number;
@@ -189,6 +194,23 @@ export class QdrantClient implements QdrantLike {
 
     this.ensurePromises.set(key, promise);
     return promise;
+  }
+
+  /** Read-only dimension probe (issue #72): the collection's configured vector
+   *  size, `undefined` when it does not exist (Qdrant answers 404) or its
+   *  vectors config is not a plain `{size}` shape. Never creates or mutates
+   *  anything — the ensure in the write path stays authoritative. */
+  async collectionDimension(name: string): Promise<number | undefined> {
+    const json = await this.request("GET", `/collections/${encodeURIComponent(name)}`, undefined, { notFound: true }) as
+      | { result?: { config?: { params?: { vectors?: unknown } } } }
+      | null;
+    const vectors = json?.result?.config?.params?.vectors;
+    // Named-vector configs are a map (`{name: {size, …}}`), not `{size}`; any
+    // unknown shape yields `undefined` (this is an advisory read, never a
+    // reason to throw) and the ensure reports the real verdict.
+    if (vectors === null || typeof vectors !== "object") return undefined;
+    const size = (vectors as { size?: unknown }).size;
+    return typeof size === "number" ? size : undefined;
   }
 
   /** Payload keyword indexes accelerate the filtered deletes and scroll used by

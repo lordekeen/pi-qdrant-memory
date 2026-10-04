@@ -12,6 +12,7 @@ import type { QdrantLike } from "../src/qdrant.ts";
 
 const fakeQdrant: QdrantLike = {
   async ensureCollection() { return "exists"; },
+  async collectionDimension() { return undefined; },
   async upsert() {},
   async search() { return []; },
   async count() { return 0; },

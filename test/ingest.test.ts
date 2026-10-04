@@ -261,11 +261,14 @@ test("ingestItems skips only a failed embed chunk's items and upserts the surviv
 test("#67: a fatal ensure still logs the chunk embed failures that preceded it", async (t) => {
   const logged: string[] = [];
   t.mock.method(console, "error", (...args: unknown[]) => { logged.push(args.map(String).join(" ")); });
-  // A collection from a previous embedding model: the ensure fails fatally
-  // AFTER the first chunk embedded and the second chunk failed — the state the
-  // embed → ensure ordering makes reachable.
+  // A collection from a previous embedding model whose read-only probe cannot
+  // see the mismatch (named-vector config → undefined size): the pre-flight
+  // falls through, so the ensure fails fatally AFTER the first chunk embedded
+  // and the second chunk failed — the state the embed → ensure ordering makes
+  // reachable.
   const store = createMemoryStore({ name: PROJECT, dimension: 384 });
   store.seed([{ id: "keep", payload: payload({ text: "keep me" }) }]);
+  const probeBlind: QdrantLike = { ...store, async collectionDimension() { return undefined; } };
   let calls = 0;
   const deps = {
     embed: async () => { throw new Error("should not be called"); },
@@ -274,7 +277,7 @@ test("#67: a fatal ensure still logs the chunk embed failures that preceded it",
       if (calls === 2) throw new Error("chunk down");
       return texts.map(() => new Array(DIM).fill(0.3));
     },
-    qdrant: store,
+    qdrant: probeBlind,
     projectId: PROJECT,
   };
   const items = Array.from({ length: 40 }, (_v, i) => ({
@@ -295,11 +298,13 @@ test("#67: a fatal ensure still logs the chunk embed failures that preceded it",
 });
 
 test("ingestItems never throws when ensure fails: the collection is left untouched", async () => {
-  // A collection from a previous embedding model: the background write path
-  // must not recreate it (and must not throw out of ingestItems).
+  // A collection from a previous embedding model that the read-only probe
+  // cannot see (named-vector config → undefined size): the background write
+  // path must not recreate it (and must not throw out of ingestItems).
   const store = createMemoryStore({ name: PROJECT, dimension: 384 });
   store.seed([{ id: "keep", payload: payload({ text: "keep me" }) }]);
-  const deps = { embed: async () => new Array(DIM).fill(0.1), qdrant: store, projectId: PROJECT };
+  const probeBlind: QdrantLike = { ...store, async collectionDimension() { return undefined; } };
+  const deps = { embed: async () => new Array(DIM).fill(0.1), qdrant: probeBlind, projectId: PROJECT };
 
   const res = await ingestItems(deps, DIM, [
     { text: "new fact", sourceKind: "remember_tool" as const, contextId: "s1",
@@ -311,4 +316,113 @@ test("ingestItems never throws when ensure fails: the collection is left untouch
   assert.equal(store.dimensionOf(), 384, "the background path never recreates on mismatch");
   assert.equal(store.points().length, 1);
   assert.equal(store.points()[0]!.id, "keep");
+});
+
+test("#72: a stored dimension mismatch is pre-flighted before any embed", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { logged.push(args.map(String).join(" ")); });
+  // A collection from a previous embedding model: the pre-flight must surface
+  // it before the embedding cost, not after every item has embedded.
+  const store = createMemoryStore({ name: PROJECT, dimension: 384 });
+  store.seed([{ id: "keep", payload: payload({ text: "keep me" }) }]);
+  let probes = 0;
+  const probed: QdrantLike = { ...store, async collectionDimension() { probes++; return store.dimensionOf(); } };
+  const embedded: string[] = [];
+  const batchCalls: string[][] = [];
+  const deps = {
+    embed: async (text: string) => { embedded.push(text); return new Array(DIM).fill(0.1); },
+    embedBatch: async (texts: string[]) => { batchCalls.push(texts); return texts.map(() => new Array(DIM).fill(0.1)); },
+    qdrant: probed,
+    projectId: PROJECT,
+  };
+
+  const res = await ingestItems(deps, DIM, [
+    { text: "new fact", sourceKind: "remember_tool" as const, contextId: "s1",
+      payload: { type: "decision" as const, project_id: PROJECT, ts: 1, source_kind: "remember_tool" as const } },
+  ]);
+
+  assert.equal(res.attempted, 1);
+  assert.equal(res.ingested, 0);
+  assert.equal(probes, 1, "the pre-flight consults collectionDimension exactly once");
+  assert.equal(embedded.length, 0, "no per-item embed on a dimension mismatch");
+  assert.equal(batchCalls.length, 0, "no batch embed on a dimension mismatch");
+  assert.equal(store.timeline.length, 0, "the pre-flight performs no store mutation");
+  assert.equal(store.dimensionOf(), 384, "the stored collection is left untouched");
+  assert.deepEqual(store.points().map((p) => p.id), ["keep"]);
+  assert.deepEqual(logged, [
+    "pi-qdrant-memory: ingest skipped — collection pi-mem-abc has dimension 384 but the configured embedding model produces 768; move the collection aside or set the matching model",
+  ]);
+});
+
+test("#72: a missing collection (undefined dimension) proceeds to the normal write path", async () => {
+  const store = newStore(); // no collection created yet
+  let probes = 0;
+  let embeds = 0;
+  const probed: QdrantLike = { ...store, async collectionDimension() { probes++; return undefined; } };
+  const deps = {
+    embed: async () => { embeds++; return new Array(DIM).fill(0.1); },
+    qdrant: probed,
+    projectId: PROJECT,
+  };
+
+  const res = await ingestItems(deps, DIM, [
+    { text: "first fact", sourceKind: "remember_tool" as const, contextId: "s1",
+      payload: { type: "decision" as const, project_id: PROJECT, ts: 1, source_kind: "remember_tool" as const } },
+  ]);
+
+  assert.equal(res.attempted, 1);
+  assert.equal(res.ingested, 1);
+  assert.equal(probes, 1, "the pre-flight consults collectionDimension exactly once");
+  assert.equal(embeds, 1);
+  assert.equal(store.dimensionOf(), DIM, "applyWrites' ensure created the collection at the configured dimension");
+});
+
+test("#72: a matching stored dimension proceeds to the normal write path", async () => {
+  const store = newStore();
+  await store.ensureCollection(PROJECT, DIM); // pre-existing collection at the right dimension
+  let probes = 0;
+  let embeds = 0;
+  const probed: QdrantLike = { ...store, async collectionDimension() { probes++; return store.dimensionOf(); } };
+  const deps = {
+    embed: async () => { embeds++; return new Array(DIM).fill(0.1); },
+    qdrant: probed,
+    projectId: PROJECT,
+  };
+
+  const res = await ingestItems(deps, DIM, [
+    { text: "matching fact", sourceKind: "remember_tool" as const, contextId: "s1",
+      payload: { type: "decision" as const, project_id: PROJECT, ts: 1, source_kind: "remember_tool" as const } },
+  ]);
+
+  assert.equal(res.attempted, 1);
+  assert.equal(res.ingested, 1);
+  assert.equal(probes, 1, "the pre-flight consults collectionDimension exactly once");
+  assert.equal(embeds, 1);
+  assert.deepEqual(store.points().map((p) => p.id), [pointId("matching fact", "remember_tool", "s1")]);
+});
+
+test("#72: a throwing dimension probe is tolerated and the normal write path runs", async () => {
+  const store = newStore();
+  let probes = 0;
+  const broken: QdrantLike = {
+    ...store,
+    async collectionDimension() { probes++; throw new Error("probe down"); },
+  };
+  let embeds = 0;
+  const deps = {
+    embed: async () => { embeds++; return new Array(DIM).fill(0.1); },
+    qdrant: broken,
+    projectId: PROJECT,
+  };
+
+  const res = await ingestItems(deps, DIM, [
+    { text: "resilient fact", sourceKind: "remember_tool" as const, contextId: "s1",
+      payload: { type: "decision" as const, project_id: PROJECT, ts: 1, source_kind: "remember_tool" as const } },
+  ]);
+
+  assert.equal(res.attempted, 1);
+  assert.equal(res.ingested, 1, "an unreadable dimension falls through to the authoritative ensure");
+  assert.equal(probes, 1, "the pre-flight is consulted (and its throw swallowed) exactly once");
+  assert.equal(embeds, 1);
+  assert.equal(store.dimensionOf(), DIM);
 });

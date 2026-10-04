@@ -78,7 +78,7 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | `src/ids.ts` | `normalizeText`, `contentHash`, `pointId` (deterministic ids). |
 | `src/writes.ts` | `applyWrites` — the one owner of the write protocol (embed → ensure → invalidate → upsert), per-call dimension policy (`recreate` for interactive, `error` for background), invalidation strategies (none / files / source-entry-ids), the shared write chunk cap (`WRITE_CHUNK_SIZE`), and the failure report. Never throws and never logs: callers map its report to their own results and `console.error` sentences. |
 | `src/blackhole.ts` | Read pi-blackhole pending artifacts (Mode 1) — `parseOmEntry`, `readPendingArtifacts`. |
-| `src/ingest.ts` | `ingestItems` — existing-point skip → one `applyWrites` batch with source-entry supersede; `artifactToIngestItem`. |
+| `src/ingest.ts` | `ingestItems` — existing-point skip → read-only dimension pre-flight (#72) → one `applyWrites` batch with source-entry supersede; `artifactToIngestItem`. |
 | `src/tools-core.ts` | `rememberLogic` (existing-point skip → `applyWrites` with the interactive `recreate` policy), `memorySearchLogic`, `forgetLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
 | `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point). |
 | `src/codescan.ts` | Standalone structural code extractor (opt-in, zero-dep): repo walk + per-language line matchers → deterministic per-symbol/per-file summaries. |

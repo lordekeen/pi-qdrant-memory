@@ -182,6 +182,10 @@ export function createMemoryStore(opts: MemoryStoreOptions = {}): MemoryStore {
       return "recreated";
     },
 
+    async collectionDimension(name) {
+      return existing(name)?.dim;
+    },
+
     async upsert(name, points: QdrantPoint[]) {
       const col = requireCollection(name);
       for (const point of points) col.points.set(point.id, point);

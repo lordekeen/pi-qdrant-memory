@@ -81,6 +81,16 @@ test("ensureCollection returns created/exists, throws on mismatch, and recreates
   assert.deepEqual(outcomes, ["created", "exists", "recreated"]);
 });
 
+test("collectionDimension mirrors the modeled dimension and is undefined when missing", async () => {
+  const store = createMemoryStore({ name: NAME, dimension: 3 });
+  assert.equal(await store.collectionDimension(NAME), undefined, "no collection → undefined");
+  await store.ensureCollection(NAME, 3);
+  assert.equal(await store.collectionDimension(NAME), 3);
+  assert.equal(await store.collectionDimension("pi-mem-other"), undefined, "an unmodeled collection is missing");
+  await store.clearCollection(NAME);
+  assert.equal(await store.collectionDimension(NAME), undefined);
+});
+
 test("deletePointsByFiles removes only the stored points for those paths", async () => {
   const store = createMemoryStore({ name: NAME, dimension: 3 });
   await store.ensureCollection(NAME, 3);
@@ -156,6 +166,7 @@ test("operations on a missing collection match QdrantClient", async () => {
   assert.equal(await store.countBySourceKind(NAME, "code_summary"), 0);
   assert.equal(await store.countCodeSymbols(NAME), 0);
   assert.equal((await store.existingPointIds(NAME, ["a"])).size, 0);
+  assert.equal(await store.collectionDimension(NAME), undefined);
   await store.deletePointsByFiles(NAME, ["src/a.ts"]);
   await store.deletePointsByIds(NAME, ["a"]);
 });

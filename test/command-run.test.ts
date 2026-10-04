@@ -27,6 +27,7 @@ const cfg: Config = {
 
 const qdrant: QdrantLike = {
   async ensureCollection() { return "exists"; },
+  async collectionDimension() { return undefined; },
   async upsert() {},
   async search() { return []; },
   async count() { return 0; },
