@@ -63,8 +63,9 @@ export interface WriteBatch {
 export interface WriteBatchOutcome {
   /** Points upserted for this batch (0 when its embed or upsert failed). */
   written: number;
-  /** One entry per embed chunk whose request threw (that chunk's items were
-   *  skipped; a whole-file batch is then skipped entirely). */
+  /** One entry per embed chunk that failed: its request threw, or it returned
+   *  a vector count that did not match its inputs. That chunk's items were
+   *  skipped; a whole-file batch is then skipped entirely. */
   embedErrors: string[];
   /** The batch's invalidation threw — non-fatal: the upsert still ran. */
   invalidateError?: string;
@@ -75,8 +76,9 @@ export interface WriteBatchOutcome {
 export interface WriteReport {
   /** Points upserted across every batch. */
   written: number;
-  /** Batches that wrote nothing (embed failure, upsert failure, or a fatal
-   *  ensure abort). Batches never attempted after a fatal abort don't count. */
+  /** Batches that wrote nothing due to an embed, upsert or ensure failure.
+   *  An empty batch is a no-op outcome, not a failure, and batches never
+   *  attempted after a fatal abort don't count. */
   failed: number;
   /** Embed chunks that threw (their items were skipped). */
   embedFailed: number;
@@ -151,6 +153,15 @@ export async function applyWrites(deps: WriteDeps, batches: WriteBatch[]): Promi
           if (wholeFile) break;
           continue;
         }
+        // One vector per input is part of the embed contract: a short return
+        // would otherwise push `undefined` vectors, hide the failure from the
+        // whole-file guard, and let a doomed batch delete before its upsert
+        // (#68). A mismatch is an embed failure — skip the chunk.
+        if (vectors.length !== chunk.length) {
+          outcome.embedErrors.push(`embed batch returned ${String(vectors.length)} vectors for ${String(chunk.length)} inputs`);
+          if (wholeFile) break;
+          continue;
+        }
         for (let i = 0; i < chunk.length; i++) {
           embedded.push({ item: chunk[i]!, vector: vectors[i]! });
         }
@@ -170,8 +181,11 @@ export async function applyWrites(deps: WriteDeps, batches: WriteBatch[]): Promi
     report.embedFailed += outcome.embedErrors.length;
     if (wholeFile && outcome.embedErrors.length) embedded.length = 0;
     if (!embedded.length) {
-      // Nothing embedded: no ensure, no delete, no upsert for this batch.
-      report.failed++;
+      // Nothing embedded: no ensure, no delete, no upsert for this batch. An
+      // empty batch is a no-op outcome, not a failure — only a batch that lost
+      // items to an embed error counts as failed (#68); the outcome itself was
+      // already pushed, one per input batch.
+      if (outcome.embedErrors.length > 0) report.failed++;
       continue;
     }
 

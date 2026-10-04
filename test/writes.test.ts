@@ -317,6 +317,125 @@ test("without embedBatch each item embeds on its own; one failure skips only tha
   assert.deepEqual(deleteOp.ids, ["e-a", "e-c"]);
 });
 
+test("#68: a short embedBatch return is an embed error — the chunk is skipped and nothing is deleted", async () => {
+  const store = newStore();
+  const stale: PointPayload = {
+    type: "fact", text: "old revision", project_id: PROJECT, ts: 0,
+    source_kind: "blackhole_observation", source_entry_id: "entry-1",
+  };
+  store.seed([{ id: "stale-entry-1", payload: stale }]);
+
+  const report = await applyWrites(deps(store, {
+    // One vector for two inputs: the old code pushed `undefined` for the second
+    // item, wrote the batch and superseded the revision it could not replace.
+    embedBatch: async () => [new Array<number>(DIM).fill(0.1)],
+  }), [{
+    items: [
+      item("new revision", { type: "fact", source_kind: "blackhole_observation", source_entry_id: "entry-1" }),
+      item("second revision", { type: "fact", source_kind: "blackhole_observation", source_entry_id: "entry-2" }),
+    ],
+    invalidate: "source-entry-ids",
+  }]);
+
+  assert.equal(report.written, 0);
+  assert.equal(report.failed, 1);
+  assert.equal(report.embedFailed, 1);
+  assert.deepEqual(report.batches[0]!.embedErrors, ["embed batch returned 1 vectors for 2 inputs"]);
+  assert.equal(store.timeline.length, 0, "no ensure, no delete, no upsert for the skipped chunk");
+  assert.equal(store.points().length, 1, "the previous revision survives for the next pass to retry");
+  assert.equal(store.points()[0]!.id, "stale-entry-1");
+});
+
+test("#68: a short return skips only its chunk and supersedes only the entries that embedded", async () => {
+  const store = newStore();
+  const stale: PointPayload = {
+    type: "fact", text: "old revision", project_id: PROJECT, ts: 0,
+    source_kind: "blackhole_observation", source_entry_id: `entry-${String(WRITE_CHUNK_SIZE + 7)}`,
+  };
+  store.seed([{ id: "stale-entry-last", payload: stale }]);
+
+  let calls = 0;
+  const report = await applyWrites(deps(store, {
+    embedBatch: async (texts) => {
+      calls++;
+      return (calls === 2 ? texts.slice(0, 2) : texts).map(() => new Array<number>(DIM).fill(0.1));
+    },
+  }), [{
+    items: Array.from({ length: WRITE_CHUNK_SIZE + 8 }, (_v, i) =>
+      item(`text ${String(i)}`, {
+        type: "fact", source_kind: "blackhole_observation", source_entry_id: `entry-${String(i)}`,
+      })),
+    invalidate: "source-entry-ids",
+  }]);
+
+  assert.equal(calls, 2);
+  assert.equal(report.written, WRITE_CHUNK_SIZE, "only the short chunk's items are skipped");
+  assert.equal(report.failed, 0, "the batch still wrote its survivors");
+  assert.equal(report.embedFailed, 1);
+  assert.deepEqual(report.batches[0]!.embedErrors, ["embed batch returned 2 vectors for 8 inputs"]);
+  // The supersede delete covers exactly the entries that embedded — the
+  // skipped chunk's revision is never deleted without its replacement.
+  const deleteOp = store.timeline.find((op) => op.op === "delete" && op.by === "source_entry_ids");
+  assert.ok(deleteOp && deleteOp.op === "delete" && deleteOp.by === "source_entry_ids");
+  assert.deepEqual(deleteOp.ids, Array.from({ length: WRITE_CHUNK_SIZE }, (_v, i) => `entry-${String(i)}`));
+  assert.equal(store.points().some((p) => p.id === "stale-entry-last"), true, "the skipped chunk's revision survives");
+});
+
+test("#68: a short return on a whole-file batch writes nothing — the file is never half-replaced", async () => {
+  const store = newStore();
+  const stale: PointPayload = {
+    type: "code", text: "stale", project_id: PROJECT, ts: 0, source_kind: "code_summary",
+    file_path: "src/big.ts", file_sha: "stale-sha",
+  };
+  store.seed([{ id: "stale-big", payload: stale }]);
+
+  let calls = 0;
+  const report = await applyWrites(deps(store, {
+    embedBatch: async (texts) => {
+      calls++;
+      return (calls === 2 ? texts.slice(0, texts.length - 1) : texts).map(() => new Array<number>(DIM).fill(0.2));
+    },
+  }), [{
+    items: Array.from({ length: WRITE_CHUNK_SIZE + 2 }, (_v, i) => codeItem(`summary ${String(i)}`, "src/big.ts", "new-sha")),
+    invalidate: "files",
+  }]);
+
+  assert.equal(calls, 2);
+  assert.equal(report.written, 0);
+  assert.equal(report.batches[0]!.written, 0);
+  assert.equal(report.embedFailed, 1);
+  assert.equal(report.failed, 1);
+  assert.equal(store.deletedFileBatches().length, 0, "a short embed return never deletes");
+  assert.equal(store.indexOfOp((op) => op.op === "upsert"), -1);
+  assert.equal(store.points().length, 1, "the stale point survives for the next sync to retry");
+  assert.equal(store.points()[0]!.payload.file_sha, "stale-sha");
+});
+
+test("#68: an empty batch keeps its outcome and is a no-op, not a failure", async () => {
+  const store = newStore();
+  const calls: string[][] = [];
+  const report = await applyWrites(deps(store, {
+    embedBatch: async (texts) => {
+      calls.push(texts);
+      return texts.map(() => new Array<number>(DIM).fill(0.1));
+    },
+  }), [
+    { items: [] },
+    { items: [item("b")] },
+  ]);
+
+  // One outcome per input batch, in order — code-sync pairs report.batches[i]
+  // with plan.batches[i], so an empty batch must not vanish from the report.
+  assert.equal(report.batches.length, 2);
+  assert.deepEqual(report.batches[0], { written: 0, embedErrors: [] }, "an empty batch is a no-op outcome");
+  assert.equal(report.failed, 0, "an empty batch writes nothing but is not a failure");
+  assert.equal(report.embedFailed, 0);
+  assert.equal(report.batches[1]!.written, 1);
+  assert.equal(report.written, 1);
+  assert.deepEqual(calls, [["b"]], "the empty batch never calls the embed client");
+  assert.deepEqual(store.points().map((p) => p.payload.text), ["b"]);
+});
+
 test("no batches: an empty report with no store mutation", async () => {
   const store = newStore();
   const report = await applyWrites(deps(store), []);
