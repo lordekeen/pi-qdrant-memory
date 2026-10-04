@@ -25,16 +25,6 @@ export interface IngestDeps {
   projectId: string;
 }
 
-/**
- * Ensure the project collection at `dim` under the throwing dimension policy.
- * Kept as the ingest module's public ensure contract (tests import it); the
- * `ingestItems` pipeline itself lets `applyWrites` own the ensure-before-write
- * ordering, after the first successful embed.
- */
-export async function ensureAndGet(deps: IngestDeps, dim: number): Promise<void> {
-  await deps.qdrant.ensureCollection(deps.projectId, dim);
-}
-
 export function artifactToIngestItem(a: BlackholeArtifact, projectId: string, ts: number): IngestItem {
   const p = artifactToPayload(a, projectId, ts);
   return { text: p.text, sourceKind: p.source_kind, contextId: p.source_entry_id ?? p.session_id ?? "", payload: p };

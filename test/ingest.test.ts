@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ingestItems, ensureAndGet } from "../src/ingest.ts";
+import { ingestItems } from "../src/ingest.ts";
 import { pointId } from "../src/ids.ts";
 import { createMemoryStore } from "./support/memory-store.ts";
 import type { MemoryStore } from "./support/memory-store.ts";
@@ -17,13 +17,6 @@ function newStore(): MemoryStore {
 function payload(over: Partial<PointPayload> = {}): PointPayload {
   return { type: "decision", text: "use REST", project_id: PROJECT, ts: 1, source_kind: "remember_tool", ...over };
 }
-
-test("ensureAndGet creates collection with project id and dim", async () => {
-  const store = newStore();
-  await ensureAndGet({ embed: async () => [], qdrant: store, projectId: PROJECT }, DIM);
-  assert.deepEqual(store.timeline, [{ op: "ensure", name: PROJECT, dim: DIM, outcome: "created" }]);
-  assert.equal(store.dimensionOf(), DIM);
-});
 
 test("ingestItems embeds and upserts with deterministic ids", async () => {
   const store = newStore();

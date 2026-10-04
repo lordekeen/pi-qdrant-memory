@@ -120,6 +120,37 @@ export function textComponentResolved(): boolean {
 }
 
 let loading: Promise<void> | undefined;
+function loadOnce(): Promise<void> {
+  return (async () => {
+    try {
+      // SAFETY: pi's loader aliases this package at runtime; only the small
+      // ambient surface in src/pi-tui.d.ts is visible to tsc, so the loaded
+      // module is cast to the structural shapes above.
+      const tui = (await import("@earendil-works/pi-tui")) as unknown as {
+        Text?: TextCtor;
+        SettingsList?: SettingsListCtor;
+        Input?: InputCtor;
+      };
+      host.Text = tui.Text;
+      host.SettingsList = tui.SettingsList;
+      host.Input = tui.Input;
+    } catch { /* pi-tui unavailable (plain node); renderer stays inactive */ }
+    try {
+      // SAFETY: the host package's ambient surface (src/pi-coding-agent.d.ts).
+      const agent = (await import("@earendil-works/pi-coding-agent")) as unknown as {
+        keyHint?: (keybinding: string, description: string) => string;
+        DynamicBorder?: DynamicBorderCtor;
+        getSettingsListTheme?: () => SettingsListTheme;
+        keyText?: (binding: string) => string;
+      };
+      host.keyHint = agent.keyHint;
+      host.DynamicBorder = agent.DynamicBorder;
+      host.getSettingsListTheme = agent.getSettingsListTheme;
+      host.keyText = agent.keyText;
+    } catch { /* no host package; the renderer falls back to plain text */ }
+  })();
+}
+
 /**
  * Kick off the guarded dynamic imports; safe to call repeatedly.
  *
@@ -128,37 +159,19 @@ let loading: Promise<void> | undefined;
  * `DynamicBorder`/`getSettingsListTheme`/`keyText`. Every import is wrapped
  * independently, so a host that is missing one symbol (an older pi) still
  * resolves the rest instead of failing the whole bundle.
+ *
+ * One-shot, but never a one-way trap: the two loads above catch their own
+ * failures, so the cached promise can only resolve. The `.catch` here is the
+ * backstop for a future edit that throws outside those blocks — it resets the
+ * cache so the next call retries instead of handing every caller a
+ * permanently rejected promise.
  */
 export function loadHostModules(): Promise<void> {
   if (!loading) {
-    loading = (async () => {
-      try {
-        // SAFETY: pi's loader aliases this package at runtime; only the small
-        // ambient surface in src/pi-tui.d.ts is visible to tsc, so the loaded
-        // module is cast to the structural shapes above.
-        const tui = (await import("@earendil-works/pi-tui")) as unknown as {
-          Text?: TextCtor;
-          SettingsList?: SettingsListCtor;
-          Input?: InputCtor;
-        };
-        host.Text = tui.Text;
-        host.SettingsList = tui.SettingsList;
-        host.Input = tui.Input;
-      } catch { /* pi-tui unavailable (plain node); renderer stays inactive */ }
-      try {
-        // SAFETY: the host package's ambient surface (src/pi-coding-agent.d.ts).
-        const agent = (await import("@earendil-works/pi-coding-agent")) as unknown as {
-          keyHint?: (keybinding: string, description: string) => string;
-          DynamicBorder?: DynamicBorderCtor;
-          getSettingsListTheme?: () => SettingsListTheme;
-          keyText?: (binding: string) => string;
-        };
-        host.keyHint = agent.keyHint;
-        host.DynamicBorder = agent.DynamicBorder;
-        host.getSettingsListTheme = agent.getSettingsListTheme;
-        host.keyText = agent.keyText;
-      } catch { /* no host package; the renderer falls back to plain text */ }
-    })();
+    loading = loadOnce().catch((err: unknown) => {
+      loading = undefined;
+      console.error(`pi-qdrant-memory: host bridge load failed (non-fatal): ${String(err)}`);
+    });
   }
   return loading;
 }

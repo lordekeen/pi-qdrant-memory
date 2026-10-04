@@ -54,7 +54,10 @@ export interface SyncResult {
   totalSymbols?: number;
 }
 
-interface PendingSummary {
+/** One pending code-summary point (a symbol summary or a file anchor) before
+ *  it is embedded and written. Exported because it is the element type of the
+ *  public `SyncPlan.batches`, so plan consumers can name what they iterate. */
+export interface PendingSummary {
   text: string;
   file: ScannedFile;
   symbol?: string;

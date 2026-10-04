@@ -49,12 +49,6 @@ export interface MemoryStoreOptions {
 }
 
 export interface MemoryStore extends QdrantLike {
-  // The adapter implements every optional capability; redeclare them as
-  // required so tests can call them (and spread overrides stay typed).
-  deletePointsBySourceKind(name: string, kind: string): Promise<void>;
-  deletePointsBySourceEntryIds(name: string, ids: string[]): Promise<void>;
-  deletePointsByIds(name: string, ids: string[]): Promise<number>;
-  existingPointIds(name: string, ids: string[]): Promise<Set<string>>;
   /** Every mutation so far, in order. Seeding is setup and is not recorded. */
   readonly timeline: StoreOp[];
   /** Stored points of the collection, in insertion order. */
