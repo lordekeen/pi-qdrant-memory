@@ -11,7 +11,13 @@ import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
 import type { HandlerIO, SettingsUI } from "../src/handlers.ts";
 import type { ProjectOverridableField, ProjectSettings } from "../src/project-settings.ts";
-import { isConfigKnowledge } from "../src/config.ts";
+import {
+  clearProjectField,
+  loadProjectSettings,
+  readEffectiveConfig,
+  saveProjectSettings,
+} from "../src/project-settings.ts";
+import { readGlobalConfig, writeConfigFile } from "../src/config.ts";
 import { DimensionMismatchError, QdrantClient, QdrantError, type QdrantLike } from "../src/qdrant.ts";
 import { pointId } from "../src/ids.ts";
 import type { Config } from "../src/types.ts";
@@ -23,6 +29,10 @@ const cfg: Config = {
   codeKnowledge: "off", codeScoreThreshold: 0.4, memoryForget: "off",
 };
 
+/** A literal id in the shape projectIdFrom emits — the real project-store
+ *  writers refuse anything else (src/project-settings.ts). */
+const PROJECT_ID = "pi-mem-0123456789abcdef";
+
 type FakeIO = HandlerIO & {
   emitted: OutEntry[];
   printed: string[];
@@ -33,19 +43,60 @@ type FakeIO = HandlerIO & {
   qdrantClears: number;
   codeKindDeletes: number;
   deletedIds: string[];
-  /** Live model of the global file (mutate to seed a scenario). */
+  /** Live view of the global config file (set a property to seed a scenario). */
   globalState: Config;
-  /** Live model of the project store (mutate to seed a scenario). */
+  /** Live view of the project store file (set a property to seed a scenario). */
   storeState: ProjectSettings;
   /** Live env model — set a key to exercise env masking. */
   envState: NodeJS.ProcessEnv;
 };
 
+/** Temp agent dirs are real; the process-exit hook cleans them up (node:test
+ *  runs each test file in its own child process). */
+const tempDirs: string[] = [];
+process.on("exit", () => {
+  for (const dir of tempDirs) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+});
+
+function handlerAgentDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-handlers-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
 /**
- * Stateful two-store model (AGENTS.md: a fake that models a store must model its
- * side effects, in order). Holds a separate global Config and project store,
- * records which writer each path used, and exposes the *effective* view through
- * the `cfg` getter — mirroring `readEffectiveConfig` (env → store → global).
+ * A live, mutable view over one JSON file the real reader/writer owns: reads
+ * reflect the file, and a property write is a read-modify-write through the
+ * real writer. That is what lets a test seed a scenario with
+ * `d.globalState.scoreThreshold = 0.2` while the file stays the source of truth.
+ */
+function fileBacked<T extends object>(read: () => T, write: (next: T) => void): T {
+  const snapshot = (): Record<string, unknown> => read() as unknown as Record<string, unknown>;
+  return new Proxy({} as T, {
+    get: (_target, key) => snapshot()[key as string],
+    set: (_target, key, value) => {
+      write({ ...snapshot(), [key as string]: value } as unknown as T);
+      return true;
+    },
+    has: (_target, key) => (key as string) in snapshot(),
+    ownKeys: () => Reflect.ownKeys(snapshot()),
+    getOwnPropertyDescriptor: (_target, key) => {
+      const desc = Reflect.getOwnPropertyDescriptor(snapshot(), key as string);
+      return desc ? { ...desc, configurable: true } : undefined;
+    },
+  });
+}
+
+/**
+ * Stateful two-store model backed by a REAL temp agent dir (AGENTS.md: a fake
+ * that models a store must model its side effects). The global file and the
+ * project store go through the production readers/writers — `readGlobalConfig`,
+ * `readEffectiveConfig`, `writeConfigFile`, `saveProjectSettings`,
+ * `clearProjectField` — so precedence is never re-implemented here. The
+ * recording arrays and the `globalState`/`storeState` live views stay for
+ * scenario seeding and assertions.
  */
 function io(over: Partial<HandlerIO> = {}): FakeIO {
   const emitted: OutEntry[] = [];
@@ -54,24 +105,25 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
   const projectWrites: ProjectSettings[] = [];
   const cleared: ProjectOverridableField[] = [];
   const applied: Config[] = [];
-  const globalState: Config = { ...cfg };
-  const storeState: ProjectSettings = {};
+  const agentDir = over.agentDir ?? handlerAgentDir();
+  const projectId = over.projectId ?? PROJECT_ID;
   const envState: NodeJS.ProcessEnv = {};
+  // Seed the global file with the same base config the previous in-memory
+  // model started from, so every scenario keeps its exact starting point.
+  writeConfigFile(agentDir, { ...cfg });
+  const effective = (): Config => readEffectiveConfig(agentDir, projectId, envState);
+  const recordApplied = (): void => { applied.push(effective()); };
+  const globalState = fileBacked<Config>(
+    () => readGlobalConfig(agentDir, {}),
+    (next) => writeConfigFile(agentDir, next),
+  );
+  const storeState = fileBacked<ProjectSettings>(
+    () => loadProjectSettings(agentDir, projectId),
+    (next) => saveProjectSettings(agentDir, projectId, next),
+  );
   let qdrantClears = 0;
   let codeKindDeletes = 0;
   const deletedIds: string[] = [];
-  const effective = (): Config => {
-    const c: Config = { ...globalState };
-    if (!isConfigKnowledge(envState.PI_QDRANT_CODE_KNOWLEDGE) && storeState.codeKnowledge !== undefined) {
-      c.codeKnowledge = storeState.codeKnowledge;
-    }
-    const rawThreshold = envState.PI_QDRANT_CODE_SCORE_THRESHOLD;
-    const envPinsThreshold = rawThreshold !== undefined && Number.isFinite(Number(rawThreshold));
-    if (!envPinsThreshold && storeState.codeScoreThreshold !== undefined) {
-      c.codeScoreThreshold = storeState.codeScoreThreshold;
-    }
-    return c;
-  };
   const qdrant: QdrantLike = {
     async ensureCollection() { return "exists"; },
     async upsert() {},
@@ -88,14 +140,14 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
   return {
     get cfg() { return effective(); },
     get env() { return envState; },
-    agentDir: "/tmp/agent", cwd: "/repo", projectId: "pi-mem-abc",
+    agentDir, cwd: "/repo", projectId,
     embed: async () => new Array(768).fill(0.1),
     qdrant,
-    readGlobalConfig: () => ({ ...globalState }),
-    writeGlobalConfig: (c) => { globalWrites.push(c); Object.assign(globalState, c); applied.push(effective()); },
-    readProjectSettings: () => ({ ...storeState }),
-    writeProjectSettings: (p) => { projectWrites.push(p); Object.assign(storeState, p); applied.push(effective()); },
-    clearProjectSetting: (f) => { cleared.push(f); delete storeState[f]; applied.push(effective()); },
+    readGlobalConfig: () => readGlobalConfig(agentDir, envState),
+    writeGlobalConfig: (c) => { globalWrites.push(c); writeConfigFile(agentDir, c); recordApplied(); },
+    readProjectSettings: () => loadProjectSettings(agentDir, projectId),
+    writeProjectSettings: (p) => { projectWrites.push(p); saveProjectSettings(agentDir, projectId, p); recordApplied(); },
+    clearProjectSetting: (f) => { cleared.push(f); clearProjectField(agentDir, projectId, f); recordApplied(); },
     emit: (e) => { emitted.push(e); printed.push(outText(e)); },
     emitted,
     printed,
@@ -129,7 +181,7 @@ test("statusHandler prints mode and collection health", async () => {
   assert.match(all, /✓ reachable · 3 points/);
   // The entry heads with the footer-style header and shows the collection id
   // inline — nothing is hidden behind an expand gesture anymore.
-  assert.match(all, /🧠 Memory: mode2 \(pi-mem-abc\)/);
+  assert.ok(all.includes(`🧠 Memory: mode2 (${PROJECT_ID})`));
   assert.match(all, /qdrant url: http:\/\/localhost:6333/);
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "status");
@@ -346,10 +398,10 @@ test("clearHandler with 'all' clears after a confirmed dialog", async () => {
   await clearHandler(d, "all", ui);
   assert.equal(confirms, 1);
   // The dialog names the project and the exact count (fake count is 3).
-  assert.equal(confirmTitle, "Reset pi-mem-abc and delete all 3 stored memories?");
+  assert.equal(confirmTitle, `Reset ${PROJECT_ID} and delete all 3 stored memories?`);
   assert.equal(confirmMessage, "Deletes every memory and code summary for this project from Qdrant. This cannot be undone.");
   assert.equal(d.qdrantClears, 1);
-  assert.match(d.printed.join("\n"), /cleared: collection pi-mem-abc reset/);
+  assert.ok(d.printed.join("\n").includes(`cleared: collection ${PROJECT_ID} reset`));
 });
 
 test("clearHandler with 'all' uses the singular title for one point", async () => {
@@ -362,7 +414,7 @@ test("clearHandler with 'all' uses the singular title for one point", async () =
     async confirm(t) { confirmTitle = t; return true; },
   };
   await clearHandler(d, "all", ui);
-  assert.equal(confirmTitle, "Reset pi-mem-abc and delete all 1 stored memory?");
+  assert.equal(confirmTitle, `Reset ${PROJECT_ID} and delete all 1 stored memory?`);
   assert.equal(d.qdrantClears, 1);
 });
 
@@ -392,12 +444,12 @@ test("clearHandler with 'all' on an empty collection never opens a dialog", asyn
   await clearHandler(d, "all", ui);
   assert.equal(confirms, 0, "nothing to act on means no dialog");
   assert.equal(d.qdrantClears, 0);
-  assert.match(d.printed.join("\n"), /clear: collection pi-mem-abc is already empty/);
+  assert.ok(d.printed.join("\n").includes(`clear: collection ${PROJECT_ID} is already empty`));
 });
 
 test("clearHandler with 'all' treats a missing collection (count 404) as empty", async () => {
   const d = io();
-  d.qdrant.count = async () => { throw new QdrantError(`Qdrant request GET http://localhost:6333/collections/pi-mem-abc failed: HTTP 404`, 404); };
+  d.qdrant.count = async () => { throw new QdrantError(`Qdrant request GET http://localhost:6333/collections/${PROJECT_ID} failed: HTTP 404`, 404); };
   let confirms = 0;
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -407,12 +459,12 @@ test("clearHandler with 'all' treats a missing collection (count 404) as empty",
   await clearHandler(d, "all", ui);
   assert.equal(confirms, 0, "absent collection is empty — no dialog");
   assert.equal(d.qdrantClears, 0);
-  assert.match(d.printed.join("\n"), /clear: collection pi-mem-abc is already empty/);
+  assert.ok(d.printed.join("\n").includes(`clear: collection ${PROJECT_ID} is already empty`));
 });
 
 test("clearHandler with 'all' reports a non-404 count failure without clearing or confirming", async () => {
   const d = io();
-  d.qdrant.count = async () => { throw new QdrantError(`Qdrant request GET http://localhost:6333/collections/pi-mem-abc failed: HTTP 500`, 500); };
+  d.qdrant.count = async () => { throw new QdrantError(`Qdrant request GET http://localhost:6333/collections/${PROJECT_ID} failed: HTTP 500`, 500); };
   let confirms = 0;
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -810,7 +862,7 @@ test("bare command (headless) prints the scope rule, both paths, and this projec
   assert.equal(d.emitted.length, 1);
   const all = d.printed.join("\n");
   assert.match(all, /codeKnowledge and codeScoreThreshold are per project/);
-  assert.match(all, /pi-qdrant-memory\/projects\/pi-mem-abc\.json/);
+  assert.ok(all.includes(`pi-qdrant-memory/projects/${PROJECT_ID}.json`));
   assert.match(all, /pi-qdrant-memory\/pi-qdrant-memory-config\.json/);
   assert.match(all, /codeKnowledge = off \(inherited from global\)/);
   assert.match(all, /codeScoreThreshold = 0\.6 \(this project; global: 0\.4\)/);
@@ -1100,7 +1152,7 @@ test("clearHandler resets stale codeMemory counters on the empty-collection path
   await clearHandler(d, "all", ui);
   assert.equal(d.codeMemory?.files, 0);
   assert.equal(d.codeMemory?.symbols, 0);
-  assert.match(d.printed.join("\n"), /clear: collection pi-mem-abc is already empty/);
+  assert.ok(d.printed.join("\n").includes(`clear: collection ${PROJECT_ID} is already empty`));
   assert.equal(d.qdrantClears, 0, "nothing to delete means nothing is deleted");
 });
 
@@ -1111,16 +1163,16 @@ test("clearHandler resets the collectionReady cache on every successful clear pa
     async confirm() { return true; },
   };
   // Empty path: a stale "collection exists" memo must not survive.
-  const d = io({ collectionReady: new Set(["pi-mem-abc"]) });
+  const d = io({ collectionReady: new Set([PROJECT_ID]) });
   d.qdrant.count = async () => 0;
   await clearHandler(d, "all", ui);
-  assert.equal(d.collectionReady?.has("pi-mem-abc"), false);
+  assert.equal(d.collectionReady?.has(PROJECT_ID), false);
 
   // Confirmed path: the memo is dropped there too (existing #44 behaviour).
-  const d2 = io({ collectionReady: new Set(["pi-mem-abc"]), codeMemory: { state: "synced", files: 1, symbols: 2 } });
+  const d2 = io({ collectionReady: new Set([PROJECT_ID]), codeMemory: { state: "synced", files: 1, symbols: 2 } });
   d2.qdrant.count = async () => 5;
   await clearHandler(d2, "all", ui);
-  assert.equal(d2.collectionReady?.has("pi-mem-abc"), false);
+  assert.equal(d2.collectionReady?.has(PROJECT_ID), false);
   assert.equal(d2.codeMemory?.files, 0);
 });
 

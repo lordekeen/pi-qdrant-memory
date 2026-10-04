@@ -1,8 +1,7 @@
 import { makeRuntime, writeGlobalConfigAndReload } from "./deps.ts";
 import type { MakeRuntimeIO } from "./deps.ts";
 import { readGlobalConfig, takeLoadWarnings, writeConfigFile } from "./config.ts";
-import { agentDirFromEnv, detectBlackhole, loadHostAgentDir } from "./mode.ts";
-import { resolveMode } from "./mode.ts";
+import { agentDirFromEnv, loadHostAgentDir, runtimeMode } from "./mode.ts";
 import { markCommandFormatNoticeShown, readState } from "./state.ts";
 import { rememberLogic, memorySearchLogic, forgetLogic } from "./tools-core.ts";
 import { renderHits } from "./render.ts";
@@ -122,7 +121,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
   // session_shutdown ingest; mode2 → compaction capture). A mode change via
   // /qdrant settings applies to the hooks at the next session; the footer and
   // every command re-resolve the mode live (see currentMode).
-  const registrationMode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
+  const registrationMode = runtimeMode(rt.cfg, rt.agentDir);
   // Same session-fixation rule for code memory: the code_memory tool is
   // registered here iff enabled; a mid-session flip is covered by the settings
   // reload notice (spec §12). The single /qdrant command is registered
@@ -183,7 +182,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
    * a lifecycle handler. */
   const refreshStatus = async (): Promise<void> => {
     const points = await collectionPoints();
-    const mode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
+    const mode = runtimeMode(rt.cfg, rt.agentDir);
     api.setStatus(memoryHeaderText(points === undefined
       ? { mode, collection: rt.projectId }
       : { mode, collection: rt.projectId, points }));
@@ -432,7 +431,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     // the stored-memory count + mode + project collection as the state
     // (DESIGN.md footer-status). Mode is re-resolved live so a /qdrant settings
     // mode change is reflected without a restart.
-    const mode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
+    const mode = runtimeMode(rt.cfg, rt.agentDir);
     api.setStatus(memoryHeaderText({ mode, collection: rt.projectId }));
     if (mode === "mode1") await ingestPending();
     void refreshStatus(); // repaint with the count once known, best-effort

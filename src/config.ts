@@ -18,9 +18,9 @@ export const DEFAULTS: Config = {
 };
 
 /** Every editable config key, in the stable order the settings surface uses.
- *  The single definition: `setConfigField` validates against the `Config` keys,
- *  the settings form walks this list, and the `/qdrant settings` grammar
- *  completes exactly these names as its bounded key token. */
+ *  The settings form walks this list and the `/qdrant settings` grammar
+ *  completes exactly these names as its bounded key token; each key's rules
+ *  (env var, validation, override eligibility) live in the field table below. */
 export const SETTING_FIELDS = [
   "mode",
   "codeKnowledge",
@@ -94,63 +94,175 @@ export function isConfigForget(v: string | undefined): v is MemoryForgetMode {
   return v === "off" || v === "on";
 }
 
+/** The env layer's answer for one field.
+ *  - `usable: true` — the variable supplied this layer's value, parsed to
+ *    `value` (`raw` keeps the string the mask note reports).
+ *  - `usable: false; consumed: true` — the variable is present but unparsable:
+ *    it still wins the layer slot and resolves to `DEFAULTS`, never falling
+ *    through to the file. This is the pre-table `numEnv` rule, preserved. */
+type EnvLayer<V> = { usable: true; raw: string; value: V } | { usable: false; consumed: boolean };
+
+/** `setConfigField`'s answer: the typed value, or the exact error string the
+ *  user sees. */
+type FieldValidation<V> = { ok: true; value: V } | { ok: false; error: string };
+
+/** One row of the config metadata table. */
+interface FieldSpec<K extends keyof Config, V = Config[K]> {
+  /** The `Config` key this row describes. */
+  readonly field: K;
+  /** The env variable that overrides it. */
+  readonly env: string;
+  /** May the project store carry an override for it (spec D1)? */
+  readonly projectOverridable?: boolean;
+  /** The env layer rule — usability + parse, shared by `readGlobalConfig`,
+   *  `readEffectiveConfig`'s gap check and `envMask`. */
+  envValue(raw: string | undefined): EnvLayer<V>;
+  /** The file layer rule: `undefined` means "not usable", fall to DEFAULTS. */
+  fileValue(raw: unknown): V | undefined;
+  /** The CLI rule (`setConfigField`), shared with the settings form. */
+  validate(raw: string): FieldValidation<V>;
+}
+
+/** Plain string field. `??` semantics: any env value (even "") is usable, and
+ *  every non-nullish file value passes through. A string field set to the
+ *  literal "null" is rejected — it would silently revert to DEFAULTS on the
+ *  next load while the form still displays null. */
+function stringSpec<K extends keyof Config>(field: K, env: string): FieldSpec<K, string> {
+  return {
+    field,
+    env,
+    envValue: (raw) => (raw === undefined ? { usable: false, consumed: false } : { usable: true, raw, value: raw }),
+    // SAFETY: mirrors the unchecked `??` read this replaced — a hand-edited
+    // non-string file value passes through exactly as it always did.
+    fileValue: (raw) => (raw === undefined || raw === null ? undefined : (raw as string)),
+    validate: (raw) => (raw === "null"
+      ? { ok: false, error: `settings: ${field} cannot be null` }
+      : { ok: true, value: raw }),
+  };
+}
+
+/** Nullable string field (the two API keys): `"null"` is a valid CLI value
+ *  that clears the key (the form's empty-input clear normalizes to it). */
+function apiKeySpec<K extends keyof Config>(field: K, env: string): FieldSpec<K, string | null> {
+  return {
+    field,
+    env,
+    envValue: (raw) => (raw === undefined ? { usable: false, consumed: false } : { usable: true, raw, value: raw }),
+    // SAFETY: same pass-through rule as `stringSpec` (see there).
+    fileValue: (raw) => (raw === undefined || raw === null ? undefined : (raw as string)),
+    validate: (raw) => ({ ok: true, value: raw === "null" ? null : raw }),
+  };
+}
+
+/** Numeric field; `rule` carries the exact range/integrality check and error. */
+function numberSpec<K extends keyof Config>(
+  field: K,
+  env: string,
+  rule: "positive-integer" | "unit-interval",
+): FieldSpec<K, number> {
+  const coerce = (raw: unknown): number | undefined => {
+    // Coerce string/number env or file values; non-finite values are unusable
+    // so a corrupt file never leaks a string into a numeric config field.
+    const n = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const valid = (n: number): boolean => (rule === "positive-integer" ? Number.isInteger(n) && n > 0 : n >= 0 && n <= 1);
+  const rangeError = rule === "positive-integer"
+    ? `settings: ${field} expects a positive integer`
+    : `settings: ${field} expects a number between 0 and 1`;
+  return {
+    field,
+    env,
+    envValue: (raw) => {
+      if (raw === undefined) return { usable: false, consumed: false };
+      const n = coerce(raw);
+      // Pre-table `numEnv` rule: a present-but-unparsable env var still wins
+      // the layer slot and resolves to DEFAULTS — the file is never consulted.
+      return n === undefined ? { usable: false, consumed: true } : { usable: true, raw, value: n };
+    },
+    fileValue: (raw) => (raw === undefined ? undefined : coerce(raw)),
+    validate: (raw) => {
+      const n = coerce(raw);
+      if (n === undefined) return { ok: false, error: `settings: ${field} expects a number` };
+      return valid(n) ? { ok: true, value: n } : { ok: false, error: rangeError };
+    },
+  };
+}
+
+/** Enum field: a value is usable only when the guard accepts it; an unusable
+ *  value falls through the layer (env → file → DEFAULTS). `options` is the
+ *  message's option list, so the error text stays exact. */
+function enumSpec<K extends keyof Config, V extends string>(
+  field: K,
+  env: string,
+  options: readonly string[],
+  is: (v: string | undefined) => v is V,
+): FieldSpec<K, V> {
+  return {
+    field,
+    env,
+    envValue: (raw) => (is(raw) ? { usable: true, raw, value: raw } : { usable: false, consumed: false }),
+    fileValue: (raw) => (typeof raw === "string" && is(raw) ? raw : undefined),
+    validate: (raw) => (is(raw)
+      ? { ok: true, value: raw }
+      : { ok: false, error: `settings: ${field} must be one of ${options.join(" | ")}` }),
+  };
+}
+
+/** Mark a row project-overridable (spec D1). The literal `true` survives in the
+ *  row's type, so `ProjectOverridableField` and `PROJECT_OVERRIDABLE_FIELDS`
+ *  derive from the table instead of being re-listed. */
+function overridable<K extends keyof Config, V>(
+  spec: FieldSpec<K, V>,
+): FieldSpec<K, V> & { readonly projectOverridable: true } {
+  return { ...spec, projectOverridable: true };
+}
+
+/**
+ * The one config metadata table: every `Config` key → its env var, env-value
+ * usability/parse rule, CLI validation rule and project-override eligibility.
+ * `readGlobalConfig`, `readEffectiveConfig`, `envMask` and `setConfigField` all
+ * read their per-field rules from here — the three hand-maintained copies this
+ * table replaced can no longer drift apart.
+ *
+ * Declaration order is meaningful: it drives the derived
+ * `PROJECT_OVERRIDABLE_FIELDS` (project-settings.ts, spec D1).
+ */
+export const CONFIG_FIELD_SPECS = {
+  qdrantUrl: stringSpec("qdrantUrl", "PI_QDRANT_URL"),
+  qdrantApiKey: apiKeySpec("qdrantApiKey", "PI_QDRANT_API_KEY"),
+  embeddingBaseURL: stringSpec("embeddingBaseURL", "PI_QDRANT_EMBEDDING_BASE_URL"),
+  embeddingModel: stringSpec("embeddingModel", "PI_QDRANT_EMBEDDING_MODEL"),
+  embeddingApiKey: apiKeySpec("embeddingApiKey", "PI_QDRANT_EMBEDDING_API_KEY"),
+  expectedDimension: numberSpec("expectedDimension", "PI_QDRANT_EXPECTED_DIMENSION", "positive-integer"),
+  scoreThreshold: numberSpec("scoreThreshold", "PI_QDRANT_SCORE_THRESHOLD", "unit-interval"),
+  maxResults: numberSpec("maxResults", "PI_QDRANT_MAX_RESULTS", "positive-integer"),
+  mode: enumSpec("mode", "PI_QDRANT_MODE", ["auto", "blackhole", "own"], isConfigMode),
+  codeKnowledge: overridable(enumSpec("codeKnowledge", "PI_QDRANT_CODE_KNOWLEDGE", ["off", "on"], isConfigKnowledge)),
+  codeScoreThreshold: overridable(numberSpec("codeScoreThreshold", "PI_QDRANT_CODE_SCORE_THRESHOLD", "unit-interval")),
+  memoryForget: enumSpec("memoryForget", "PI_QDRANT_MEMORY_FORGET", ["off", "on"], isConfigForget),
+} satisfies { [K in keyof Config]: FieldSpec<K, Config[K]> };
+
 /**
  * Apply a validated `field = value` write to a config copy. Shared by the CLI
  * (`/qdrant settings <key> <value>`) and the interactive form so both accept and
- * reject exactly the same values. `value` is always a raw string from the user.
+ * reject exactly the same values. `value` is always a raw string from the user;
+ * the field's rule comes from `CONFIG_FIELD_SPECS`.
  */
 export function setConfigField(
   cfg: Config,
   field: string,
   value: string,
 ): { ok: true; next: Config } | { ok: false; error: string } {
-  if (!(field in cfg)) return { ok: false, error: `settings: unknown key ${field}` };
-  // SAFETY: `field in cfg` was just verified, so the key exists on Config and its
-  // value is string | number | null — the Record projection cannot read out of bounds.
-  const cur = (cfg as unknown as Record<string, unknown>)[field];
-  // SAFETY: same key-verified invariant as above; the copy keeps Config's value types.
-  const next = { ...cfg } as unknown as Record<string, unknown>;
-  if (field === "mode") {
-    if (!isConfigMode(value)) return { ok: false, error: "settings: mode must be one of auto | blackhole | own" };
-    next[field] = value;
-  } else if (field === "codeKnowledge") {
-    if (!isConfigKnowledge(value)) return { ok: false, error: "settings: codeKnowledge must be one of off | on" };
-    next[field] = value;
-  } else if (field === "memoryForget") {
-    if (!isConfigForget(value)) return { ok: false, error: "settings: memoryForget must be one of off | on" };
-    next[field] = value;
-  } else if (typeof cur === "number") {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return { ok: false, error: `settings: ${field} expects a number` };
-    if ((field === "expectedDimension" || field === "maxResults") && !(Number.isInteger(n) && n > 0)) {
-      return { ok: false, error: `settings: ${field} expects a positive integer` };
-    }
-    if ((field === "scoreThreshold" || field === "codeScoreThreshold") && !(n >= 0 && n <= 1)) {
-      return { ok: false, error: `settings: ${field} expects a number between 0 and 1` };
-    }
-    next[field] = n;
-  } else {
-    // Only the two API-key fields are nullable; a URL/model field set to the
-    // literal "null" would silently revert to the default on the next load
-    // while the form still displays null — reject it instead.
-    const nullable = field === "qdrantApiKey" || field === "embeddingApiKey";
-    if (value === "null" && !nullable) {
-      return { ok: false, error: `settings: ${field} cannot be null` };
-    }
-    next[field] = value === "null" ? null : value;
-  }
-  // SAFETY: every field was validated above (mode via isConfigMode, numbers via
-  // the numeric branch, strings via the nullable branch) and matches Config's
-  // declared type for that key.
-  return { ok: true, next: next as unknown as Config };
-}
-
-function numEnv(raw: string | undefined, fileValue: unknown, def: number): number {
-  // Coerce string/number file or env values; non-finite values fall back to `def`
-  // so a corrupt file never leaks a string into a numeric config field.
-  const src = raw !== undefined ? raw : fileValue !== undefined ? fileValue : def;
-  const n = typeof src === "number" ? src : Number(src);
-  return Number.isFinite(n) ? n : def;
+  if (!Object.hasOwn(CONFIG_FIELD_SPECS, field)) return { ok: false, error: `settings: unknown key ${field}` };
+  // SAFETY: `Object.hasOwn` was just verified and the table is a total map over
+  // Config's keys, so this lookup is the field's own row.
+  const spec = CONFIG_FIELD_SPECS[field as keyof Config];
+  const validated = spec.validate(value);
+  if (!validated.ok) return { ok: false, error: validated.error };
+  // SAFETY: the row validates the key it was found under and returns exactly
+  // that key's declared Config type.
+  return { ok: true, next: { ...cfg, [field]: validated.value } as Config };
 }
 
 /**
@@ -183,52 +295,64 @@ export function takeLoadWarnings(): string[] {
   return drained;
 }
 
-/** The **global** layer reader: `DEFAULTS` → global config file → env, per field.
+/** Parse the global config file. A missing file is the normal first-run state
+ * (silent); a file that exists but does not parse as a settings object is a
+ * fault the user cannot see, so its path is recorded in the warning queue. */
+function readConfigObject(agentDir: string): Partial<Config> {
+  const file = configPath(agentDir);
+  if (!existsSync(file)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<Config>;
+    // An array is `typeof "object"`, so it needs its own rejection — it is a
+    // valid JSON document that is simply not a settings object.
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    recordLoadWarning(file); // present but not a settings object (e.g. a JSON array)
+  } catch {
+    // Corrupt file: fall through to defaults + env, never crash at load —
+    // but say so, so the silent revert is visible (#57).
+    recordLoadWarning(file);
+  }
+  return {};
+}
+
+/** The global-layer read for one field (env → file → DEFAULTS), driven by the
+ *  field's table row. `consumed` keeps the pre-table `numEnv` rule: an env
+ *  value that is present but unparsable resolves to DEFAULTS, not the file. */
+function resolveGlobalField<K extends keyof Config>(
+  key: K,
+  env: NodeJS.ProcessEnv,
+  file: Partial<Config>,
+): Config[K] {
+  // SAFETY: the table is a total map over Config's keys, so the row at `key`
+  // describes exactly this field.
+  const spec = CONFIG_FIELD_SPECS[key] as FieldSpec<K, Config[K]>;
+  const fromEnv = spec.envValue(env[spec.env]);
+  if (fromEnv.usable) return fromEnv.value;
+  if (fromEnv.consumed) return DEFAULTS[spec.field];
+  const fromFile = spec.fileValue(file[spec.field]);
+  return fromFile === undefined ? DEFAULTS[spec.field] : fromFile;
+}
+
+/** The **global** layer reader: `DEFAULTS` → global config file → env, per field
+ * (the field table supplies each field's env var and parse/usability rule).
  * It knows nothing about projects — the project layer is applied by
  * `readEffectiveConfig` in `src/project-settings.ts` (one-directional imports:
  * `config.ts` ← `project-settings.ts`, no ESM cycle). */
 export function readGlobalConfig(agentDir: string, env: NodeJS.ProcessEnv = process.env): Config {
-  const file = configPath(agentDir);
-  let fromFile: Partial<Config> = {};
-  if (existsSync(file)) {
-    try {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<Config>;
-      // An array is `typeof "object"`, so it needs its own rejection — it is a
-      // valid JSON document that is simply not a settings object.
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) fromFile = parsed;
-      else recordLoadWarning(file); // present but not a settings object (e.g. a JSON array)
-    } catch {
-      // Corrupt file: fall through to defaults + env, never crash at load —
-      // but say so, so the silent revert is visible (#57).
-      recordLoadWarning(file);
-    }
-  }
-  const mode: ConfigMode = isConfigMode(env.PI_QDRANT_MODE)
-    ? (env.PI_QDRANT_MODE as ConfigMode)
-    : isConfigMode(fromFile.mode) ? (fromFile.mode as ConfigMode) : DEFAULTS.mode;
-  const codeKnowledge: CodeKnowledgeMode = isConfigKnowledge(env.PI_QDRANT_CODE_KNOWLEDGE)
-    ? (env.PI_QDRANT_CODE_KNOWLEDGE as CodeKnowledgeMode)
-    : isConfigKnowledge(fromFile.codeKnowledge)
-      ? (fromFile.codeKnowledge as CodeKnowledgeMode)
-      : DEFAULTS.codeKnowledge;
-  const memoryForget: MemoryForgetMode = isConfigForget(env.PI_QDRANT_MEMORY_FORGET)
-    ? (env.PI_QDRANT_MEMORY_FORGET as MemoryForgetMode)
-    : isConfigForget(fromFile.memoryForget)
-      ? (fromFile.memoryForget as MemoryForgetMode)
-      : DEFAULTS.memoryForget;
+  const file = readConfigObject(agentDir);
   return {
-    qdrantUrl: env.PI_QDRANT_URL ?? fromFile.qdrantUrl ?? DEFAULTS.qdrantUrl,
-    qdrantApiKey: env.PI_QDRANT_API_KEY ?? fromFile.qdrantApiKey ?? DEFAULTS.qdrantApiKey,
-    embeddingBaseURL: env.PI_QDRANT_EMBEDDING_BASE_URL ?? fromFile.embeddingBaseURL ?? DEFAULTS.embeddingBaseURL,
-    embeddingModel: env.PI_QDRANT_EMBEDDING_MODEL ?? fromFile.embeddingModel ?? DEFAULTS.embeddingModel,
-    embeddingApiKey: env.PI_QDRANT_EMBEDDING_API_KEY ?? fromFile.embeddingApiKey ?? DEFAULTS.embeddingApiKey,
-    expectedDimension: numEnv(env.PI_QDRANT_EXPECTED_DIMENSION, fromFile.expectedDimension, DEFAULTS.expectedDimension),
-    scoreThreshold: numEnv(env.PI_QDRANT_SCORE_THRESHOLD, fromFile.scoreThreshold, DEFAULTS.scoreThreshold),
-    maxResults: numEnv(env.PI_QDRANT_MAX_RESULTS, fromFile.maxResults, DEFAULTS.maxResults),
-    mode,
-    codeKnowledge,
-    codeScoreThreshold: numEnv(env.PI_QDRANT_CODE_SCORE_THRESHOLD, fromFile.codeScoreThreshold, DEFAULTS.codeScoreThreshold),
-    memoryForget,
+    qdrantUrl: resolveGlobalField("qdrantUrl", env, file),
+    qdrantApiKey: resolveGlobalField("qdrantApiKey", env, file),
+    embeddingBaseURL: resolveGlobalField("embeddingBaseURL", env, file),
+    embeddingModel: resolveGlobalField("embeddingModel", env, file),
+    embeddingApiKey: resolveGlobalField("embeddingApiKey", env, file),
+    expectedDimension: resolveGlobalField("expectedDimension", env, file),
+    scoreThreshold: resolveGlobalField("scoreThreshold", env, file),
+    maxResults: resolveGlobalField("maxResults", env, file),
+    mode: resolveGlobalField("mode", env, file),
+    codeKnowledge: resolveGlobalField("codeKnowledge", env, file),
+    codeScoreThreshold: resolveGlobalField("codeScoreThreshold", env, file),
+    memoryForget: resolveGlobalField("memoryForget", env, file),
   };
 }
 

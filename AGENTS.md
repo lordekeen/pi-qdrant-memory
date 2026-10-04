@@ -68,9 +68,9 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | `src/handlers.ts` | Handlers for the `/qdrant <key>` cases (status/settings/remember/search/forget/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. Settings writes delegate to `settings-write.ts`. |
 | `src/settings-write.ts` | The one settings-write policy shared by the CLI, the RPC form and the TUI settings screen: the reserved `default` clear (matched before validation, idempotent), `setConfigField` validation, allowlist → project store vs global file routing (D10: global writes persist through the GLOBAL reader), empty-secret → `null`, and every settings emission (confirmations, error, pi-blackhole conflict, `codeKnowledge` reload notice). Synchronous; call sites keep interaction only. |
 | `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested. |
-| `src/config.ts` | `DEFAULTS`, `readGlobalConfig` (the global layer: defaults → file → env; `loadConfig` is its historical alias), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form), `SETTING_FIELDS` (the one editable-key list, read by the form and the `/qdrant settings` grammar). Knows nothing about projects. |
-| `src/project-settings.ts` | Per-project override store (allowlisted keys only): `PROJECT_OVERRIDABLE_FIELDS`, `loadProjectSettings` / `saveProjectSettings` / `clearProjectField`, and `readEffectiveConfig` (env → project → global → `DEFAULTS`). Lives here, not `config.ts`, to keep imports one-directional (`config.ts` ← `project-settings.ts`, no ESM cycle). |
-| `src/mode.ts` | Runtime mode resolution: `detectBlackhole`, `resolveMode` (mode1 = blackhole present; mode2 = own capture), `agentDirFromEnv`. |
+| `src/config.ts` | `DEFAULTS`, the one config field table `CONFIG_FIELD_SPECS` (every `Config` key → its env var, env usability/parse rule, CLI validation rule and project-override flag), `readGlobalConfig` (the global layer: defaults → file → env, rules read from the table; `loadConfig` is its historical alias), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form — per-field rules from the table), `SETTING_FIELDS` (the one editable-key list, read by the form and the `/qdrant settings` grammar). Knows nothing about projects. |
+| `src/project-settings.ts` | Per-project override store (allowlisted keys only): `PROJECT_OVERRIDABLE_FIELDS`/`ProjectOverridableField` derived from the table's override flag, `loadProjectSettings` / `saveProjectSettings` / `clearProjectField`, `readEffectiveConfig` (env → project → global → `DEFAULTS`; the project layer fills the gap only where the env layer has no usable value, per the field's table row) and `envMask` (the same usability rule). Lives here, not `config.ts`, to keep imports one-directional (`config.ts` ← `project-settings.ts`, no ESM cycle). |
+| `src/mode.ts` | Runtime mode resolution: `detectBlackhole`, `resolveMode` (pure; mode1 = blackhole present; mode2 = own capture), `runtimeMode(cfg, agentDir)` (the paired form every runtime/command call site uses), `agentDirFromEnv`. |
 | `src/project.ts` | `projectIdFrom` — hashes the nearest git root realpath → `pi-mem-<16hex>`. |
 | `src/qdrant.ts` | `QdrantClient` (REST) + `QdrantLike` interface (test seam). |
 | `src/embeddings.ts` | `EmbeddingClient` — OpenAI-compatible `/embeddings`, dimension checks. |
@@ -83,7 +83,7 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 | `src/code-sync.ts` | `syncCodeKnowledge` — scan → Qdrant snapshot (file_path→file_sha) → per-file diff → per whole-file batch: embed → delete-by-file_path → upsert. Batches are built from whole files so each file is replaced atomically and a failed embed never deletes. Never throws; Qdrant is the cache. |
 | `src/render.ts` | Tool-path text blocks (`renderHits` + `sourcePointer`), LLM-facing — deliberately outside the entry UI. |
 | `src/entry-render.ts` | Lazy pi-tui renderer: maps an `OutEntry` (via `renderOut` roles) to one multi-line `Text` + `keyHint` (only collapsed search summaries expand). No Box/card machinery — status renders unboxed like every entry. `RendererOptions.TextCtor` is the unit-test seam. |
-| `src/deps.ts` | `makeRuntime` (resolves the project first, then the effective config; assembles cfg + clients + handlers IO), `applyConfig` (hot reload after settings writes), `writeGlobalConfigAndReload` (D10: persist the global file through `readGlobalConfig`, then re-apply the effective reader). |
+| `src/deps.ts` | `makeRuntime` (resolves the project first, then the effective config; assembles cfg + clients + handlers IO through the shared `buildClients` path), `applyConfig` (hot reload after settings writes; same client path), `writeGlobalConfigAndReload` (D10: persist the global file through `readGlobalConfig`, then re-apply the effective reader). |
 | `src/types.ts` | Shared types: `Config`, `MemoryType`, `SourceKind`, `PointPayload`, `SearchHit`, `RuntimeDeps`, `ToolDeps`. |
 | `src/pi-tui.d.ts` | Ambient types for the lazy `@earendil-works/pi-tui` import. |
 | `src/pi-coding-agent.d.ts` | Ambient types for the lazy `@earendil-works/pi-coding-agent` import (`keyHint`). |
@@ -109,13 +109,17 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
   so they update for free. Dispatch needs a runtime touchpoint? Add it to
   `CommandDeps` and wire it in `wireApi`'s thin closure — never reach for
   `rt`/`api` inside `command-run.ts`.
-- **Changing config**: update `Config` in `types.ts`, `DEFAULTS`+`readGlobalConfig`
-  precedence and `SETTING_FIELDS` in `config.ts` so the form covers it. Validation goes in `setConfigField` — CLI and form share it, and every write
+- **Changing config**: update `Config` in `types.ts`, add the key's row to
+  `CONFIG_FIELD_SPECS` in `config.ts` (env var, env/file usability + validation
+  rules) and `DEFAULTS`/`SETTING_FIELDS` in `config.ts` so the form covers it;
+  `readGlobalConfig` and `setConfigField` read the new rules from the table.
+  Validation stays in the row's `validate` — CLI and form share it, and every write
   runs through `applySettingWrite` (`src/settings-write.ts`), which owns the
   reserved `default` clear, scope routing, the empty-secret → `null` rule and
   all emissions; the CLI, RPC form and TUI screen contribute interaction only. Adding
-  an **overridable** field is a `PROJECT_OVERRIDABLE_FIELDS` entry in
-  `project-settings.ts` plus the `Config`/`DEFAULTS`/`SETTING_FIELDS` updates, and
+  an **overridable** field is marking its table row `overridable(...)` (the
+  allowlist and its key type derive from that flag) plus the
+  `Config`/`DEFAULTS`/`SETTING_FIELDS` updates, and
   `/qdrant settings` routes it to the project layer (add project-store +
   precedence tests). A **non-allowlisted** field routes to the global file and its
   write path keeps using `readGlobalConfig` (D10: persist with the reader of the

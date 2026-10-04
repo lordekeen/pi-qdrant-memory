@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { blackholeConfigPath, detectBlackhole, resolveMode, agentDirFromEnv, expandAgentDir, loadHostAgentDir } from "../src/mode.ts";
+import { blackholeConfigPath, detectBlackhole, resolveMode, runtimeMode, agentDirFromEnv, expandAgentDir, loadHostAgentDir } from "../src/mode.ts";
 import type { Config } from "../src/types.ts";
 
 const base: Config = {
@@ -53,6 +53,39 @@ test("resolveMode honors explicit blackhole and own overrides", () => {
 test("resolveMode auto follows detection", () => {
   assert.equal(resolveMode({ ...base, mode: "auto" }, true), "mode1");
   assert.equal(resolveMode({ ...base, mode: "auto" }, false), "mode2");
+});
+
+test("runtimeMode without a blackhole file: auto → mode2, a forced side still wins", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-mode-"));
+  try {
+    assert.equal(runtimeMode(base, dir), "mode2");
+    assert.equal(runtimeMode({ ...base, mode: "auto" }, dir), "mode2");
+    assert.equal(runtimeMode({ ...base, mode: "blackhole" }, dir), "mode1");
+    assert.equal(runtimeMode({ ...base, mode: "own" }, dir), "mode2");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("runtimeMode follows an operational blackhole file unless the config forces a side", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-mode-"));
+  try {
+    mkdirSync(join(dir, "pi-blackhole"), { recursive: true });
+    writeFileSync(blackholeConfigPath(dir), JSON.stringify({ enabled: true }), "utf8");
+    assert.equal(runtimeMode(base, dir), "mode1");
+    assert.equal(runtimeMode({ ...base, mode: "auto" }, dir), "mode1");
+    assert.equal(runtimeMode({ ...base, mode: "own" }, dir), "mode2");
+    assert.equal(runtimeMode({ ...base, mode: "blackhole" }, dir), "mode1");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("runtimeMode ignores disabled and unparsable blackhole configs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-mode-"));
+  try {
+    mkdirSync(join(dir, "pi-blackhole"), { recursive: true });
+    writeFileSync(blackholeConfigPath(dir), JSON.stringify({ enabled: false }), "utf8");
+    assert.equal(runtimeMode(base, dir), "mode2");
+    writeFileSync(blackholeConfigPath(dir), "{not json", "utf8");
+    assert.equal(runtimeMode(base, dir), "mode2");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("agentDirFromEnv honors override and defaults to home", () => {

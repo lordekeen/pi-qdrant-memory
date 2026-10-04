@@ -33,6 +33,14 @@ export function resolveMode(cfg: Config, blackholePresent: boolean): "mode1" | "
   return blackholePresent ? "mode1" : "mode2";
 }
 
+/** The runtime mode for a config + agent dir: `resolveMode` paired with this
+ *  dir's pi-blackhole detection, so the two can never be hand-paired wrongly.
+ *  `resolveMode` stays exported as the pure core for callers that already hold
+ *  the detection result (e.g. the mode=own conflict check). */
+export function runtimeMode(cfg: Config, agentDir: string): "mode1" | "mode2" {
+  return resolveMode(cfg, detectBlackhole(agentDir));
+}
+
 /**
  * Expand a leading `~` the way the host does — `host`'s `expandTildePath` is
  * `normalizePath(path)` with default options, whose only path-shaping step for
