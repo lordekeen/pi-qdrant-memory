@@ -21,7 +21,7 @@ import {
 } from "./commands.ts";
 import type { EnumKey, IndexKind, QdrantKey } from "./commands.ts";
 import type { SyncResult } from "./code-sync.ts";
-import type { SettingsHost } from "./entry-render.ts";
+import type { SettingsHost } from "./host-bridge.ts";
 import {
   clearHandler,
   forgetHandler,

@@ -26,8 +26,10 @@ import {
 } from "./out.ts";
 import type { CodeMemoryHealth } from "./out.ts";
 import { QdrantError } from "./qdrant.ts";
-import { loadHostModules, hostModules, renderEntryComponent } from "./entry-render.ts";
-import type { RendererOptions, RendererTheme, SettingsHost } from "./entry-render.ts";
+import { loadHostModules, hostModules } from "./host-bridge.ts";
+import { renderEntryComponent } from "./entry-render.ts";
+import type { RendererOptions, RendererTheme } from "./entry-render.ts";
+import type { SettingsHost } from "./host-bridge.ts";
 import type { CustomFactoryArgs, MountFn, SettingsComponent } from "./settings-ui.ts";
 import type { MemoryType, RuntimeDeps } from "./types.ts";
 

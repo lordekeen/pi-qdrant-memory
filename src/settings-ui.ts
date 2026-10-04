@@ -27,14 +27,14 @@ import {
 } from "./out.ts";
 import type { Config } from "./types.ts";
 import type { HandlerIO } from "./handlers.ts";
+import type { EntryComponent } from "./entry-render.ts";
 import type {
-  EntryComponent,
   HostSettingItem,
   InputCtor,
   SettingsHost,
   SettingsListCtor,
   SettingsListInstance,
-} from "./entry-render.ts";
+} from "./host-bridge.ts";
 
 /** Host-shaped `SettingItem` (pi-tui `settings-list.ts:7-24`) minus the
  * `submenu` factory: fields edited through the step-7 `ValuePrompt` submenu

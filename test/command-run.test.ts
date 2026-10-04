@@ -7,7 +7,7 @@ import type { CommandDeps, CommandUi } from "../src/command-run.ts";
 import { commandUsageText, indexUsageText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
 import type { HandlerIO, SettingsUI } from "../src/handlers.ts";
-import type { SettingsHost } from "../src/entry-render.ts";
+import type { SettingsHost } from "../src/host-bridge.ts";
 import type { MountFn } from "../src/settings-ui.ts";
 import type { QdrantLike } from "../src/qdrant.ts";
 import type { SyncResult } from "../src/code-sync.ts";
