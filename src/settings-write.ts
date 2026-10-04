@@ -12,14 +12,16 @@
  */
 import { setConfigField } from "./config.ts";
 import { detectBlackhole } from "./mode.ts";
-import { isProjectOverridable, maskNote } from "./project-settings.ts";
+import { assignOverride, isProjectOverridable, maskNote } from "./project-settings.ts";
 import type { ProjectOverridableField, ProjectSettings } from "./project-settings.ts";
 import {
   codeMemoryReloadNotice,
+  displayValue,
   errorEntry,
   isSecretSettingField,
   message,
   modeOwnConflictNotice,
+  secretDisplayValue,
   settingsGlobalUpdatedText,
   settingsOverrideClearedText,
   settingsUpdatedText,
@@ -52,11 +54,25 @@ export interface SettingsWriteDeps {
   clearProjectSetting(field: ProjectOverridableField): void;
 }
 
-/** A one-key typed partial for `saveProjectSettings` — no casts. */
+/** A one-key typed partial for `saveProjectSettings`, built through the generic
+ *  correlating helper: no allowlisted field is ever named here, so a new
+ *  `overridable(...)` table row round-trips under its own key automatically
+ *  (#64) instead of silently persisting under a hardcoded sibling key. */
 function projectOverride(cfg: Config, field: ProjectOverridableField): ProjectSettings {
-  return field === "codeKnowledge"
-    ? { codeKnowledge: cfg.codeKnowledge }
-    : { codeScoreThreshold: cfg.codeScoreThreshold };
+  const override: ProjectSettings = {};
+  assignOverride(override, field, cfg[field]);
+  return override;
+}
+
+/** The display projection for a confirmation value: a secret renders its
+ *  set-state, never its value — the `out.ts` invariant that no surface may
+ *  print a credential (#58). `displayValue` is the identity for strings and
+ *  numbers and `"null"` for null, and no allowlisted field is a secret today,
+ *  so the live allowlist's confirmations stay byte-identical; routing through
+ *  this keeps the update confirmation safe should one ever become overridable
+ *  (#65). */
+function displayOf(field: string, value: string | number | null): string {
+  return isSecretSettingField(field) ? secretDisplayValue(value) : displayValue(value);
 }
 
 /**
@@ -94,7 +110,15 @@ export function applySettingWrite(deps: SettingsWriteDeps, field: string, raw: s
 
   if (isProjectOverridable(field)) {
     deps.writeProjectSettings(projectOverride(applied.next, field));
-    deps.emit(message(settingsUpdatedText(field, applied.next[field], deps.readGlobalConfig()[field], maskNote(field, deps.env))));
+    // Both values go through the display projection: the new value and the
+    // global fallback a secret would otherwise leak verbatim (#65).
+    const global = deps.readGlobalConfig();
+    deps.emit(message(settingsUpdatedText(
+      field,
+      displayOf(field, applied.next[field]),
+      displayOf(field, global[field]),
+      maskNote(field, deps.env),
+    )));
   } else {
     // D10: persist the GLOBAL reader's copy, never the effective config — a
     // global write must not materialize (or drop) a live project override.

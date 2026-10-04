@@ -7,6 +7,7 @@ import { applySettingWrite } from "../src/settings-write.ts";
 import type { SettingsWriteDeps } from "../src/settings-write.ts";
 import { DEFAULTS, configPath, readGlobalConfig, writeConfigFile } from "../src/config.ts";
 import {
+  PROJECT_OVERRIDABLE_FIELDS,
   clearProjectField,
   loadProjectSettings,
   projectSettingsPath,
@@ -15,7 +16,7 @@ import {
 } from "../src/project-settings.ts";
 import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
-import type { ProjectSettings } from "../src/project-settings.ts";
+import type { ProjectOverridableField, ProjectSettings } from "../src/project-settings.ts";
 import type { Config } from "../src/types.ts";
 
 /** The generated project-id shape (`src/project.ts`). */
@@ -254,6 +255,40 @@ test("a masked project write confirms with the mask note and emits no notice", (
       "settings: codeKnowledge override cleared (now using global: on) — NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on",
     ]);
   } finally { clear.cleanup(); }
+});
+
+test("#64: every allowlisted field round-trips under its own key, with its own value", () => {
+  // Compile-time guard for the allowlist: a third `overridable(...)` row makes
+  // this table fail to build until its write case is added. The pre-#64 builder
+  // hardcoded `codeKnowledge` vs `codeScoreThreshold`, so a third field would
+  // have persisted its value under `codeScoreThreshold` while still
+  // type-checking — corrupting the store and the effective config.
+  const writeCase: Record<ProjectOverridableField, { raw: string; stored: string | number }> = {
+    codeKnowledge: { raw: "on", stored: "on" },
+    codeScoreThreshold: { raw: "0.6", stored: 0.6 },
+  };
+  assert.deepEqual(
+    [...PROJECT_OVERRIDABLE_FIELDS].sort(),
+    (Object.keys(writeCase) as ProjectOverridableField[]).sort(),
+    "the write cases cover exactly the live allowlist",
+  );
+
+  for (const field of PROJECT_OVERRIDABLE_FIELDS) {
+    const h = harness();
+    try {
+      const { raw, stored } = writeCase[field];
+      assert.deepEqual(h.apply(field, raw), { ok: true });
+      // Exactly one key — the field's own — carrying the field's own value.
+      assert.deepEqual(h.store(), { [field]: stored });
+      // Output stability (#65): the confirmation still prints both values
+      // through the identity display path for every non-secret allowlisted
+      // field, byte-identical to the pre-consolidation wording.
+      assert.equal(
+        h.texts()[0],
+        `settings: ${field} = ${String(stored)} (this project; global: ${String(DEFAULTS[field])})`,
+      );
+    } finally { h.cleanup(); }
+  }
 });
 
 test("D10: a global write persists the global layer and never touches the project override", () => {

@@ -31,8 +31,10 @@ export function isProjectOverridable(field: string): field is ProjectOverridable
 }
 
 /** Copy one allowlisted field onto a store/config view. `K` correlates the key
- *  and the value type, so neither call site needs a cast. */
-function assignOverride<K extends ProjectOverridableField>(
+ *  and the value type, so no call site needs a cast — the one-key partial in
+ *  `settings-write.ts` builds its override through this too (#64), keeping the
+ *  write path free of any field names. */
+export function assignOverride<K extends ProjectOverridableField>(
   target: ProjectSettings,
   field: K,
   value: Config[K] | undefined,
