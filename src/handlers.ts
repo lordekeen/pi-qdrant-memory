@@ -1,4 +1,4 @@
-import { detectBlackhole, runtimeMode } from "./mode.ts";
+import { runtimeModeState } from "./mode.ts";
 import { COMMAND_ROWS } from "./commands.ts";
 import { SETTING_FIELDS, configPath, setConfigField } from "./config.ts";
 import type { SettingField } from "./config.ts";
@@ -153,7 +153,11 @@ export async function probeEmbedding(
 }
 
 export async function statusHandler(io: HandlerIO): Promise<void> {
-  const mode = runtimeMode(io.cfg, io.agentDir);
+  // One detection for BOTH facts below: the reported mode and the #50 conflict
+  // check must describe the same snapshot — resolving each separately would
+  // read the blackhole config twice and let the two disagree when it changes
+  // between reads.
+  const { mode, blackholePresent } = runtimeModeState(io.cfg, io.agentDir);
   let count = -1;
   let qdrantOk = true;
   let collectionMissing = false;
@@ -185,9 +189,10 @@ export async function statusHandler(io: HandlerIO): Promise<void> {
   const health: StatusHealth = {
     mode,
     // Explicit own + operational blackhole is the contradictory config #50 warns
-    // about. `runtimeMode` cannot express it: mode "own" resolves to mode2 even
-    // when pi-blackhole is present, so the raw flag is checked here.
-    modeConflict: io.cfg.mode === "own" && detectBlackhole(io.agentDir),
+    // about. `resolveMode` cannot express it: mode "own" resolves to mode2 even
+    // when pi-blackhole is present, so the raw flag from the SAME detection is
+    // checked here.
+    modeConflict: io.cfg.mode === "own" && blackholePresent,
     qdrant,
     embeddings: embedOk ? { state: "ok" } : { state: "err" },
     ...(io.codeMemory ? { codeMemory: io.codeMemory } : {}),
@@ -499,7 +504,7 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
 export async function helpHandler(io: HandlerIO): Promise<void> {
   // Brand the help block with the same header the footer statusline carries
   // (DESIGN.md footer-status) so the active mode + collection are visible here too.
-  const mode = runtimeMode(io.cfg, io.agentDir);
+  const { mode } = runtimeModeState(io.cfg, io.agentDir);
   // The rows come from the ONE command registry (commands.ts), in declaration
   // order — the same table the argument completion reads its summaries from.
   const rows: HelpRow[] = Object.values(COMMAND_ROWS)

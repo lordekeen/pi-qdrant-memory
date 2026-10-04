@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { blackholeConfigPath, detectBlackhole, resolveMode, runtimeMode, agentDirFromEnv, expandAgentDir, loadHostAgentDir } from "../src/mode.ts";
+import { blackholeConfigPath, detectBlackhole, resolveMode, runtimeModeState, agentDirFromEnv, expandAgentDir, loadHostAgentDir } from "../src/mode.ts";
 import type { Config } from "../src/types.ts";
 
 const base: Config = {
@@ -55,36 +55,52 @@ test("resolveMode auto follows detection", () => {
   assert.equal(resolveMode({ ...base, mode: "auto" }, false), "mode2");
 });
 
-test("runtimeMode without a blackhole file: auto → mode2, a forced side still wins", () => {
+test("runtimeModeState without a blackhole file: auto → mode2, a forced side still wins", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-qm-mode-"));
   try {
-    assert.equal(runtimeMode(base, dir), "mode2");
-    assert.equal(runtimeMode({ ...base, mode: "auto" }, dir), "mode2");
-    assert.equal(runtimeMode({ ...base, mode: "blackhole" }, dir), "mode1");
-    assert.equal(runtimeMode({ ...base, mode: "own" }, dir), "mode2");
+    assert.deepEqual(runtimeModeState(base, dir), { mode: "mode2", blackholePresent: false });
+    assert.equal(runtimeModeState({ ...base, mode: "auto" }, dir).mode, "mode2");
+    assert.equal(runtimeModeState({ ...base, mode: "blackhole" }, dir).mode, "mode1");
+    assert.equal(runtimeModeState({ ...base, mode: "own" }, dir).mode, "mode2");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("runtimeMode follows an operational blackhole file unless the config forces a side", () => {
+test("runtimeModeState follows an operational blackhole file unless the config forces a side", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-qm-mode-"));
   try {
     mkdirSync(join(dir, "pi-blackhole"), { recursive: true });
     writeFileSync(blackholeConfigPath(dir), JSON.stringify({ enabled: true }), "utf8");
-    assert.equal(runtimeMode(base, dir), "mode1");
-    assert.equal(runtimeMode({ ...base, mode: "auto" }, dir), "mode1");
-    assert.equal(runtimeMode({ ...base, mode: "own" }, dir), "mode2");
-    assert.equal(runtimeMode({ ...base, mode: "blackhole" }, dir), "mode1");
+    assert.deepEqual(runtimeModeState(base, dir), { mode: "mode1", blackholePresent: true });
+    assert.equal(runtimeModeState({ ...base, mode: "auto" }, dir).mode, "mode1");
+    assert.equal(runtimeModeState({ ...base, mode: "own" }, dir).mode, "mode2");
+    assert.equal(runtimeModeState({ ...base, mode: "blackhole" }, dir).mode, "mode1");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("runtimeMode ignores disabled and unparsable blackhole configs", () => {
+test("runtimeModeState ignores disabled and unparsable blackhole configs", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-qm-mode-"));
   try {
     mkdirSync(join(dir, "pi-blackhole"), { recursive: true });
     writeFileSync(blackholeConfigPath(dir), JSON.stringify({ enabled: false }), "utf8");
-    assert.equal(runtimeMode(base, dir), "mode2");
+    assert.deepEqual(runtimeModeState(base, dir), { mode: "mode2", blackholePresent: false });
     writeFileSync(blackholeConfigPath(dir), "{not json", "utf8");
-    assert.equal(runtimeMode(base, dir), "mode2");
+    assert.deepEqual(runtimeModeState(base, dir), { mode: "mode2", blackholePresent: false });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("runtimeModeState pairs the mode with the one detection it came from (#69)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-mode-"));
+  try {
+    mkdirSync(join(dir, "pi-blackhole"), { recursive: true });
+    writeFileSync(blackholeConfigPath(dir), JSON.stringify({ enabled: true }), "utf8");
+    // The #50 contradictory pair: an explicit `own` still resolves to mode2,
+    // but the raw flag says pi-blackhole is present. Both facts come from the
+    // same detection (one API call), so the conflict check cannot be starved
+    // by a second, differently-timed read.
+    assert.deepEqual(runtimeModeState({ ...base, mode: "own" }, dir), {
+      mode: "mode2",
+      blackholePresent: true,
+    });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
