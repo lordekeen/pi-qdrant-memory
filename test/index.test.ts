@@ -271,7 +271,7 @@ test("the qdrant command exposes two-level argument completion", async () => {
     const cmd = (api.commands as Array<{ name: string; getArgumentCompletions?: (p: string) => Array<{ value: string }> | null }>)
       .find((c) => c.name === "qdrant")!;
     assert.deepEqual(cmd.getArgumentCompletions?.("")?.map((c) => c.value), Object.keys(ARG_SHAPE));
-    assert.deepEqual(cmd.getArgumentCompletions?.("clear ")?.map((c) => c.value), ["all", "code"]);
+    assert.deepEqual(cmd.getArgumentCompletions?.("clear ")?.map((c) => c.value), ["clear all", "clear code"]);
     assert.equal(cmd.getArgumentCompletions?.("search "), null);
   } finally { cleanup(); }
 });

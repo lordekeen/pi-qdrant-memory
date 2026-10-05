@@ -234,9 +234,14 @@ test("every value completion suggests is accepted by the dispatcher, in any case
     for (const partial of ["", "a", "A", "c", "C"]) {
       const suggestions = getQdrantCompletions(`${head} ${partial}`) ?? [];
       for (const s of suggestions) {
-        assert.equal(checkArgShape(head, s.value), undefined, `${head} ${partial} → ${s.value}`);
-        const canonical = canonicalEnumArg(head, s.value);
-        assert.ok(canonical !== undefined && canonical === s.value, `${head} suggests ${s.value}`);
+        // The item's value is the whole argument replacement (`clear code`);
+        // the label carries the bounded token the dispatcher validates.
+        const token = s.label;
+        assert.ok(token !== undefined, `${head} ${partial} → tokenless item`);
+        assert.equal(s.value, `${head} ${token}`, `${head} suggests ${s.value}`);
+        assert.equal(checkArgShape(head, token), undefined, `${head} ${partial} → ${token}`);
+        const canonical = canonicalEnumArg(head, token);
+        assert.ok(canonical !== undefined && canonical === token, `${head} suggests ${token}`);
       }
     }
   }
@@ -272,22 +277,34 @@ test("a prefix that matches no key returns [] — never null", () => {
 });
 
 test("enum heads complete their values, and nothing past the second token", () => {
-  assert.deepEqual(getQdrantCompletions("clear "), [{ value: "all", label: "all" }, { value: "code", label: "code" }]);
-  assert.deepEqual(getQdrantCompletions("clear c"), [{ value: "code", label: "code" }]);
+  assert.deepEqual(getQdrantCompletions("clear "), [{ value: "clear all", label: "all" }, { value: "clear code", label: "code" }]);
+  assert.deepEqual(getQdrantCompletions("clear c"), [{ value: "clear code", label: "code" }]);
   assert.deepEqual(getQdrantCompletions("clear x"), []);
   assert.equal(getQdrantCompletions("clear code "), null);
   // The index kinds come from the registry, so a second kind needs no code here.
   assert.deepEqual(
     getQdrantCompletions("index ")?.map((c) => c.value),
-    Object.keys(INDEX_KINDS),
+    Object.keys(INDEX_KINDS).map((k) => `index ${k}`),
   );
   assert.equal(getQdrantCompletions("index code now"), null);
 });
 
+test("a second-token item replaces the whole argument, not just the token (#74)", () => {
+  // pi-tui's CombinedAutocompleteProvider splices the ENTIRE argument prefix
+  // (everything after `/qdrant `) with `item.value`, so the value must be the
+  // complete replacement ("clear code") while the label stays the bare token.
+  for (const input of ["clear ", "clear co", "index ", "settings code"]) {
+    const head = input.split(/\s+/, 1)[0];
+    for (const item of getQdrantCompletions(input) ?? []) {
+      assert.equal(item.value, `${head} ${item.label}`, `${input} → ${item.value}`);
+    }
+  }
+});
+
 test("the settings head completes the field names, then hands over to free text", () => {
-  assert.deepEqual(getQdrantCompletions("settings ")?.map((c) => c.value), [...SETTING_FIELDS]);
-  assert.deepEqual(getQdrantCompletions("settings code")?.map((c) => c.value), ["codeKnowledge", "codeScoreThreshold"]);
-  assert.deepEqual(getQdrantCompletions("settings qdrantApiK")?.map((c) => c.value), ["qdrantApiKey"]);
+  assert.deepEqual(getQdrantCompletions("settings ")?.map((c) => c.value), [...SETTING_FIELDS].map((f) => `settings ${f}`));
+  assert.deepEqual(getQdrantCompletions("settings code")?.map((c) => c.value), ["settings codeKnowledge", "settings codeScoreThreshold"]);
+  assert.deepEqual(getQdrantCompletions("settings qdrantApiK")?.map((c) => c.value), ["settings qdrantApiKey"]);
   assert.equal(getQdrantCompletions("settings scoreThreshold 0."), null);
 });
 

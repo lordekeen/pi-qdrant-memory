@@ -292,14 +292,14 @@ export function getQdrantCompletions(prefix: string): QdrantCompletion[] | null 
   // take text that is not ours to complete.
   if (shape.kind === "none" || shape.kind === "free") return null;
   const rest = typed.slice(gap).replace(/^\s+/, "");
-  if (rest === "") return shape.values.map((v) => ({ value: v, label: v }));
+  if (rest === "") return shape.values.map((v) => ({ value: `${head} ${v}`, label: v }));
   // Two tokens (or one plus its trailing space) means the value is already
   // being typed: the value is free text and completion stops here.
   const tokens = rest.split(/\s+/);
   if (tokens.length > 1) return null;
   const partial = tokens[0].toLowerCase();
   const matches = shape.values.filter((v) => v.toLowerCase().startsWith(partial));
-  return matches.length > 0 ? matches.map((v) => ({ value: v, label: v })) : [];
+  return matches.length > 0 ? matches.map((v) => ({ value: `${head} ${v}`, label: v })) : [];
 }
 
 /** First whitespace-delimited token of a non-empty, already-trimmed string. */

@@ -259,8 +259,8 @@ test("factory: /qdrant clear completes its modifiers and shows usage without one
     assert.ok(qdrant, "qdrant should be registered");
 
     // Second-level argument completions, off the single command:
-    assert.deepEqual(qdrant.getArgumentCompletions?.("clear "), [{ value: "all", label: "all" }, { value: "code", label: "code" }]);
-    assert.deepEqual(qdrant.getArgumentCompletions?.("clear c"), [{ value: "code", label: "code" }]);
+    assert.deepEqual(qdrant.getArgumentCompletions?.("clear "), [{ value: "clear all", label: "all" }, { value: "clear code", label: "code" }]);
+    assert.deepEqual(qdrant.getArgumentCompletions?.("clear c"), [{ value: "clear code", label: "code" }]);
     assert.deepEqual(qdrant.getArgumentCompletions?.("clear xyz"), []); // no match suppresses the menu
     assert.equal(qdrant.getArgumentCompletions?.("search anything"), null); // free text: not ours
 
