@@ -5,6 +5,21 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.6.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.5.0...v0.6.0) (2026-10-05)
+
+
+### Features
+
+* pre-flight the collection dimension before ingesting ([fcf9c47](https://github.com/lordekeen/pi-qdrant-memory/commit/fcf9c47160b014d74750b6fd173a1941bf9f3517)), closes [#72](https://github.com/lordekeen/pi-qdrant-memory/issues/72)
+
+
+### Bug Fixes
+
+* derive project overrides and mask confirmations from the field table ([c4418d2](https://github.com/lordekeen/pi-qdrant-memory/commit/c4418d240d9c43e44c3fb3d77c0085ce251d754f))
+* drop the vestigial ingest guard and log embed errors before a fatal ensure ([e02e27a](https://github.com/lordekeen/pi-qdrant-memory/commit/e02e27ae6b80634bf706c8fec1c481041cfd256b))
+* resolve the mode and pi-blackhole presence from one detection ([03648bb](https://github.com/lordekeen/pi-qdrant-memory/commit/03648bb308e5b7b438fc911b087df72aaed13ad3)), closes [#69](https://github.com/lordekeen/pi-qdrant-memory/issues/69)
+* validate embedBatch output length and stop counting empty batches as failures ([aae5de5](https://github.com/lordekeen/pi-qdrant-memory/commit/aae5de559c1a4fadc2bf9c428adacf900b234aa1)), closes [#68](https://github.com/lordekeen/pi-qdrant-memory/issues/68)
+
 ## [0.5.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.4.1...v0.5.0) (2026-10-03)
 
 
