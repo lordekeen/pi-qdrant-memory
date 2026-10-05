@@ -5,6 +5,13 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.6.2](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.6.1...v0.6.2) (2026-10-05)
+
+
+### Bug Fixes
+
+* stop the session-start scan from blocking, and keep the verified Qdrant client ([#78](https://github.com/lordekeen/pi-qdrant-memory/issues/78)) ([d866402](https://github.com/lordekeen/pi-qdrant-memory/commit/d8664024fedfdbeeea1063f9518049fa099c0ae4))
+
 ## [0.6.1](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.6.0...v0.6.1) (2026-10-05)
 
 
