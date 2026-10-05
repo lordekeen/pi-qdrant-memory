@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import {
   ARG_SHAPE,
   CLEAR_TARGETS,
+  COMMAND_ROWS,
   INDEX_KINDS,
-  KEY_SUMMARY,
   USAGE_KEYS,
   canonicalEnumArg,
   canonicalIndexKind,
@@ -83,8 +83,18 @@ test("the settings key token is exactly the settings surface's field list", () =
   assert.equal(SETTING_FIELDS.length, 12);
 });
 
-test("every key has a completion summary", () => {
-  for (const key of KEYS) assert.ok(KEY_SUMMARY[key].length > 0, `missing summary for ${key}`);
+test("the command registry has one row per key, in grammar order, each naming its own command", () => {
+  // The registry is the ONE table behind the help rows and the completion
+  // summaries — no second list can drift (the old parity test lived here).
+  assert.deepEqual(Object.keys(COMMAND_ROWS), KEYS);
+  for (const key of KEYS) {
+    const row = COMMAND_ROWS[key];
+    assert.ok(row.cmd.startsWith(`/qdrant ${key}`), `row for ${key} names its own key`);
+    assert.ok(row.desc.length > 0, `missing help description for ${key}`);
+    assert.ok(row.summary.length > 0, `missing completion summary for ${key}`);
+  }
+  // Only the index row is feature-gated, and its gate is a real config flag.
+  assert.deepEqual(Object.entries(COMMAND_ROWS).filter(([, r]) => r.gated).map(([k]) => k), ["index"]);
 });
 
 test("enum values come from their registries, not from a second list", () => {

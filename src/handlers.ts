@@ -1,5 +1,5 @@
-import { resolveMode, detectBlackhole } from "./mode.ts";
-import type { QdrantKey } from "./commands.ts";
+import { runtimeModeState } from "./mode.ts";
+import { COMMAND_ROWS } from "./commands.ts";
 import { SETTING_FIELDS, configPath, setConfigField } from "./config.ts";
 import type { SettingField } from "./config.ts";
 import {
@@ -10,11 +10,11 @@ import {
   projectSettingsPath,
   saveProjectSettings,
 } from "./project-settings.ts";
+import { applySettingWrite } from "./settings-write.ts";
 import { rememberLogic, memorySearchLogic } from "./tools-core.ts";
 import {
   EMPTY_SEARCH_TEXT,
   alreadySavedText,
-  clearCodeUnsupportedText,
   clearFailedText,
   clearNoCodeText,
   clearedAllText,
@@ -23,7 +23,6 @@ import {
   forgetFailedText,
   forgetNoMatchText,
   forgetRequiresUiText,
-  forgetUnsupportedText,
   forgetUsageText,
   forgottenText,
   rememberFailedText,
@@ -36,7 +35,6 @@ import {
   clearCancelledText,
   clearRequiresUiText,
   clearUsageText,
-  codeMemoryReloadNotice,
   displayValue,
   errorEntry,
   forgetConfirmMessage,
@@ -46,23 +44,18 @@ import {
   helpEntry,
   isSecretSettingField,
   message,
-  modeOwnConflictNotice,
   outText,
   resetOptionLabel,
   searchEntry,
   searchHitView,
   settingsCancelledText,
-  settingsGlobalUpdatedText,
-  settingsOverrideClearedText,
   settingsScopeLabel,
-  settingsUpdatedText,
   settingsUsageText,
   statusEntry,
 } from "./out.ts";
 import type { CodeMemoryHealth, HelpRow, OutEntry, ProjectSettingRow, SettingsScopeRow, StatusHealth } from "./out.ts";
 import type { QdrantLike } from "./qdrant.ts";
 import { QdrantError, redactUrl } from "./qdrant.ts";
-import { maskNote } from "./project-settings.ts";
 import type { ProjectOverridableField, ProjectSettings } from "./project-settings.ts";
 import type { Config, EmbedProbeCacheEntry, MemoryType, RuntimeDeps } from "./types.ts";
 
@@ -88,8 +81,6 @@ export interface HandlerIO {
   codeMemory?: CodeMemoryHealth;
   /** Environment variables; defaults to process.env. */
   env?: NodeJS.ProcessEnv;
-  /** Memoized verified collection existence set (OI-010). */
-  collectionReady?: Set<string>;
   /** Cached embedding probe result (OI-011). */
   embedProbeCache?: EmbedProbeCacheEntry;
   /** Timeout budget for the status probe (OI-011, defaults to 5000ms). */
@@ -116,7 +107,6 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
     get embed() { return deps.embed; },
     get qdrant() { return deps.qdrant; },
     get env() { return deps.env ?? process.env; },
-    get collectionReady() { return deps.collectionReady; },
     get embedProbeCache() { return deps.embedProbeCache; },
     set embedProbeCache(v) { deps.embedProbeCache = v; },
     get now() { return deps.now; },
@@ -129,8 +119,6 @@ export function depsToIO(deps: RuntimeDeps, options: DepsToIOOptions = {}): Hand
     codeMemory: options.codeMemory,
   };
 }
-
-export interface HandlerResult { exit: boolean; }
 
 export async function probeEmbedding(
   io: HandlerIO,
@@ -164,9 +152,12 @@ export async function probeEmbedding(
   return ok;
 }
 
-export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
-  const blackhole = detectBlackhole(io.agentDir);
-  const mode = resolveMode(io.cfg, blackhole);
+export async function statusHandler(io: HandlerIO): Promise<void> {
+  // One detection for BOTH facts below: the reported mode and the #50 conflict
+  // check must describe the same snapshot — resolving each separately would
+  // read the blackhole config twice and let the two disagree when it changes
+  // between reads.
+  const { mode, blackholePresent } = runtimeModeState(io.cfg, io.agentDir);
   let count = -1;
   let qdrantOk = true;
   let collectionMissing = false;
@@ -197,8 +188,11 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
   }
   const health: StatusHealth = {
     mode,
-    // Explicit own + operational blackhole is the contradictory config #50 warns about.
-    modeConflict: io.cfg.mode === "own" && blackhole,
+    // Explicit own + operational blackhole is the contradictory config #50 warns
+    // about. `resolveMode` cannot express it: mode "own" resolves to mode2 even
+    // when pi-blackhole is present, so the raw flag from the SAME detection is
+    // checked here.
+    modeConflict: io.cfg.mode === "own" && blackholePresent,
     qdrant,
     embeddings: embedOk ? { state: "ok" } : { state: "err" },
     ...(io.codeMemory ? { codeMemory: io.codeMemory } : {}),
@@ -214,45 +208,16 @@ export async function statusHandler(io: HandlerIO): Promise<HandlerResult> {
     },
   };
   io.emit(statusEntry(health));
-  return { exit: false };
 }
 
-export async function settingsHandler(io: HandlerIO, field?: string, value?: string): Promise<HandlerResult> {
+export async function settingsHandler(io: HandlerIO, field?: string, value?: string): Promise<void> {
   if (field && value !== undefined) {
-    if (isProjectOverridable(field)) {
-      // Allowlisted key: the project store owns this value. `before` is the live
-      // EFFECTIVE codeKnowledge (env-mask aware) — the reload notice is emitted
-      // iff the write actually changed it.
-      const before = io.cfg.codeKnowledge;
-      if (value === "default") {
-        // Reserved token, matched BEFORE validation (D4): a no-op clear (no
-        // override existed) still confirms "override cleared" — clearing is
-        // idempotent by design.
-        io.clearProjectSetting(field);
-        io.emit(message(settingsOverrideClearedText(field, io.readGlobalConfig()[field], maskNote(field, io.env))));
-        if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
-        return { exit: false };
-      }
-      const applied = setConfigField(io.readGlobalConfig(), field, value); // same errors as a global write
-      if (!applied.ok) { io.emit(errorEntry(settingsWriteErrorText(applied.error))); return { exit: false }; }
-      io.writeProjectSettings(projectOverride(applied.next, field));       // typed partial, JSON number
-      io.emit(message(settingsUpdatedText(field, applied.next[field], io.readGlobalConfig()[field], maskNote(field, io.env))));
-      if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
-      return { exit: false };
-    }
-    // Non-allowlisted key: today's global path, persisted from the GLOBAL reader
-    // (D10) — never the effective config.
-    const applied = setConfigField(io.readGlobalConfig(), field, value);
-    if (!applied.ok) { io.emit(errorEntry(settingsWriteErrorText(applied.error))); return { exit: false }; }
-    io.writeGlobalConfig(applied.next);
-    io.emit(message(settingsGlobalUpdatedText(field)));
-    // #50: forcing own while pi-blackhole is operational makes both extensions
-    // claim session_before_compact — pi-blackhole can cancel compaction, so no
-    // mode-2 capture happens. Warn without blocking the write.
-    if (field === "mode" && applied.next.mode === "own" && detectBlackhole(io.agentDir)) {
-      io.emit(message(modeOwnConflictNotice()));
-    }
-    return { exit: false };
+    // Interaction only: the write policy (reserved `default`, validation, scope
+    // routing, emissions, secret normalisation) lives in settings-write.ts and
+    // is shared with the RPC form and the TUI screen. `io` is passed whole — a
+    // spread would snapshot the live `cfg` getter.
+    applySettingWrite(io, field, value);
+    return;
   }
   const overrides = io.readProjectSettings();
   const global = io.readGlobalConfig();
@@ -261,14 +226,6 @@ export async function settingsHandler(io: HandlerIO, field?: string, value?: str
     globalPath: configPath(io.agentDir),
     rows: scopeRows(io, overrides, global),
   })));
-  return { exit: false };
-}
-
-/** A one-key typed partial for `saveProjectSettings` — no casts. */
-function projectOverride(cfg: Config, field: ProjectOverridableField): ProjectSettings {
-  return field === "codeKnowledge"
-    ? { codeKnowledge: cfg.codeKnowledge }
-    : { codeScoreThreshold: cfg.codeScoreThreshold };
 }
 
 /** One scope row per allowlisted field: effective value, global value, and
@@ -368,21 +325,21 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
     // ("leave unchanged"), which must be visible like every other cancel (#58).
     if (!isSecretSettingField(key)) { io.emit(message(settingsCancelledText(key))); return; }
   }
-  const resolvedValue = value === "" ? "null" : value;
 
-  if (projectScoped && resolvedValue === "default") {
-    // Reserved token, matched before validation — mirrors the CLI clear path.
-    const before = io.cfg.codeKnowledge;
+  if (projectScoped && value === "default") {
+    // Reserved token, matched before validation — the same clear path a CLI
+    // `default` takes (the shared writer owns the clear + its reactions).
     const ok = await ui.confirm("Clear the project override?", formClearMessage(key, globalVal));
     if (!ok) { io.emit(message(settingsCancelledText(key))); return; }
-    io.clearProjectSetting(key);
-    io.emit(message(settingsOverrideClearedText(key, io.readGlobalConfig()[key], maskNote(key, io.env))));
-    if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
+    applySettingWrite(io, key, "default");
     return;
   }
 
-  const globalNow = io.readGlobalConfig(); // re-read: never persist a stale/effective Config
-  const applied = setConfigField(globalNow, key, resolvedValue);
+  // Preview through the shared validator so an invalid value never reaches the
+  // confirm dialog; the write module re-validates the actual write. An empty
+  // value here is a secret clear, so the dialog names the `null` it persists.
+  const preview = value === "" ? "null" : value;
+  const applied = setConfigField(io.readGlobalConfig(), key, preview); // re-read: never validate against a stale/effective Config
   if (!applied.ok) { io.emit(errorEntry(settingsWriteErrorText(applied.error))); return; }
   const nextValue = cfgField(applied.next, key);
   const ok = await ui.confirm(
@@ -390,23 +347,12 @@ export async function runSettingsForm(ui: SettingsUI, io: HandlerIO): Promise<vo
     formSaveMessage(key, nextValue, cur, projectScoped ? "project" : "global", globalVal),
   );
   if (!ok) { io.emit(message(settingsCancelledText(key))); return; }
-  const before = io.cfg.codeKnowledge;
-  if (projectScoped) {
-    io.writeProjectSettings(projectOverride(applied.next, key));
-    io.emit(message(settingsUpdatedText(key, nextValue as string | number, globalVal, maskNote(key, io.env))));
-  } else {
-    io.writeGlobalConfig(applied.next);
-    io.emit(message(settingsGlobalUpdatedText(key)));
-    // Same contradictory-config warning as the CLI path (#50).
-    if (key === "mode" && applied.next.mode === "own" && detectBlackhole(io.agentDir)) {
-      io.emit(message(modeOwnConflictNotice()));
-    }
-  }
-  // Both paths: the notice follows the live EFFECTIVE codeKnowledge change.
-  if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
+  // The shared writer persists, routes and emits — the raw value, because the
+  // empty-secret → `null` normalisation is its policy (never duplicated here).
+  applySettingWrite(io, key, value);
 }
 
-export async function rememberHandler(io: HandlerIO, text: string, type?: MemoryType): Promise<HandlerResult> {
+export async function rememberHandler(io: HandlerIO, text: string, type?: MemoryType): Promise<void> {
   // io is structurally a ToolDeps (cfg/projectId/embed/qdrant); tools-core takes
   // that narrow type and needs no output channel.
   const res = await rememberLogic(io, text, type);
@@ -420,10 +366,9 @@ export async function rememberHandler(io: HandlerIO, text: string, type?: Memory
   } else {
     io.emit(errorEntry(rememberFailedText(res.error)));
   }
-  return { exit: false };
 }
 
-export async function searchHandler(io: HandlerIO, query: string, type?: MemoryType): Promise<HandlerResult> {
+export async function searchHandler(io: HandlerIO, query: string, type?: MemoryType): Promise<void> {
   const res = await memorySearchLogic(io, query, type);
   if (res.ok) {
     io.emit(res.value.length === 0 ? message(EMPTY_SEARCH_TEXT) : searchEntry(res.value.map(searchHitView)));
@@ -435,32 +380,30 @@ export async function searchHandler(io: HandlerIO, query: string, type?: MemoryT
     // tool return (DESIGN.md agent-tool-results).
     io.emit(errorEntry(searchFailedText(res.error)));
   }
-  return { exit: false };
 }
 
 /**
- * Drop the in-memory caches a clear invalidates (#44): the memoized
- * collection-existence set and the code-memory inventory counts that
- * `/qdrant status` reports. Called on **every** successful clear path — the
- * empty collection included, where the stored side is already empty but the
- * counters may be stale (#61).
+ * Drop the code-memory inventory counts a clear invalidates (#44). Called on
+ * **every** successful clear path — the empty collection included, where the
+ * stored side is already empty but the counters may be stale (#61). Collection
+ * readiness is the adapter's own concern (`QdrantClient.ensured`), invalidated
+ * by `clearCollection` itself.
  */
 function resetCodeMemoryCaches(io: HandlerIO): void {
-  io.collectionReady?.delete(io.projectId);
   if (io.codeMemory) {
     io.codeMemory.files = 0;
     io.codeMemory.symbols = 0;
   }
 }
 
-export async function clearHandler(io: HandlerIO, target?: string, ui?: SettingsUI): Promise<HandlerResult> {
+export async function clearHandler(io: HandlerIO, target?: string, ui?: SettingsUI): Promise<void> {
   const normalized = target?.trim().toLowerCase();
   if (normalized === "all") {
     // Headless refusal (plan Part C): a destructive wipe is never attempted
     // when there is no dialog to ask — mirrors the forget refusal.
     if (!ui) {
       io.emit(errorEntry(clearRequiresUiText()));
-      return { exit: false };
+      return;
     }
     // Count first so an empty (or absent) collection never opens a dialog.
     // A 404 count means the collection does not exist — that is empty, not an
@@ -473,7 +416,7 @@ export async function clearHandler(io: HandlerIO, target?: string, ui?: Settings
         count = 0;
       } else {
         io.emit(errorEntry(clearFailedText(String(err))));
-        return { exit: false };
+        return;
       }
     }
     if (count === 0) {
@@ -482,12 +425,12 @@ export async function clearHandler(io: HandlerIO, target?: string, ui?: Settings
       // /qdrant status never keeps reporting deleted files/symbols (#61).
       resetCodeMemoryCaches(io);
       io.emit(message(clearAlreadyEmptyText(io.projectId)));
-      return { exit: false };
+      return;
     }
     const ok = await ui.confirm(clearAllConfirmTitle(io.projectId, count), clearAllConfirmMessage());
     if (!ok) {
       io.emit(message(clearCancelledText()));
-      return { exit: false };
+      return;
     }
     try {
       await io.qdrant.clearCollection(io.projectId);
@@ -496,18 +439,14 @@ export async function clearHandler(io: HandlerIO, target?: string, ui?: Settings
     } catch (err) {
       io.emit(errorEntry(clearFailedText(String(err))));
     }
-    return { exit: false };
+    return;
   }
   if (normalized === "code") {
     try {
       const count = await io.qdrant.countBySourceKind(io.projectId, "code_summary");
       if (count === 0) {
         io.emit(message(clearNoCodeText()));
-        return { exit: false };
-      }
-      if (!io.qdrant.deletePointsBySourceKind) {
-        io.emit(errorEntry(clearCodeUnsupportedText()));
-        return { exit: false };
+        return;
       }
       await io.qdrant.deletePointsBySourceKind(io.projectId, "code_summary");
       resetCodeMemoryCaches(io);
@@ -515,19 +454,18 @@ export async function clearHandler(io: HandlerIO, target?: string, ui?: Settings
     } catch (err) {
       io.emit(errorEntry(clearFailedText(String(err))));
     }
-    return { exit: false };
+    return;
   }
   io.emit(message(clearUsageText()));
-  return { exit: false };
 }
 
 export const FORGET_MAX_HITS = 5;
 
-export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsUI): Promise<HandlerResult> {
+export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsUI): Promise<void> {
   const trimmed = query.trim();
   if (!trimmed) {
     io.emit(message(forgetUsageText()));
-    return { exit: false };
+    return;
   }
   // Probe one hit beyond the cap: a hit at index FORGET_MAX_HITS proves more
   // matches exist above the threshold, so the dialog can say they are left
@@ -535,15 +473,15 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
   const res = await memorySearchLogic(io, trimmed, undefined, FORGET_MAX_HITS + 1);
   if (!res.ok) {
     io.emit(errorEntry(forgetFailedText(res.error)));
-    return { exit: false };
+    return;
   }
   if (res.value.length === 0) {
     io.emit(message(forgetNoMatchText(trimmed)));
-    return { exit: false };
+    return;
   }
   if (!ui) {
     io.emit(errorEntry(forgetRequiresUiText()));
-    return { exit: false };
+    return;
   }
   const capped = res.value.length > FORGET_MAX_HITS;
   const targets = res.value.slice(0, FORGET_MAX_HITS);
@@ -552,48 +490,25 @@ export async function forgetHandler(io: HandlerIO, query: string, ui?: SettingsU
   const confirmed = await ui.confirm("Remove memories?", forgetConfirmMessage(views, capped));
   if (!confirmed) {
     io.emit(message(forgetCancelledText()));
-    return { exit: false };
+    return;
   }
   const hitIds = targets.map((h) => h.id);
-  if (!io.qdrant.deletePointsByIds) {
-    io.emit(errorEntry(forgetUnsupportedText()));
-    return { exit: false };
-  }
   try {
     const count = await io.qdrant.deletePointsByIds(io.projectId, hitIds);
     io.emit(message(forgottenText(count)));
   } catch (err) {
     io.emit(errorEntry(forgetFailedText(err instanceof Error ? err.message : String(err))));
   }
-  return { exit: false };
 }
 
-export interface CommandRow {
-  /** The `/qdrant` subcommand key this row documents — one per `ARG_SHAPE` key. */
-  name: QdrantKey;
-  cmd: string;
-  desc: string;
-  gated?: "codeKnowledge";
-}
-
-export const COMMAND_ROWS: readonly CommandRow[] = [
-  { name: "status", cmd: "/qdrant status", desc: "connection health + active mode + collection status" },
-  { name: "settings", cmd: "/qdrant settings [key] [value]", desc: "open the settings screen, or persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global" },
-  { name: "remember", cmd: "/qdrant remember <text>", desc: "save durable knowledge now" },
-  { name: "search", cmd: "/qdrant search <query>", desc: "semantic search of durable knowledge" },
-  { name: "forget", cmd: "/qdrant forget <query>", desc: "search and remove memories interactively" },
-  { name: "clear", cmd: "/qdrant clear all | code", desc: "reset entire collection (all) or purge code summaries (code)" },
-  { name: "index", cmd: "/qdrant index code", desc: "re-index code summaries now", gated: "codeKnowledge" },
-  { name: "help", cmd: "/qdrant help", desc: "this list" },
-];
-
-export async function helpHandler(io: HandlerIO): Promise<HandlerResult> {
+export async function helpHandler(io: HandlerIO): Promise<void> {
   // Brand the help block with the same header the footer statusline carries
   // (DESIGN.md footer-status) so the active mode + collection are visible here too.
-  const mode = resolveMode(io.cfg, detectBlackhole(io.agentDir));
-  const rows: HelpRow[] = COMMAND_ROWS
+  const { mode } = runtimeModeState(io.cfg, io.agentDir);
+  // The rows come from the ONE command registry (commands.ts), in declaration
+  // order — the same table the argument completion reads its summaries from.
+  const rows: HelpRow[] = Object.values(COMMAND_ROWS)
     .filter((r) => !r.gated || (r.gated === "codeKnowledge" && io.cfg.codeKnowledge === "on"))
     .map(({ cmd, desc }) => ({ cmd, desc }));
   io.emit(helpEntry(rows, { mode, collection: io.projectId }));
-  return { exit: false };
 }

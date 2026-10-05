@@ -8,5 +8,6 @@
 node_modules/
 *.log
 
-# Local-only design docs (specs + implementation plans)
-docs/
+# Local-only design docs (specs + implementation plans); ADRs are tracked
+docs/*
+!docs/adr/

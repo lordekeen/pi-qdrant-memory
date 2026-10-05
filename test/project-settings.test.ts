@@ -16,8 +16,10 @@ import { dirname, join } from "node:path";
 import {
   PROJECT_OVERRIDABLE_FIELDS,
   clearProjectField,
+  envMask,
   isProjectOverridable,
   loadProjectSettings,
+  maskNote,
   projectSettingsPath,
   projectsDir,
   readEffectiveConfig,
@@ -284,6 +286,118 @@ test("precedence §7.1: codeScoreThreshold across global file, project store and
       if (row.storeLoaded) assert.deepEqual(loadProjectSettings(dir, ID), row.storeLoaded, `${label}: store view`);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
+});
+
+// ── The per-field precedence matrix (one pin for all Config fields) ─────────
+
+/** One row per `Config` field: its env var, an env value the env layer accepts,
+ *  a global-file value and (allowlisted fields only) a project override. The
+ *  expected values are literals — never recomputed from the table. */
+interface FieldCase {
+  field: keyof Config;
+  env: string;
+  envRaw: string;
+  envValue: string | number;
+  file: Partial<Config>;
+  fileValue: string | number;
+  store?: ProjectSettings;
+  storeValue?: string | number;
+  /** A raw env value this field's env layer rejects. */
+  badEnv?: string;
+  /** Where that rejected value lands with the file present and no override:
+   *  enum fields fall through to the file, numeric fields to DEFAULTS (the
+   *  historical `numEnv` slot rule). Overridable fields land on the override. */
+  badValue?: string | number;
+}
+
+const FIELD_CASES: FieldCase[] = [
+  { field: "qdrantUrl", env: "PI_QDRANT_URL", envRaw: "http://env-qdrant:1", envValue: "http://env-qdrant:1",
+    file: { qdrantUrl: "http://file-qdrant:1" }, fileValue: "http://file-qdrant:1" },
+  { field: "qdrantApiKey", env: "PI_QDRANT_API_KEY", envRaw: "env-key", envValue: "env-key",
+    file: { qdrantApiKey: "file-key" }, fileValue: "file-key" },
+  { field: "embeddingBaseURL", env: "PI_QDRANT_EMBEDDING_BASE_URL", envRaw: "http://env-embed:1", envValue: "http://env-embed:1",
+    file: { embeddingBaseURL: "http://file-embed:1" }, fileValue: "http://file-embed:1" },
+  { field: "embeddingModel", env: "PI_QDRANT_EMBEDDING_MODEL", envRaw: "env-model", envValue: "env-model",
+    file: { embeddingModel: "file-model" }, fileValue: "file-model" },
+  { field: "embeddingApiKey", env: "PI_QDRANT_EMBEDDING_API_KEY", envRaw: "env-embed-key", envValue: "env-embed-key",
+    file: { embeddingApiKey: "file-embed-key" }, fileValue: "file-embed-key" },
+  { field: "expectedDimension", env: "PI_QDRANT_EXPECTED_DIMENSION", envRaw: "1024", envValue: 1024,
+    file: { expectedDimension: 2048 }, fileValue: 2048, badEnv: "abc", badValue: DEFAULTS.expectedDimension },
+  { field: "scoreThreshold", env: "PI_QDRANT_SCORE_THRESHOLD", envRaw: "0.3", envValue: 0.3,
+    file: { scoreThreshold: 0.4 }, fileValue: 0.4, badEnv: "abc", badValue: DEFAULTS.scoreThreshold },
+  { field: "maxResults", env: "PI_QDRANT_MAX_RESULTS", envRaw: "7", envValue: 7,
+    file: { maxResults: 9 }, fileValue: 9, badEnv: "abc", badValue: DEFAULTS.maxResults },
+  { field: "mode", env: "PI_QDRANT_MODE", envRaw: "own", envValue: "own",
+    file: { mode: "blackhole" }, fileValue: "blackhole", badEnv: "bogus", badValue: "blackhole" },
+  { field: "codeKnowledge", env: "PI_QDRANT_CODE_KNOWLEDGE", envRaw: "on", envValue: "on",
+    file: { codeKnowledge: "on" }, fileValue: "on", store: { codeKnowledge: "off" }, storeValue: "off",
+    badEnv: "bogus", badValue: "on" },
+  { field: "codeScoreThreshold", env: "PI_QDRANT_CODE_SCORE_THRESHOLD", envRaw: "0.7", envValue: 0.7,
+    file: { codeScoreThreshold: 0.5 }, fileValue: 0.5, store: { codeScoreThreshold: 0.6 }, storeValue: 0.6,
+    badEnv: "abc", badValue: DEFAULTS.codeScoreThreshold },
+  { field: "memoryForget", env: "PI_QDRANT_MEMORY_FORGET", envRaw: "off", envValue: "off",
+    file: { memoryForget: "on" }, fileValue: "on", badEnv: "bogus", badValue: "on" },
+];
+
+test("precedence matrix: DEFAULTS → global → project → env, per field", () => {
+  assert.equal(FIELD_CASES.length, 12, "every Config field is pinned");
+  for (const c of FIELD_CASES) {
+    const label = `field ${c.field}`;
+
+    // DEFAULTS: no file, no store, no env.
+    const bare = tempAgentDir();
+    try {
+      assert.equal(readEffectiveConfig(bare, ID, {})[c.field], DEFAULTS[c.field], `${label}: DEFAULTS layer`);
+    } finally { rmSync(bare, { recursive: true, force: true }); }
+
+    // Global file layer; a rejected env value never masks it.
+    const globalOnly = tempAgentDir();
+    try {
+      writeConfigFile(globalOnly, { ...DEFAULTS, ...c.file });
+      assert.equal(readEffectiveConfig(globalOnly, ID, {})[c.field], c.fileValue, `${label}: global layer`);
+      if (c.badEnv !== undefined) {
+        assert.equal(
+          readEffectiveConfig(globalOnly, ID, { [c.env]: c.badEnv })[c.field],
+          c.badValue,
+          `${label}: invalid env does not mask the global layer`,
+        );
+      }
+    } finally { rmSync(globalOnly, { recursive: true, force: true }); }
+
+    // Project layer on top of the global file, then the env layer on top of both.
+    const layered = tempAgentDir();
+    try {
+      writeConfigFile(layered, { ...DEFAULTS, ...c.file });
+      if (c.store) saveProjectSettings(layered, ID, c.store);
+      assert.equal(readEffectiveConfig(layered, ID, {})[c.field], c.store ? c.storeValue : c.fileValue,
+        `${label}: project layer`);
+      assert.equal(readEffectiveConfig(layered, ID, { [c.env]: c.envRaw })[c.field], c.envValue,
+        `${label}: env layer`);
+      if (c.badEnv !== undefined) {
+        assert.equal(
+          readEffectiveConfig(layered, ID, { [c.env]: c.badEnv })[c.field],
+          c.store ? c.storeValue : c.badValue,
+          `${label}: invalid env does not mask the project layer`,
+        );
+      }
+    } finally { rmSync(layered, { recursive: true, force: true }); }
+  }
+});
+
+test("envMask reports exactly the values the env layer accepts", () => {
+  assert.deepEqual(envMask("codeKnowledge", { PI_QDRANT_CODE_KNOWLEDGE: "on" }),
+    { envVar: "PI_QDRANT_CODE_KNOWLEDGE", envVal: "on" });
+  assert.equal(envMask("codeKnowledge", { PI_QDRANT_CODE_KNOWLEDGE: "maybe" }), undefined);
+  assert.equal(envMask("codeKnowledge", {}), undefined);
+
+  assert.deepEqual(envMask("codeScoreThreshold", { PI_QDRANT_CODE_SCORE_THRESHOLD: "0.6" }),
+    { envVar: "PI_QDRANT_CODE_SCORE_THRESHOLD", envVal: "0.6" });
+  assert.equal(envMask("codeScoreThreshold", { PI_QDRANT_CODE_SCORE_THRESHOLD: "abc" }), undefined);
+  assert.equal(envMask("codeScoreThreshold", {}), undefined);
+
+  assert.match(maskNote("codeKnowledge", { PI_QDRANT_CODE_KNOWLEDGE: "off" })!, /masked by PI_QDRANT_CODE_KNOWLEDGE=off/);
+  assert.equal(maskNote("codeKnowledge", { PI_QDRANT_CODE_KNOWLEDGE: "maybe" }), undefined);
+  assert.match(maskNote("codeScoreThreshold", { PI_QDRANT_CODE_SCORE_THRESHOLD: "0.6" })!, /masked by PI_QDRANT_CODE_SCORE_THRESHOLD=0\.6/);
 });
 
 // ── Atomic writes + corrupt-file reporting (#57) ────────────────────────────

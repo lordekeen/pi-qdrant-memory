@@ -12,8 +12,10 @@ import assert from "node:assert/strict";
 import { message, errorEntry, helpEntry, statusEntry, searchEntry, searchHitView } from "../src/out.ts";
 import type { StatusHealth } from "../src/out.ts";
 import type { PointPayload, SearchHit } from "../src/types.ts";
-import { renderEntryComponent, loadHostModules, textComponentResolved, hostModules } from "../src/entry-render.ts";
-import type { RendererOptions, TextCtor } from "../src/entry-render.ts";
+import { renderEntryComponent } from "../src/entry-render.ts";
+import { loadHostModules, textComponentResolved, hostModules } from "../src/host-bridge.ts";
+import type { RendererOptions } from "../src/entry-render.ts";
+import type { TextCtor } from "../src/host-bridge.ts";
 
 const health: StatusHealth = {
   mode: "mode2",

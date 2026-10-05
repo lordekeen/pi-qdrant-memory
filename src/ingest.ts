@@ -1,8 +1,9 @@
 import { artifactToPayload } from "./blackhole.ts";
 import type { BlackholeArtifact } from "./blackhole.ts";
 import { pointId } from "./ids.ts";
-import type { QdrantLike, QdrantPoint } from "./qdrant.ts";
+import type { QdrantLike } from "./qdrant.ts";
 import type { PointPayload, SourceKind } from "./types.ts";
+import { applyWrites } from "./writes.ts";
 
 /**
  * An item ready for ingestion. `payload` intentionally excludes `text` — the
@@ -24,10 +25,6 @@ export interface IngestDeps {
   projectId: string;
 }
 
-export async function ensureAndGet(deps: IngestDeps, dim: number): Promise<void> {
-  await deps.qdrant.ensureCollection(deps.projectId, dim);
-}
-
 export function artifactToIngestItem(a: BlackholeArtifact, projectId: string, ts: number): IngestItem {
   const p = artifactToPayload(a, projectId, ts);
   return { text: p.text, sourceKind: p.source_kind, contextId: p.source_entry_id ?? p.session_id ?? "", payload: p };
@@ -38,87 +35,93 @@ export async function ingestItems(
   dim: number,
   items: IngestItem[],
 ): Promise<{ attempted: number; ingested: number }> {
-  await ensureAndGet(deps, dim);
-
   const itemsWithIds = items.map((item) => ({
     item,
     id: pointId(item.text, item.sourceKind, item.contextId),
   }));
 
   let needed = itemsWithIds;
-  if (deps.qdrant.existingPointIds) {
-    try {
-      const existing = await deps.qdrant.existingPointIds(deps.projectId, itemsWithIds.map((x) => x.id));
-      if (existing.size > 0) {
-        needed = itemsWithIds.filter((x) => !existing.has(x.id));
-      }
-    } catch {
-      // Non-fatal: fall back to processing all items
+  // `existingPointIds` is required by the total `QdrantLike` seam (ADR 0001),
+  // so the call is unconditional; only a store error is tolerated.
+  try {
+    const existing = await deps.qdrant.existingPointIds(deps.projectId, itemsWithIds.map((x) => x.id));
+    if (existing.size > 0) {
+      needed = itemsWithIds.filter((x) => !existing.has(x.id));
     }
+  } catch {
+    // Non-fatal: fall back to processing all items
   }
 
   if (!needed.length) {
     return { attempted: items.length, ingested: 0 };
   }
 
-  const points: QdrantPoint[] = [];
-  let ingested = 0;
-
-  if (deps.embedBatch) {
-    for (let i = 0; i < needed.length; i += 32) {
-      const chunk = needed.slice(i, i + 32);
-      try {
-        const vectors = await deps.embedBatch(chunk.map((x) => x.item.text));
-        for (let j = 0; j < chunk.length; j++) {
-          const entry = chunk[j]!;
-          points.push({
-            id: entry.id,
-            vector: vectors[j]!,
-            payload: { ...entry.item.payload, text: entry.item.text } as PointPayload,
-          });
-          ingested++;
-        }
-      } catch (err) {
-        console.error(`pi-qdrant-memory: ingest batch skipped (embed failed): ${String(err)}`);
-      }
+  // Read-only dimension pre-flight (#72): a collection whose stored dimension
+  // disagrees with the configured model can never accept these vectors, so
+  // surface that before paying the embedding cost on every ingest. Advisory
+  // only — the ensure inside applyWrites stays authoritative and its
+  // embed → ensure order (ADR 0002) is untouched.
+  try {
+    const storedDim = await deps.qdrant.collectionDimension(deps.projectId);
+    if (storedDim !== undefined && storedDim !== dim) {
+      console.error(
+        `pi-qdrant-memory: ingest skipped — collection ${deps.projectId} has dimension ${String(storedDim)} but the configured embedding model produces ${String(dim)}; move the collection aside or set the matching model`,
+      );
+      return { attempted: items.length, ingested: 0 };
     }
-  } else {
-    for (const entry of needed) {
-      try {
-        const vector = await deps.embed(entry.item.text);
-        points.push({
-          id: entry.id,
-          vector,
-          payload: { ...entry.item.payload, text: entry.item.text } as PointPayload,
-        });
-        ingested++;
-      } catch (err) {
-        console.error(`pi-qdrant-memory: ingest skipped (embed failed): ${String(err)}`);
-      }
-    }
+  } catch {
+    // Non-fatal, like the existing-point read above: an unreadable dimension
+    // falls through to applyWrites, whose ensure reports the mismatch after
+    // the embed.
   }
 
-  if (points.length) {
-    if (deps.qdrant.deletePointsBySourceEntryIds) {
-      const sourceEntryIds = Array.from(new Set(
-        points
-          .map((p) => p.payload.source_entry_id)
-          .filter((id): id is string => typeof id === "string" && id.length > 0),
-      ));
-      if (sourceEntryIds.length > 0) {
-        try {
-          await deps.qdrant.deletePointsBySourceEntryIds(deps.projectId, sourceEntryIds);
-        } catch (err) {
-          console.error(`pi-qdrant-memory: supersede delete failed (non-fatal): ${String(err)}`);
-        }
-      }
-    }
-    try {
-      await deps.qdrant.upsert(deps.projectId, points);
-    } catch (err) {
-      console.error(`pi-qdrant-memory: upsert failed: ${String(err)}`);
-      ingested = 0;
+  // One batch: embed (chunked at the shared cap, or per item without a batch
+  // client) → ensure → supersede-delete → one upsert of every survivor. The
+  // supersede ids are derived from the items that actually embedded, so a
+  // failed chunk never deletes a revision it could not replace.
+  const report = await applyWrites(
+    {
+      embed: deps.embed,
+      embedBatch: deps.embedBatch,
+      qdrant: deps.qdrant,
+      projectId: deps.projectId,
+      dimension: dim,
+    },
+    [{
+      items: needed.map((x) => ({ id: x.id, text: x.item.text, payload: x.item.payload })),
+      invalidate: "source-entry-ids",
+    }],
+  );
+
+  const outcome = report.batches[0];
+  // Log the chunk embed failures BEFORE the fatal ensure return (#67): with
+  // the embed → ensure order both can coexist (survivors embedded, then the
+  // ensure fails), and a fatal abort is the worst moment to drop the chunk
+  // diagnostics that explain why some items never made it into the batch.
+  if (outcome) {
+    for (const error of outcome.embedErrors) {
+      // The sentence names the route the module actually took: a chunked
+      // embedBatch request, or the per-item `embed` fallback.
+      console.error(deps.embedBatch
+        ? `pi-qdrant-memory: ingest batch skipped (embed failed): ${error}`
+        : `pi-qdrant-memory: ingest skipped (embed failed): ${error}`);
     }
   }
-  return { attempted: items.length, ingested };
+  if (report.error !== undefined) {
+    // The ensure is fatal by contract — previously it threw out of this
+    // function; the caller's sentence lives here now.
+    console.error(`pi-qdrant-memory: ingest failed (non-fatal): ${report.error}`);
+    return { attempted: items.length, ingested: 0 };
+  }
+  if (outcome) {
+    if (outcome.invalidateError !== undefined) {
+      console.error(`pi-qdrant-memory: supersede delete failed (non-fatal): ${outcome.invalidateError}`);
+    }
+    if (outcome.upsertError !== undefined) {
+      console.error(`pi-qdrant-memory: upsert failed: ${outcome.upsertError}`);
+    }
+  }
+  // `report.written` only counts points whose upsert succeeded, so a failed
+  // upsert yields 0 exactly as before.
+  return { attempted: items.length, ingested: report.written };
 }

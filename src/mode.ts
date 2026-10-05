@@ -33,6 +33,27 @@ export function resolveMode(cfg: Config, blackholePresent: boolean): "mode1" | "
   return blackholePresent ? "mode1" : "mode2";
 }
 
+/** One runtime-mode resolution: the mode plus the raw pi-blackhole presence it
+ *  was resolved from. Both facts come from the SAME detection, so a caller that
+ *  needs both (the #50 mode=own conflict check, the status header) can never
+ *  observe a half-updated pair — and never reads the blackhole config twice. */
+export interface RuntimeModeState {
+  mode: "mode1" | "mode2";
+  /** Whether pi-blackhole is operational in this agent dir. */
+  blackholePresent: boolean;
+}
+
+/** THE mode resolution for a config + agent dir: one `detectBlackhole` call,
+ *  then `resolveMode` over that single result. Every runtime/command call site
+ *  reads the mode through this. `resolveMode` stays exported as the pure core;
+ *  `detectBlackhole` for the one caller that needs only the flag
+ *  (`settings-write`'s mode=own warning) — but a mode read is never hand-paired
+ *  with a second detection. */
+export function runtimeModeState(cfg: Config, agentDir: string): RuntimeModeState {
+  const blackholePresent = detectBlackhole(agentDir);
+  return { mode: resolveMode(cfg, blackholePresent), blackholePresent };
+}
+
 /**
  * Expand a leading `~` the way the host does — `host`'s `expandTildePath` is
  * `normalizePath(path)` with default options, whose only path-shaping step for

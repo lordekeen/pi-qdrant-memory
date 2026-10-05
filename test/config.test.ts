@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DEFAULTS, configPath, loadConfig, readGlobalConfig, setConfigField, takeLoadWarnings, writeConfigFile as writeConfigFileSrc } from "../src/config.ts";
+import { CONFIG_FIELD_SPECS, DEFAULTS, SETTING_FIELDS, configPath, loadConfig, readGlobalConfig, setConfigField, takeLoadWarnings, writeConfigFile as writeConfigFileSrc } from "../src/config.ts";
 import { saveProjectSettings } from "../src/project-settings.ts";
 import type { Config } from "../src/types.ts";
 
@@ -137,6 +137,18 @@ test("codeKnowledge and codeScoreThreshold: defaults, env, and validation", () =
     assert.equal(forgetOn.ok, true);
     if (forgetOn.ok) assert.equal(forgetOn.next.memoryForget, "on");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── The one field table ──────────────────────────────────────────────────────
+
+test("the field table covers exactly the editable fields, with unique env vars", () => {
+  assert.deepEqual(Object.keys(CONFIG_FIELD_SPECS).sort(), [...SETTING_FIELDS].sort());
+  for (const [key, spec] of Object.entries(CONFIG_FIELD_SPECS)) {
+    assert.equal(spec.field, key, "each row is filed under its own Config key");
+    assert.match(spec.env, /^PI_QDRANT_/, "env var names share the one prefix");
+  }
+  const envs = Object.values(CONFIG_FIELD_SPECS).map((s) => s.env);
+  assert.equal(new Set(envs).size, envs.length, "no env var is claimed twice");
 });
 
 test("loadConfig is the historical alias of readGlobalConfig", () => {

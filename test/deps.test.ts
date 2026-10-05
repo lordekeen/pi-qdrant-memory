@@ -12,6 +12,7 @@ import type { QdrantLike } from "../src/qdrant.ts";
 
 const fakeQdrant: QdrantLike = {
   async ensureCollection() { return "exists"; },
+  async collectionDimension() { return undefined; },
   async upsert() {},
   async search() { return []; },
   async count() { return 0; },
@@ -20,6 +21,10 @@ const fakeQdrant: QdrantLike = {
   async codeIndexSnapshot() { return new Map(); },
   async countBySourceKind() { return 0; },
   async countCodeSymbols() { return 0; },
+  async deletePointsBySourceKind() {},
+  async deletePointsBySourceEntryIds() {},
+  async deletePointsByIds(_name, ids) { return ids.length; },
+  async existingPointIds() { return new Set<string>(); },
 };
 
 /** Injected fake clients: preserved across reloads (OI-002). */

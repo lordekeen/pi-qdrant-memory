@@ -226,8 +226,8 @@ commands
 ### command grammar (`/qdrant <key>`)
 
 One registered command; the first token after it is the key. `src/commands.ts`
-owns the grammar (`ARG_SHAPE`) and `src/out.ts` owns every string below; the
-dispatcher is the only place a key is routed.
+owns the grammar (`ARG_SHAPE`) and the command registry, `src/command-run.ts` is
+the only place a key is routed, and `src/out.ts` owns every string below.
 
 | Key | Shape | Behaviour |
 |---|---|---|

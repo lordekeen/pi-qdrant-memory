@@ -10,37 +10,31 @@
  * import — so the screen is testable with fakes and degrades to nothing at all
  * when the host bridge does not resolve.
  */
-import { SETTING_FIELDS, setConfigField } from "./config.ts";
+import { SETTING_FIELDS } from "./config.ts";
 import type { SettingField } from "./config.ts";
-import { isProjectOverridable, maskNote } from "./project-settings.ts";
-import type { ProjectOverridableField, ProjectSettings } from "./project-settings.ts";
-import { detectBlackhole } from "./mode.ts";
+import { maskNote } from "./project-settings.ts";
+import { applySettingWrite } from "./settings-write.ts";
 import {
-  codeMemoryReloadNotice,
   displayValue,
   errorEntry,
   isSecretSettingField,
   message,
-  modeOwnConflictNotice,
   resetOptionLabel,
   secretDisplayValue,
   settingsCancelledText,
-  settingsGlobalUpdatedText,
-  settingsOverrideClearedText,
   settingsScreenHintText,
-  settingsUpdatedText,
   valuePromptText,
 } from "./out.ts";
 import type { Config } from "./types.ts";
 import type { HandlerIO } from "./handlers.ts";
+import type { EntryComponent } from "./entry-render.ts";
 import type {
-  EntryComponent,
   HostSettingItem,
   InputCtor,
   SettingsHost,
   SettingsListCtor,
   SettingsListInstance,
-} from "./entry-render.ts";
+} from "./host-bridge.ts";
 
 /** Host-shaped `SettingItem` (pi-tui `settings-list.ts:7-24`) minus the
  * `submenu` factory: fields edited through the step-7 `ValuePrompt` submenu
@@ -229,14 +223,6 @@ export interface CustomFactoryArgs {
  *  uses, so the dispatch can pass the host's own `custom` and the tests a fake. */
 export type MountFn = (factory: (args: CustomFactoryArgs) => SettingsComponent) => Promise<unknown>;
 
-/** A one-key typed partial for the project store — mirrors `settingsHandler`
- *  in handlers.ts so both writers produce the same shape. */
-function projectOverride(cfg: Config, field: ProjectOverridableField): ProjectSettings {
-  return field === "codeKnowledge"
-    ? { codeKnowledge: cfg.codeKnowledge }
-    : { codeScoreThreshold: cfg.codeScoreThreshold };
-}
-
 function isSettingField(id: string): id is SettingField {
   return (SETTING_FIELDS as readonly string[]).includes(id);
 }
@@ -354,20 +340,6 @@ export async function openSettingsScreen(io: HandlerIO, host: SettingsHost, moun
     const onChange = (id: string, rawValue: string): void => {
       const previous = displayed.get(id) ?? "";
       const value = normalize(id, rawValue);
-      // A cleared secret is an empty string; the validator only accepts the
-      // literal `null` for the nullable keys (config.ts).
-      const writeValue = value === "" && isSecretSettingField(id) ? "null" : value;
-
-      // Reserved token: clear the project override (matched BEFORE validation,
-      // mirroring settingsHandler — clearing is idempotent by design).
-      if (isProjectOverridable(id) && writeValue === "default") {
-        const before = io.cfg.codeKnowledge;
-        io.clearProjectSetting(id);
-        io.emit(message(settingsOverrideClearedText(id, io.readGlobalConfig()[id], maskNote(id, io.env))));
-        if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
-        refresh(id);
-        return;
-      }
 
       if (!isSettingField(id)) {
         // Unreachable from the list (ids come from SETTING_FIELDS); guarded
@@ -377,29 +349,15 @@ export async function openSettingsScreen(io: HandlerIO, host: SettingsHost, moun
         return;
       }
 
-      // The ONE validator, shared with the CLI path — never re-implemented.
-      const applied = setConfigField(io.readGlobalConfig(), id, writeValue);
-      if (!applied.ok) {
-        io.emit(errorEntry(`error: ${applied.error}`));
+      // One write policy for every surface (settings-write.ts): validation,
+      // scope routing, emissions and the empty-secret → `null` normalisation.
+      // `io` is passed whole — a spread would freeze the live `cfg` getter.
+      if (!applySettingWrite(io, id, value).ok) {
         // MANDATORY: the host mutated `item.currentValue` before calling us, so
         // without this the list would display a value that was never persisted.
         rollback(id, previous);
         return;
       }
-
-      const before = io.cfg.codeKnowledge;
-      if (isProjectOverridable(id)) {
-        io.writeProjectSettings(projectOverride(applied.next, id));
-        io.emit(message(settingsUpdatedText(id, displayOf(id, applied.next), io.readGlobalConfig()[id], maskNote(id, io.env))));
-      } else {
-        // D10: persist the GLOBAL reader's copy, never the effective config.
-        io.writeGlobalConfig(applied.next);
-        io.emit(message(settingsGlobalUpdatedText(id)));
-        if (id === "mode" && applied.next.mode === "own" && detectBlackhole(io.agentDir)) {
-          io.emit(message(modeOwnConflictNotice()));
-        }
-      }
-      if (io.cfg.codeKnowledge !== before) io.emit(message(codeMemoryReloadNotice(io.cfg.codeKnowledge)));
       refresh(id);
     };
 

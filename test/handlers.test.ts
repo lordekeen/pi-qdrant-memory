@@ -11,9 +11,17 @@ import { outText } from "../src/out.ts";
 import type { OutEntry } from "../src/out.ts";
 import type { HandlerIO, SettingsUI } from "../src/handlers.ts";
 import type { ProjectOverridableField, ProjectSettings } from "../src/project-settings.ts";
-import { isConfigKnowledge } from "../src/config.ts";
+import {
+  clearProjectField,
+  loadProjectSettings,
+  readEffectiveConfig,
+  saveProjectSettings,
+} from "../src/project-settings.ts";
+import { readGlobalConfig, writeConfigFile } from "../src/config.ts";
 import { DimensionMismatchError, QdrantClient, QdrantError, type QdrantLike } from "../src/qdrant.ts";
 import { pointId } from "../src/ids.ts";
+import { createMemoryStore } from "./support/memory-store.ts";
+import type { MemoryStore, SeedPoint } from "./support/memory-store.ts";
 import type { Config } from "../src/types.ts";
 
 const cfg: Config = {
@@ -23,6 +31,10 @@ const cfg: Config = {
   codeKnowledge: "off", codeScoreThreshold: 0.4, memoryForget: "off",
 };
 
+/** A literal id in the shape projectIdFrom emits — the real project-store
+ *  writers refuse anything else (src/project-settings.ts). */
+const PROJECT_ID = "pi-mem-0123456789abcdef";
+
 type FakeIO = HandlerIO & {
   emitted: OutEntry[];
   printed: string[];
@@ -30,22 +42,63 @@ type FakeIO = HandlerIO & {
   projectWrites: ProjectSettings[];
   cleared: ProjectOverridableField[];
   applied: Config[];
-  qdrantClears: number;
-  codeKindDeletes: number;
-  deletedIds: string[];
-  /** Live model of the global file (mutate to seed a scenario). */
+  /** The Qdrant side: the shared stateful store, not a call recorder. Clear
+   *  and forget tests seed points and assert what the store still holds. */
+  store: MemoryStore;
+  /** Live view of the global config file (set a property to seed a scenario). */
   globalState: Config;
-  /** Live model of the project store (mutate to seed a scenario). */
+  /** Live view of the project store file (set a property to seed a scenario). */
   storeState: ProjectSettings;
   /** Live env model — set a key to exercise env masking. */
   envState: NodeJS.ProcessEnv;
 };
 
+/** Temp agent dirs are real; the process-exit hook cleans them up (node:test
+ *  runs each test file in its own child process). */
+const tempDirs: string[] = [];
+process.on("exit", () => {
+  for (const dir of tempDirs) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+});
+
+function handlerAgentDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "pi-qm-handlers-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
 /**
- * Stateful two-store model (AGENTS.md: a fake that models a store must model its
- * side effects, in order). Holds a separate global Config and project store,
- * records which writer each path used, and exposes the *effective* view through
- * the `cfg` getter — mirroring `readEffectiveConfig` (env → store → global).
+ * A live, mutable view over one JSON file the real reader/writer owns: reads
+ * reflect the file, and a property write is a read-modify-write through the
+ * real writer. That is what lets a test seed a scenario with
+ * `d.globalState.scoreThreshold = 0.2` while the file stays the source of truth.
+ */
+function fileBacked<T extends object>(read: () => T, write: (next: T) => void): T {
+  const snapshot = (): Record<string, unknown> => read() as unknown as Record<string, unknown>;
+  return new Proxy({} as T, {
+    get: (_target, key) => snapshot()[key as string],
+    set: (_target, key, value) => {
+      write({ ...snapshot(), [key as string]: value } as unknown as T);
+      return true;
+    },
+    has: (_target, key) => (key as string) in snapshot(),
+    ownKeys: () => Reflect.ownKeys(snapshot()),
+    getOwnPropertyDescriptor: (_target, key) => {
+      const desc = Reflect.getOwnPropertyDescriptor(snapshot(), key as string);
+      return desc ? { ...desc, configurable: true } : undefined;
+    },
+  });
+}
+
+/**
+ * Stateful two-store model backed by a REAL temp agent dir (AGENTS.md: a fake
+ * that models a store must model its side effects). The global file and the
+ * project store go through the production readers/writers — `readGlobalConfig`,
+ * `readEffectiveConfig`, `writeConfigFile`, `saveProjectSettings`,
+ * `clearProjectField` — so precedence is never re-implemented here. The
+ * recording arrays and the `globalState`/`storeState` live views stay for
+ * scenario seeding and assertions.
  */
 function io(over: Partial<HandlerIO> = {}): FakeIO {
   const emitted: OutEntry[] = [];
@@ -54,48 +107,39 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
   const projectWrites: ProjectSettings[] = [];
   const cleared: ProjectOverridableField[] = [];
   const applied: Config[] = [];
-  const globalState: Config = { ...cfg };
-  const storeState: ProjectSettings = {};
+  const agentDir = over.agentDir ?? handlerAgentDir();
+  const projectId = over.projectId ?? PROJECT_ID;
   const envState: NodeJS.ProcessEnv = {};
-  let qdrantClears = 0;
-  let codeKindDeletes = 0;
-  const deletedIds: string[] = [];
-  const effective = (): Config => {
-    const c: Config = { ...globalState };
-    if (!isConfigKnowledge(envState.PI_QDRANT_CODE_KNOWLEDGE) && storeState.codeKnowledge !== undefined) {
-      c.codeKnowledge = storeState.codeKnowledge;
-    }
-    const rawThreshold = envState.PI_QDRANT_CODE_SCORE_THRESHOLD;
-    const envPinsThreshold = rawThreshold !== undefined && Number.isFinite(Number(rawThreshold));
-    if (!envPinsThreshold && storeState.codeScoreThreshold !== undefined) {
-      c.codeScoreThreshold = storeState.codeScoreThreshold;
-    }
-    return c;
-  };
-  const qdrant: QdrantLike = {
-    async ensureCollection() { return "exists"; },
-    async upsert() {},
-    async search() { return []; },
-    async count() { return 3; },
-    async clearCollection() { qdrantClears++; },
-    async deletePointsByFiles() {},
-    async codeIndexSnapshot() { return new Map(); },
-    async countBySourceKind() { return 0; },
-    async countCodeSymbols() { return 0; },
-    async deletePointsBySourceKind() { codeKindDeletes++; },
-    async deletePointsByIds(_name, ids) { deletedIds.push(...ids); return ids.length; },
-  };
+  // Seed the global file with the same base config the previous in-memory
+  // model started from, so every scenario keeps its exact starting point.
+  writeConfigFile(agentDir, { ...cfg });
+  const effective = (): Config => readEffectiveConfig(agentDir, projectId, envState);
+  const recordApplied = (): void => { applied.push(effective()); };
+  const globalState = fileBacked<Config>(
+    () => readGlobalConfig(agentDir, {}),
+    (next) => writeConfigFile(agentDir, next),
+  );
+  const storeState = fileBacked<ProjectSettings>(
+    () => loadProjectSettings(agentDir, projectId),
+    (next) => saveProjectSettings(agentDir, projectId, next),
+  );
+  // Stateful Qdrant model (AGENTS.md testing conventions): an operation really
+  // adds/removes points, so a clear/forget test asserts the store's POST state
+  // (and its op timeline) instead of a call count. An unseeded store has no
+  // collection, which is exactly what the read paths observe as missing.
+  const store = createMemoryStore({ name: projectId });
+  const qdrant: QdrantLike = store;
   return {
     get cfg() { return effective(); },
     get env() { return envState; },
-    agentDir: "/tmp/agent", cwd: "/repo", projectId: "pi-mem-abc",
+    agentDir, cwd: "/repo", projectId,
     embed: async () => new Array(768).fill(0.1),
     qdrant,
-    readGlobalConfig: () => ({ ...globalState }),
-    writeGlobalConfig: (c) => { globalWrites.push(c); Object.assign(globalState, c); applied.push(effective()); },
-    readProjectSettings: () => ({ ...storeState }),
-    writeProjectSettings: (p) => { projectWrites.push(p); Object.assign(storeState, p); applied.push(effective()); },
-    clearProjectSetting: (f) => { cleared.push(f); delete storeState[f]; applied.push(effective()); },
+    readGlobalConfig: () => readGlobalConfig(agentDir, envState),
+    writeGlobalConfig: (c) => { globalWrites.push(c); writeConfigFile(agentDir, c); recordApplied(); },
+    readProjectSettings: () => loadProjectSettings(agentDir, projectId),
+    writeProjectSettings: (p) => { projectWrites.push(p); saveProjectSettings(agentDir, projectId, p); recordApplied(); },
+    clearProjectSetting: (f) => { cleared.push(f); clearProjectField(agentDir, projectId, f); recordApplied(); },
     emit: (e) => { emitted.push(e); printed.push(outText(e)); },
     emitted,
     printed,
@@ -103,9 +147,7 @@ function io(over: Partial<HandlerIO> = {}): FakeIO {
     projectWrites,
     cleared,
     applied,
-    get qdrantClears() { return qdrantClears; },
-    get codeKindDeletes() { return codeKindDeletes; },
-    deletedIds,
+    store,
     globalState,
     storeState,
     envState,
@@ -121,20 +163,26 @@ function blackholeAgentDir(): string {
   return dir;
 }
 
-/** Temp agent dir without any blackhole config. */
-function plainAgentDir(): string {
-  return mkdtempSync(join(tmpdir(), "pi-qm-nobh-"));
+/** A valid stored conversation memory for the in-memory store. */
+function memoryPoint(id: string, text = `memory ${id}`): SeedPoint {
+  return { id, payload: { type: "fact", text, project_id: PROJECT_ID, ts: 1, source_kind: "remember_tool" } };
+}
+
+/** A valid stored code-summary point for the in-memory store. */
+function codePoint(id: string): SeedPoint {
+  return { id, payload: { type: "code", text: `code ${id}`, project_id: PROJECT_ID, ts: 1, source_kind: "code_summary" } };
 }
 
 test("statusHandler prints mode and collection health", async () => {
   const d = io();
+  d.store.seed([memoryPoint("m1"), memoryPoint("m2"), memoryPoint("m3")]);
   await statusHandler(d);
   const all = d.printed.join("\n");
   assert.match(all, /mode2/i); // auto with no blackhole → mode2
   assert.match(all, /✓ reachable · 3 points/);
   // The entry heads with the footer-style header and shows the collection id
   // inline — nothing is hidden behind an expand gesture anymore.
-  assert.match(all, /🧠 Memory: mode2 \(pi-mem-abc\)/);
+  assert.ok(all.includes(`🧠 Memory: mode2 (${PROJECT_ID})`));
   assert.match(all, /qdrant url: http:\/\/localhost:6333/);
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "status");
@@ -159,53 +207,27 @@ test("settingsHandler persists field=value and prints confirmation", async () =>
   assert.match(d.printed.join("\n"), /scoreThreshold/);
 });
 
-test("settingsHandler warns when mode=own is written with pi-blackhole operational (#50)", async () => {
-  const agentDir = blackholeAgentDir();
-  const noBh = plainAgentDir();
-  try {
-    const d = io({ agentDir });
-    await settingsHandler(d, "mode", "own");
-    assert.equal(d.globalWrites.length, 1);
-    assert.equal(d.globalWrites[0].mode, "own");
-    assert.equal(d.printed.length, 2);
-    assert.match(d.printed[0]!, /settings: mode updated/);
-    assert.match(d.printed[1]!, /^warning: mode = own while pi-blackhole is installed/);
-
-    const clean = io({ agentDir: noBh });
-    await settingsHandler(clean, "mode", "own");
-    assert.equal(clean.printed.length, 1, "no warning when pi-blackhole is absent");
-  } finally {
-    rmSync(agentDir, { recursive: true, force: true });
-    rmSync(noBh, { recursive: true, force: true });
-  }
-});
-
-test("settingsHandler rejects invalid mode and non-positive numerics", async () => {
+test("settingsHandler delegates an allowlisted write to the project store", async () => {
   const d = io();
-  await settingsHandler(d, "mode", "bogus");
+  await settingsHandler(d, "codeKnowledge", "on");
+  assert.deepEqual(d.projectWrites, [{ codeKnowledge: "on" }]);
   assert.equal(d.globalWrites.length, 0);
-  assert.match(d.printed.join("\n"), /auto \| blackhole \| own/);
-  await settingsHandler(d, "expectedDimension", "0");
-  assert.equal(d.globalWrites.length, 0);
-  assert.match(d.printed.join("\n"), /positive/);
 });
 
 test("statusHandler distinguishes a missing collection from an unreachable server", async () => {
-  const qdrant404: QdrantLike = {
-    async ensureCollection() { return "created"; }, async upsert() {},
-    async search() { return []; },
-    async count() { throw new QdrantError("Qdrant request POST ... failed: HTTP 404", 404); },
-    async clearCollection() {},
-    async deletePointsByFiles() {},
-    async codeIndexSnapshot() { return new Map(); },
-    async countBySourceKind() { return 0; },
-    async countCodeSymbols() { return 0; },
-  };
-  const d = io({ qdrant: qdrant404 });
-  await statusHandler(d);
-  const all = d.printed.join("\n");
-  assert.doesNotMatch(all, /NOT reachable/);
-  assert.match(all, /does not exist yet/);
+  // An unseeded store has no collection: count() raises the same 404 a fresh
+  // project does, which must read as "does not exist yet" — never as a down
+  // server (`err`).
+  const missing = io();
+  await statusHandler(missing);
+  assert.doesNotMatch(missing.printed.join("\n"), /NOT reachable/);
+  assert.match(missing.printed.join("\n"), /does not exist yet/);
+
+  // Any other count failure is a down server, not an empty collection.
+  const down = io();
+  down.qdrant.count = async () => { throw new QdrantError("Qdrant request GET ... failed: HTTP 500", 500); };
+  await statusHandler(down);
+  assert.match(down.printed.join("\n"), /qdrant: ✗ NOT reachable/);
 });
 
 test("statusHandler warns when mode=own conflicts with an operational pi-blackhole (#50)", async () => {
@@ -221,6 +243,43 @@ test("statusHandler warns when mode=own conflicts with an operational pi-blackho
     await statusHandler(auto);
     assert.match(auto.printed.join("\n"), /🧠 Memory: mode1/);
     assert.doesNotMatch(auto.printed.join("\n"), /both extensions claim session_before_compact/);
+  } finally { rmSync(agentDir, { recursive: true, force: true }); }
+});
+
+test("statusHandler reads the pi-blackhole state once per invocation (#69)", async () => {
+  // `modeConflict` is the #50 check: mode `own` + an operational pi-blackhole.
+  // The blackhole config flips DURING the invocation — inside the embedding
+  // probe, after the mode was resolved but before the health block is built.
+  // Two detections would report mode2 and still warn about a state the mode
+  // snapshot never saw (or miss a state it did see); one detection reports the
+  // snapshot both facts were resolved from.
+  const appeared = io();
+  appeared.globalState.mode = "own";
+  const embed = appeared.embed;
+  appeared.embed = async (t: string) => {
+    mkdirSync(join(appeared.agentDir, "pi-blackhole"), { recursive: true });
+    writeFileSync(join(appeared.agentDir, "pi-blackhole", "pi-blackhole-config.json"), JSON.stringify({ enabled: true }));
+    return embed(t);
+  };
+  await statusHandler(appeared);
+  assert.match(appeared.printed.join("\n"), /🧠 Memory: mode2/); // explicit own → mode2
+  assert.doesNotMatch(appeared.printed.join("\n"), /mode: ! own while pi-blackhole is installed/,
+    "no conflict may appear from a detection the resolved mode did not come from");
+
+  // Mirrored flip: the file vanishing mid-invocation must not erase the
+  // conflict the resolved snapshot saw.
+  const agentDir = blackholeAgentDir();
+  try {
+    const vanished = io({ agentDir });
+    vanished.globalState.mode = "own";
+    const embed2 = vanished.embed;
+    vanished.embed = async (t: string) => {
+      rmSync(join(agentDir, "pi-blackhole"), { recursive: true, force: true });
+      return embed2(t);
+    };
+    await statusHandler(vanished);
+    assert.match(vanished.printed.join("\n"), /🧠 Memory: mode2/);
+    assert.match(vanished.printed.join("\n"), /mode: ! own while pi-blackhole is installed/);
   } finally { rmSync(agentDir, { recursive: true, force: true }); }
 });
 
@@ -356,7 +415,7 @@ test("searchHandler prints no-relevant-memory message on empty", async () => {
 test("clearHandler with 'all' refuses without a UI and deletes nothing", async () => {
   const d = io();
   await clearHandler(d, "all");
-  assert.equal(d.qdrantClears, 0);
+  assert.ok(!d.store.timeline.some((op) => op.op === "clear"), "the refusal must not clear");
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "error");
   assert.match(d.printed[0], /error: \/qdrant clear all requires interactive UI confirmation/);
@@ -364,6 +423,7 @@ test("clearHandler with 'all' refuses without a UI and deletes nothing", async (
 
 test("clearHandler with 'all' clears after a confirmed dialog", async () => {
   const d = io();
+  d.store.seed([memoryPoint("m1"), memoryPoint("m2"), memoryPoint("m3")]);
   let confirms = 0;
   let confirmTitle = "";
   let confirmMessage = "";
@@ -374,16 +434,19 @@ test("clearHandler with 'all' clears after a confirmed dialog", async () => {
   };
   await clearHandler(d, "all", ui);
   assert.equal(confirms, 1);
-  // The dialog names the project and the exact count (fake count is 3).
-  assert.equal(confirmTitle, "Reset pi-mem-abc and delete all 3 stored memories?");
+  // The dialog names the project and the exact stored count (3 seeded points).
+  assert.equal(confirmTitle, `Reset ${PROJECT_ID} and delete all 3 stored memories?`);
   assert.equal(confirmMessage, "Deletes every memory and code summary for this project from Qdrant. This cannot be undone.");
-  assert.equal(d.qdrantClears, 1);
-  assert.match(d.printed.join("\n"), /cleared: collection pi-mem-abc reset/);
+  // The store really lost the points — not merely a recorded call.
+  assert.ok(d.store.timeline.some((op) => op.op === "clear"), "the confirmed clear reached the store");
+  assert.equal(d.store.dimensionOf(), undefined);
+  assert.deepEqual(d.store.points(), []);
+  assert.ok(d.printed.join("\n").includes(`cleared: collection ${PROJECT_ID} reset`));
 });
 
 test("clearHandler with 'all' uses the singular title for one point", async () => {
   const d = io();
-  d.qdrant.count = async () => 1;
+  d.store.seed([memoryPoint("m1")]);
   let confirmTitle = "";
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -391,12 +454,14 @@ test("clearHandler with 'all' uses the singular title for one point", async () =
     async confirm(t) { confirmTitle = t; return true; },
   };
   await clearHandler(d, "all", ui);
-  assert.equal(confirmTitle, "Reset pi-mem-abc and delete all 1 stored memory?");
-  assert.equal(d.qdrantClears, 1);
+  assert.equal(confirmTitle, `Reset ${PROJECT_ID} and delete all 1 stored memory?`);
+  assert.ok(d.store.timeline.some((op) => op.op === "clear"));
+  assert.deepEqual(d.store.points(), []);
 });
 
 test("clearHandler with 'all' does not clear when the dialog is declined", async () => {
   const d = io();
+  d.store.seed([memoryPoint("m1"), memoryPoint("m2"), memoryPoint("m3")]);
   let confirms = 0;
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -405,13 +470,14 @@ test("clearHandler with 'all' does not clear when the dialog is declined", async
   };
   await clearHandler(d, "all", ui);
   assert.equal(confirms, 1);
-  assert.equal(d.qdrantClears, 0);
+  assert.ok(!d.store.timeline.some((op) => op.op === "clear"), "a declined dialog must not clear");
+  assert.equal(d.store.points().length, 3, "the stored points survive");
   assert.match(d.printed.join("\n"), /clear: unchanged \(cancelled\)/);
 });
 
 test("clearHandler with 'all' on an empty collection never opens a dialog", async () => {
   const d = io();
-  d.qdrant.count = async () => 0;
+  d.store.seed([]); // the collection exists but holds no points
   let confirms = 0;
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -420,13 +486,15 @@ test("clearHandler with 'all' on an empty collection never opens a dialog", asyn
   };
   await clearHandler(d, "all", ui);
   assert.equal(confirms, 0, "nothing to act on means no dialog");
-  assert.equal(d.qdrantClears, 0);
-  assert.match(d.printed.join("\n"), /clear: collection pi-mem-abc is already empty/);
+  assert.ok(!d.store.timeline.some((op) => op.op === "clear"));
+  assert.equal(d.store.dimensionOf(), 768, "the empty collection is left in place");
+  assert.ok(d.printed.join("\n").includes(`clear: collection ${PROJECT_ID} is already empty`));
 });
 
 test("clearHandler with 'all' treats a missing collection (count 404) as empty", async () => {
+  // Unseeded store → no collection → count() raises the same 404 a fresh
+  // project does; that must read as empty, never as a failed clear.
   const d = io();
-  d.qdrant.count = async () => { throw new QdrantError(`Qdrant request GET http://localhost:6333/collections/pi-mem-abc failed: HTTP 404`, 404); };
   let confirms = 0;
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -435,13 +503,13 @@ test("clearHandler with 'all' treats a missing collection (count 404) as empty",
   };
   await clearHandler(d, "all", ui);
   assert.equal(confirms, 0, "absent collection is empty — no dialog");
-  assert.equal(d.qdrantClears, 0);
-  assert.match(d.printed.join("\n"), /clear: collection pi-mem-abc is already empty/);
+  assert.ok(!d.store.timeline.some((op) => op.op === "clear"));
+  assert.ok(d.printed.join("\n").includes(`clear: collection ${PROJECT_ID} is already empty`));
 });
 
 test("clearHandler with 'all' reports a non-404 count failure without clearing or confirming", async () => {
   const d = io();
-  d.qdrant.count = async () => { throw new QdrantError(`Qdrant request GET http://localhost:6333/collections/pi-mem-abc failed: HTTP 500`, 500); };
+  d.qdrant.count = async () => { throw new QdrantError(`Qdrant request GET http://localhost:6333/collections/${PROJECT_ID} failed: HTTP 500`, 500); };
   let confirms = 0;
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -450,7 +518,7 @@ test("clearHandler with 'all' reports a non-404 count failure without clearing o
   };
   await clearHandler(d, "all", ui);
   assert.equal(confirms, 0);
-  assert.equal(d.qdrantClears, 0);
+  assert.ok(!d.store.timeline.some((op) => op.op === "clear"));
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "error");
   assert.match(d.printed[0], /error: clear failed: .*HTTP 500/);
@@ -459,33 +527,35 @@ test("clearHandler with 'all' reports a non-404 count failure without clearing o
 test("clearHandler without arguments prints usage guidance without clearing", async () => {
   const d = io();
   await clearHandler(d);
-  assert.equal(d.qdrantClears, 0);
+  assert.deepEqual(d.store.timeline, []);
   assert.match(d.printed.join("\n"), /clear: usage — \/qdrant clear all \| code/);
 });
 
 test("clearHandler with invalid modifier prints usage guidance without clearing", async () => {
   const d = io();
   await clearHandler(d, "nonsense");
-  assert.equal(d.qdrantClears, 0);
+  assert.deepEqual(d.store.timeline, []);
   assert.match(d.printed.join("\n"), /clear: usage — \/qdrant clear all \| code/);
 });
 
 test("clearHandler with 'code' when points exist deletes them and prints count", async () => {
-  let codeCount = 5;
   const d = io();
-  d.qdrant.countBySourceKind = async () => codeCount;
-  d.qdrant.deletePointsBySourceKind = async () => { codeCount = 0; };
+  d.store.seed(["c1", "c2", "c3", "c4", "c5"].map(codePoint));
   await clearHandler(d, "code");
-  assert.equal(d.qdrantClears, 0);
-  assert.equal(codeCount, 0);
+  assert.equal(await d.store.countBySourceKind(PROJECT_ID, "code_summary"), 0);
+  assert.deepEqual(d.store.points(), []);
+  assert.ok(d.store.timeline.some((op) =>
+    op.op === "delete" && op.by === "source_kind" && op.kind === "code_summary"),
+    "the code points were deleted by source kind");
+  assert.ok(!d.store.timeline.some((op) => op.op === "clear"), "clear code never wipes the collection");
   assert.match(d.printed.join("\n"), /cleared: 5 code memory points removed/);
 });
 
 test("clearHandler with 'code' when 0 points exist reports no points indexed", async () => {
   const d = io();
-  d.qdrant.countBySourceKind = async () => 0;
+  d.store.seed([memoryPoint("m1")]); // a memory exists, but no code point
   await clearHandler(d, "code");
-  assert.equal(d.qdrantClears, 0);
+  assert.deepEqual(d.store.timeline, [], "nothing is deleted when no code point exists");
   assert.match(d.printed.join("\n"), /clear: no code points indexed/);
 });
 
@@ -624,25 +694,6 @@ test("runSettingsForm mode field uses a nested select", async () => {
   assert.equal(d.globalWrites[0].mode, "own");
 });
 
-test("runSettingsForm warns when saving mode=own with pi-blackhole operational (#50)", async () => {
-  const agentDir = blackholeAgentDir();
-  try {
-    const d = io({ agentDir });
-    const ui: SettingsUI = {
-      async select(title, options) {
-        if (title.startsWith("Qdrant Memory")) return options.find((o) => o.startsWith("mode ="));
-        return "own";
-      },
-      async input() { throw new Error("mode must not open a text input"); },
-      async confirm() { return true; },
-    };
-    await runSettingsForm(ui, d);
-    assert.equal(d.globalWrites.length, 1);
-    assert.equal(d.globalWrites[0].mode, "own");
-    assert.match(d.printed.join("\n"), /warning: mode = own while pi-blackhole is installed/);
-  } finally { rmSync(agentDir, { recursive: true, force: true }); }
-});
-
 test("helpHandler prints the command list", async () => {
   const d = io();
   await helpHandler(d);
@@ -669,16 +720,8 @@ test("searchHandler emits a message entry when nothing matches", async () => {
 });
 
 test("searchHandler emits an error entry when the search fails", async () => {
-  const qdrantErr: QdrantLike = {
-    async ensureCollection() { return "exists"; }, async upsert() {},
-    async search() { throw new Error("connection refused"); },
-    async count() { return 0; }, async clearCollection() {},
-    async deletePointsByFiles() {},
-    async codeIndexSnapshot() { return new Map(); },
-    async countBySourceKind() { return 0; },
-    async countCodeSymbols() { return 0; },
-  };
-  const d = io({ qdrant: qdrantErr });
+  const d = io();
+  d.qdrant.search = async () => { throw new Error("connection refused"); };
   await searchHandler(d, "query");
   assert.equal(d.emitted[0].kind, "error");
   // Command voice: /qdrant search failures read "error: search failed: <reason>"
@@ -691,20 +734,10 @@ test("searchHandler emits an error entry when the search fails", async () => {
 });
 
 test("searchHandler emits an error entry on dimension mismatch (OI-001)", async () => {
-  const qdrantMismatch: QdrantLike = {
-    async ensureCollection(n, d) {
-      throw new DimensionMismatchError(n, 384, d);
-    },
-    async upsert() {},
-    async search() { return []; },
-    async count() { return 0; },
-    async clearCollection() {},
-    async deletePointsByFiles() {},
-    async codeIndexSnapshot() { return new Map(); },
-    async countBySourceKind() { return 0; },
-    async countCodeSymbols() { return 0; },
-  };
-  const d = io({ qdrant: qdrantMismatch });
+  const d = io();
+  // A collection from a previous embedding model: the read path's ensure
+  // policy surfaces the mismatch as an error instead of recreating.
+  d.qdrant.ensureCollection = async (name, dim) => { throw new DimensionMismatchError(name, 384, dim); };
   await searchHandler(d, "query");
   assert.equal(d.emitted[0].kind, "error");
   assert.match(d.printed.join("\n"), /error: search failed: .* dim 384 ≠ expectedDimension 768/);
@@ -786,46 +819,6 @@ test("settings usage message lists the code-memory fields", async () => {
   assert.match(all, /codeScoreThreshold/);
 });
 
-test("CLI codeKnowledge write lands in the project store and emits the reload notice", async () => {
-  const on = io();
-  await settingsHandler(on, "codeKnowledge", "on");
-  assert.deepEqual(on.projectWrites[0], { codeKnowledge: "on" });
-  assert.equal(on.globalWrites.length, 0);
-  let all = on.printed.join("\n");
-  assert.match(all, /codeKnowledge = on \(this project; global: off\)/);
-  assert.match(all, /takes effect at the next session start/);
-  assert.match(all, /code_memory tool registers on reload/);
-
-  // Effective is on before the write, so the off write flips it and the
-  // direction-aware (unregisters) notice fires.
-  const off = io();
-  off.globalState.codeKnowledge = "on";
-  await settingsHandler(off, "codeKnowledge", "off");
-  all = off.printed.join("\n");
-  assert.match(all, /unregisters on reload/);
-
-  const other = io();
-  await settingsHandler(other, "scoreThreshold", "0.2");
-  assert.doesNotMatch(other.printed.join("\n"), /next session start/);
-});
-
-test("form codeKnowledge write emits the reload notice", async () => {
-  const d = io();
-  let selects = 0;
-  const ui: SettingsUI = {
-    async select(_title, options) {
-      selects++;
-      return selects === 1
-        ? options.find((o) => o.startsWith("codeKnowledge ="))
-        : options.find((o) => o === "on");
-    },
-    async input() { throw new Error("not used"); },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(ui, d);
-  assert.match(d.printed.join("\n"), /takes effect at the next session start/);
-});
-
 test("statusHandler includes the code-memory row when the feature is wired", async () => {
   const d = io({ codeMemory: { state: "synced", files: 4, symbols: 21 } });
   await statusHandler(d);
@@ -881,125 +874,14 @@ test("help lists /qdrant index code only when codeKnowledge is on", async () => 
 
 // ── §7.3 mixed-scope routing ─────────────────────────────────────────────────
 
-test("allowlisted set writes only the project store", async () => {
-  const d = io();
-  await settingsHandler(d, "codeKnowledge", "on");
-  assert.deepEqual(d.projectWrites, [{ codeKnowledge: "on" }]);
-  assert.equal(d.globalWrites.length, 0);
-  assert.match(d.printed.join("\n"), /codeKnowledge = on \(this project; global: off\)/);
-});
-
-test("allowlisted numeric set records a JSON number and names both values", async () => {
-  const d = io();
-  await settingsHandler(d, "codeScoreThreshold", "0.6");
-  const w = d.projectWrites[0].codeScoreThreshold;
-  assert.equal(typeof w, "number");
-  assert.equal(w, 0.6);
-  assert.equal(d.globalWrites.length, 0);
-  const all = d.printed.join("\n");
-  assert.match(all, /codeScoreThreshold = 0\.6 \(this project; global: 0\.4\)/);
-  assert.doesNotMatch(all, /next session start/);
-});
-
-test("non-allowlisted writes go to the global file and leave the store untouched", async () => {
-  const d = io();
-  await settingsHandler(d, "mode", "blackhole");
-  await settingsHandler(d, "qdrantUrl", "http://x:6333");
-  await settingsHandler(d, "scoreThreshold", "0.2");
-  assert.equal(d.globalWrites.length, 3);
-  assert.equal(d.projectWrites.length, 0);
-  assert.equal(d.storeState.codeKnowledge, undefined);
-  const all = d.printed.join("\n");
-  assert.match(all, /mode updated \(global config; reloaded at runtime\)/);
-  assert.match(all, /qdrantUrl updated \(global config; reloaded at runtime\)/);
-});
-
-test("a global write keeps the GLOBAL codeKnowledge when the store overrides it (D10, both directions)", async () => {
-  const d = io();
-  d.globalState.codeKnowledge = "on";
-  d.storeState.codeKnowledge = "off";
-  await settingsHandler(d, "scoreThreshold", "0.2");
-  assert.equal(d.globalWrites.length, 1);
-  assert.equal(d.globalWrites[0].codeKnowledge, "on"); // global value materialized, never the override
-  assert.equal(d.applied.at(-1)!.codeKnowledge, "off"); // reload used the effective reader → override survives
-  assert.equal(d.storeState.codeKnowledge, "off");
-});
-
-test("`<key> default` clears an allowlisted override and confirms the global value", async () => {
-  const d = io();
-  d.storeState.codeKnowledge = "on"; // effective on; global off
-  await settingsHandler(d, "codeKnowledge", "default");
-  assert.deepEqual(d.cleared, ["codeKnowledge"]);
-  assert.equal(d.storeState.codeKnowledge, undefined);
-  assert.equal(d.projectWrites.length, 0);
-  const all = d.printed.join("\n");
-  assert.match(all, /settings: codeKnowledge override cleared \(now using global: off\)/);
-  assert.match(all, /unregisters on reload/);
-});
-
-test("a no-op clear still confirms but emits no reload notice", async () => {
-  const d = io(); // no override, effective off
-  await settingsHandler(d, "codeKnowledge", "default");
-  assert.match(d.printed.join("\n"), /override cleared \(now using global: off\)/);
-  assert.doesNotMatch(d.printed.join("\n"), /next session start/);
-});
-
-test("`codeScoreThreshold default` is consumed before the numeric parse", async () => {
-  const d = io();
-  d.storeState.codeScoreThreshold = 0.6;
-  await settingsHandler(d, "codeScoreThreshold", "default");
-  assert.deepEqual(d.cleared, ["codeScoreThreshold"]);
-  assert.match(d.printed.join("\n"), /codeScoreThreshold override cleared \(now using global: 0\.4\)/);
-  assert.doesNotMatch(d.printed.join("\n"), /expects a number/);
-});
-
-test("`default` stays an ordinary value for the nine non-allowlisted keys", async () => {
-  const d = io();
-  await settingsHandler(d, "embeddingApiKey", "default");
-  assert.equal(d.globalWrites.length, 1);
-  assert.equal(d.globalWrites[0].embeddingApiKey, "default");
-  assert.equal(d.projectWrites.length, 0);
-});
-
-test("an unknown key errors; an allowlist miss is a route, not a failure", async () => {
-  const d = io();
-  await settingsHandler(d, "zzz", "1");
-  assert.equal(d.printed.join("\n"), "error: settings: unknown key zzz");
-  assert.equal(d.globalWrites.length, 0);
-  assert.equal(d.projectWrites.length, 0);
-
-  const routed = io();
-  await settingsHandler(routed, "mode", "blackhole");
-  await settingsHandler(routed, "qdrantUrl", "http://x");
-  assert.doesNotMatch(routed.printed.join("\n"), /error:/);
-});
-
-test("invalid values keep the same errors and write nothing", async () => {
-  const d = io();
-  await settingsHandler(d, "codeKnowledge", "maybe");
-  assert.match(d.printed.join("\n"), /settings: codeKnowledge must be one of off \| on/);
-  assert.equal(d.projectWrites.length, 0);
-
-  const d2 = io();
-  await settingsHandler(d2, "codeScoreThreshold", "2.0");
-  assert.match(d2.printed.join("\n"), /codeScoreThreshold expects a number between 0 and 1/);
-  await settingsHandler(d2, "codeScoreThreshold", "abc");
-  assert.match(d2.printed.join("\n"), /codeScoreThreshold expects a number/);
-  assert.equal(d2.projectWrites.length, 0);
-});
-
-test("both allowlisted keys in the store: usage lists both; clearing one keeps the other", async () => {
+test("usage lists every allowlisted override in the store", async () => {
   const d = io();
   d.storeState.codeKnowledge = "on";
   d.storeState.codeScoreThreshold = 0.6;
   await settingsHandler(d);
-  let all = d.printed.join("\n");
+  const all = d.printed.join("\n");
   assert.match(all, /codeKnowledge = on \(this project; global: off\)/);
   assert.match(all, /codeScoreThreshold = 0\.6 \(this project; global: 0\.4\)/);
-
-  await settingsHandler(d, "codeKnowledge", "default");
-  assert.deepEqual(d.storeState, { codeScoreThreshold: 0.6 });
-  assert.match(d.printed.join("\n"), /codeKnowledge override cleared \(now using global: off\)/);
 });
 
 test("bare command (headless) prints the scope rule, both paths, and this project's rows", async () => {
@@ -1009,105 +891,12 @@ test("bare command (headless) prints the scope rule, both paths, and this projec
   assert.equal(d.emitted.length, 1);
   const all = d.printed.join("\n");
   assert.match(all, /codeKnowledge and codeScoreThreshold are per project/);
-  assert.match(all, /pi-qdrant-memory\/projects\/pi-mem-abc\.json/);
+  assert.ok(all.includes(`pi-qdrant-memory/projects/${PROJECT_ID}.json`));
   assert.match(all, /pi-qdrant-memory\/pi-qdrant-memory-config\.json/);
   assert.match(all, /codeKnowledge = off \(inherited from global\)/);
   assert.match(all, /codeScoreThreshold = 0\.6 \(this project; global: 0\.4\)/);
 });
 
-test("a masked project write (env pins the value) confirms but emits no notice and warns of mask", async () => {
-  const d = io();
-  d.envState.PI_QDRANT_CODE_KNOWLEDGE = "off";
-  await settingsHandler(d, "codeKnowledge", "on");
-  assert.deepEqual(d.projectWrites[0], { codeKnowledge: "on" });
-  assert.match(d.printed.join("\n"), /codeKnowledge = on \(this project; global: off\)/);
-  assert.match(d.printed.join("\n"), /NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=off/);
-  assert.doesNotMatch(d.printed.join("\n"), /next session start/);
-});
-
-test("clearing an allowlisted override when masked by env warns about mask", async () => {
-  const d = io();
-  d.envState.PI_QDRANT_CODE_KNOWLEDGE = "on";
-  d.storeState.codeKnowledge = "off";
-  await settingsHandler(d, "codeKnowledge", "default");
-  assert.match(
-    d.printed.join("\n"),
-    /settings: codeKnowledge override cleared \(now using global: off\) — NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on/,
-  );
-});
-
-test("form: allowlisted write and clear warn when masked by env", async () => {
-  const d = io();
-  d.envState.PI_QDRANT_CODE_SCORE_THRESHOLD = "0.7";
-  const ui: SettingsUI = {
-    async select(_title, options) {
-      return options.find((o) => o.startsWith("codeScoreThreshold ="));
-    },
-    async input() { return "0.5"; },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(ui, d);
-  assert.match(
-    d.printed.join("\n"),
-    /settings: codeScoreThreshold = 0\.5 \(this project; global: 0\.4\) — NOTE: currently masked by PI_QDRANT_CODE_SCORE_THRESHOLD=0\.7/,
-  );
-
-  const dClear = io();
-  dClear.envState.PI_QDRANT_CODE_KNOWLEDGE = "on";
-  dClear.storeState.codeKnowledge = "off";
-  let selects = 0;
-  const uiClear: SettingsUI = {
-    async select(_title, options) {
-      selects++;
-      if (selects === 1) return options.find((o) => o.startsWith("codeKnowledge ="));
-      return options.find((o) => o.startsWith("default"));
-    },
-    async input() { throw new Error("not used"); },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(uiClear, dClear);
-  assert.match(
-    dClear.printed.join("\n"),
-    /settings: codeKnowledge override cleared \(now using global: off\) — NOTE: currently masked by PI_QDRANT_CODE_KNOWLEDGE=on/,
-  );
-});
-
-
-test("form, project scope: an allowlisted write goes to the store and reloads", async () => {
-  const d = io();
-  d.globalState.codeKnowledge = "on"; // global on
-  d.storeState.codeKnowledge = "off"; // override off → effective off
-  let selects = 0;
-  const ui: SettingsUI = {
-    async select(_title, options) {
-      selects++;
-      if (selects === 1) return options.find((o) => o === "codeKnowledge = off (this project; global: on)");
-      return options.find((o) => o === "on");
-    },
-    async input() { throw new Error("not used"); },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(ui, d);
-  assert.deepEqual(d.projectWrites[0], { codeKnowledge: "on" });
-  assert.equal(d.globalWrites.length, 0);
-  assert.match(d.printed.join("\n"), /takes effect at the next session start/); // off → on
-});
-
-test("form, global scope: persists the GLOBAL reader even with an override displayed", async () => {
-  const d = io();
-  d.globalState.codeKnowledge = "on";
-  d.storeState.codeKnowledge = "off"; // effective off, but the label still names the layer
-  const ui: SettingsUI = {
-    async select(_title, options) { return options.find((o) => o.startsWith("qdrantUrl =")); },
-    async input() { return "http://x:6333"; },
-    async confirm() { return true; },
-  };
-  await runSettingsForm(ui, d);
-  assert.equal(d.globalWrites.length, 1);
-  assert.equal(d.globalWrites[0].codeKnowledge, "on"); // the global value, not the override
-  assert.equal(d.globalWrites[0].qdrantUrl, "http://x:6333");
-  assert.equal(d.projectWrites.length, 0);
-});
 
 test("form reset-to-inherited: the select default option clears the override", async () => {
   const d = io();
@@ -1200,12 +989,8 @@ test("forgetHandler emits message when no memories match query", async () => {
 });
 
 test("forgetHandler emits error when search fails", async () => {
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { throw new Error("qdrant down"); },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.qdrant.search = async () => { throw new Error("qdrant down"); };
   await forgetHandler(d, "test");
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "error");
@@ -1214,27 +999,21 @@ test("forgetHandler emits error when search fails", async () => {
 
 test("forgetHandler requires interactive UI when hits match", async () => {
   const hit = { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } };
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return [hit]; },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.store.seed([memoryPoint("pt-1")]);
+  d.qdrant.search = async () => [hit];
   await forgetHandler(d, "auth");
   assert.equal(d.emitted.length, 1);
   assert.equal(d.emitted[0].kind, "error");
   assert.match(d.printed[0], /error: \/qdrant forget requires interactive UI confirmation/);
+  assert.equal(d.store.points().length, 1, "no UI means nothing is deleted");
 });
 
 test("forgetHandler cancels when user declines confirmation", async () => {
   const hit = { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } };
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return [hit]; },
-      async deletePointsByIds(_n: string, ids: string[]) { d.deletedIds.push(...ids); return ids.length; },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.store.seed([memoryPoint("pt-1")]);
+  d.qdrant.search = async () => [hit];
   const ui: SettingsUI = {
     async select() { return undefined; },
     async input() { return undefined; },
@@ -1245,7 +1024,8 @@ test("forgetHandler cancels when user declines confirmation", async () => {
   assert.equal(d.emitted[0].kind, "search");
   assert.equal(d.emitted[1].kind, "message");
   assert.match(d.printed[1], /forget: unchanged \(cancelled\)/);
-  assert.equal(d.deletedIds.length, 0);
+  assert.ok(!d.store.timeline.some((op) => op.op === "delete"), "a declined confirm deletes nothing");
+  assert.equal(d.store.points().length, 1, "the matched point survives");
 });
 
 test("forgetHandler deletes points and emits confirmation when confirmed", async () => {
@@ -1253,13 +1033,9 @@ test("forgetHandler deletes points and emits confirmation when confirmed", async
     { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } },
     { id: "pt-2", score: 0.85, payload: { type: "decision" as const, text: "session tokens expire in 1h", project_id: "p", ts: 2, source_kind: "remember_tool" as const } },
   ];
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return hits; },
-      async deletePointsByIds(_n: string, ids: string[]) { d.deletedIds.push(...ids); return ids.length; },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.store.seed([memoryPoint("pt-1"), memoryPoint("pt-2")]);
+  d.qdrant.search = async () => hits;
   let confirmTitle = "";
   let confirmMessage = "";
   const ui: SettingsUI = {
@@ -1277,7 +1053,11 @@ test("forgetHandler deletes points and emits confirmation when confirmed", async
   assert.equal(d.emitted[0].kind, "search");
   assert.equal(d.emitted[1].kind, "message");
   assert.match(d.printed[1], /forgotten: 2 memories removed/);
-  assert.deepEqual(d.deletedIds, ["pt-1", "pt-2"]);
+  // The store really lost both points (and only those).
+  assert.deepEqual(d.store.points(), []);
+  assert.deepEqual(d.store.timeline.filter((op) => op.op === "delete"), [
+    { op: "delete", by: "ids", ids: ["pt-1", "pt-2"] },
+  ]);
 });
 
 test("forgetHandler caps at FORGET_MAX_HITS and says further matches are untouched (#48)", async () => {
@@ -1286,13 +1066,9 @@ test("forgetHandler caps at FORGET_MAX_HITS and says further matches are untouch
     score: 0.9 - i * 0.01,
     payload: { type: "fact" as const, text: `match ${String(i + 1)}`, project_id: "p", ts: i, source_kind: "remember_tool" as const },
   }));
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return hits; },
-      async deletePointsByIds(_n: string, ids: string[]) { d.deletedIds.push(...ids); return ids.length; },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.store.seed(hits.map((h) => memoryPoint(h.id)));
+  d.qdrant.search = async () => hits;
   let confirmMessage = "";
   const ui: SettingsUI = {
     async select() { return undefined; },
@@ -1308,7 +1084,11 @@ test("forgetHandler caps at FORGET_MAX_HITS and says further matches are untouch
   assert.match(confirmMessage, /5\. \[fact\] 0\.86 — "match 5"/);
   assert.doesNotMatch(confirmMessage, /match 6/);
   assert.match(confirmMessage, /Only these 5 closest matches are deleted; other matches above the threshold are left untouched\./);
-  assert.deepEqual(d.deletedIds, ["pt-1", "pt-2", "pt-3", "pt-4", "pt-5"]);
+  // Exactly the five confirmed points are gone; the sixth probe hit survives.
+  assert.deepEqual(d.store.points().map((p) => p.id), ["pt-6"]);
+  assert.deepEqual(d.store.timeline.filter((op) => op.op === "delete"), [
+    { op: "delete", by: "ids", ids: ["pt-1", "pt-2", "pt-3", "pt-4", "pt-5"] },
+  ]);
   assert.equal(d.printed.at(-1), "forgotten: 5 memories removed");
 });
 
@@ -1316,13 +1096,10 @@ test("forgetHandler emits error when deletePointsByIds throws", async () => {
   const hits = [
     { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } },
   ];
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return hits; },
-      async deletePointsByIds() { throw new Error("Qdrant write failed: timeout"); },
-    } as unknown as QdrantLike,
-  });
+  const d = io();
+  d.store.seed([memoryPoint("pt-1")]);
+  d.qdrant.search = async () => hits;
+  d.qdrant.deletePointsByIds = async () => { throw new Error("Qdrant write failed: timeout"); };
   const ui: SettingsUI = {
     async select() { return undefined; },
     async input() { return undefined; },
@@ -1333,41 +1110,18 @@ test("forgetHandler emits error when deletePointsByIds throws", async () => {
   assert.equal(d.emitted[0].kind, "search");
   assert.equal(d.emitted[1].kind, "error");
   assert.match(d.printed[1], /error: forget failed: Qdrant write failed: timeout/);
-});
-
-test("forgetHandler emits error when deletePointsByIds is absent", async () => {
-  const hits = [
-    { id: "pt-1", score: 0.9, payload: { type: "fact" as const, text: "auth uses JWT", project_id: "p", ts: 1, source_kind: "remember_tool" as const } },
-  ];
-  const d = io({
-    qdrant: {
-      async ensureCollection() { return "exists"; },
-      async search() { return hits; },
-      // deletePointsByIds omitted
-    } as unknown as QdrantLike,
-  });
-  const ui: SettingsUI = {
-    async select() { return undefined; },
-    async input() { return undefined; },
-    async confirm() { return true; },
-  };
-  await forgetHandler(d, "auth", ui);
-  assert.equal(d.emitted.length, 2);
-  assert.equal(d.emitted[0].kind, "search");
-  assert.equal(d.emitted[1].kind, "error");
-  assert.match(d.printed[1], /error: forget failed: client does not support point deletion by id/);
+  assert.equal(d.store.points().length, 1, "a failed delete leaves the point in place");
 });
 
 test("clearHandler resets codeMemory counters to 0 on clear code and clear all", async () => {
-  let codeCount = 5;
   const d = io({ codeMemory: { state: "synced", files: 2, symbols: 5 } });
-  d.qdrant.countBySourceKind = async () => codeCount;
-  d.qdrant.deletePointsBySourceKind = async () => { codeCount = 0; };
+  d.store.seed(["c1", "c2", "c3", "c4", "c5"].map(codePoint));
   await clearHandler(d, "code");
   assert.equal(d.codeMemory?.files, 0);
   assert.equal(d.codeMemory?.symbols, 0);
 
   const d2 = io({ codeMemory: { state: "synced", files: 4, symbols: 20 } });
+  d2.store.seed([memoryPoint("m1"), memoryPoint("m2"), memoryPoint("m3")]);
   const ui2: SettingsUI = {
     async select() { return undefined; },
     async input() { return undefined; },
@@ -1388,32 +1142,12 @@ test("clearHandler resets stale codeMemory counters on the empty-collection path
     async confirm() { return true; },
   };
   const d = io({ codeMemory: { state: "synced", files: 7, symbols: 33 } });
-  d.qdrant.count = async () => 0;
+  d.store.seed([]); // an existing but empty collection
   await clearHandler(d, "all", ui);
   assert.equal(d.codeMemory?.files, 0);
   assert.equal(d.codeMemory?.symbols, 0);
-  assert.match(d.printed.join("\n"), /clear: collection pi-mem-abc is already empty/);
-  assert.equal(d.qdrantClears, 0, "nothing to delete means nothing is deleted");
-});
-
-test("clearHandler resets the collectionReady cache on every successful clear path (#61)", async () => {
-  const ui: SettingsUI = {
-    async select() { return undefined; },
-    async input() { return undefined; },
-    async confirm() { return true; },
-  };
-  // Empty path: a stale "collection exists" memo must not survive.
-  const d = io({ collectionReady: new Set(["pi-mem-abc"]) });
-  d.qdrant.count = async () => 0;
-  await clearHandler(d, "all", ui);
-  assert.equal(d.collectionReady?.has("pi-mem-abc"), false);
-
-  // Confirmed path: the memo is dropped there too (existing #44 behaviour).
-  const d2 = io({ collectionReady: new Set(["pi-mem-abc"]), codeMemory: { state: "synced", files: 1, symbols: 2 } });
-  d2.qdrant.count = async () => 5;
-  await clearHandler(d2, "all", ui);
-  assert.equal(d2.collectionReady?.has("pi-mem-abc"), false);
-  assert.equal(d2.codeMemory?.files, 0);
+  assert.ok(d.printed.join("\n").includes(`clear: collection ${PROJECT_ID} is already empty`));
+  assert.deepEqual(d.store.timeline, [], "nothing to delete means nothing is deleted");
 });
 
 test("clearHandler leaves stale counters alone when the clear is refused or declined (#61)", async () => {
@@ -1429,19 +1163,12 @@ test("clearHandler leaves stale counters alone when the clear is refused or decl
     async confirm() { return false; },
   };
   const declined = io({ codeMemory: { state: "synced", files: 3, symbols: 9 } });
+  declined.store.seed([memoryPoint("m1"), memoryPoint("m2"), memoryPoint("m3")]);
   await clearHandler(declined, "all", declinedUi);
   assert.equal(declined.codeMemory?.files, 3);
   assert.equal(declined.codeMemory?.symbols, 9);
+  assert.equal(declined.store.points().length, 3, "a declined confirm leaves the store untouched");
 });
-
-test("clearHandler with 'code' emits error when deletePointsBySourceKind is absent", async () => {
-  const d = io();
-  d.qdrant.countBySourceKind = async () => 3;
-  delete (d.qdrant as { deletePointsBySourceKind?: unknown }).deletePointsBySourceKind;
-  await clearHandler(d, "code");
-  assert.match(d.printed.join("\n"), /error: clear failed: client does not support deletion by source kind/);
-});
-
 
 // ── #58: secrets and cancellation on the DIALOG form path ────────────────────
 //

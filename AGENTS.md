@@ -2,9 +2,10 @@
 
 Guidance for coding agents (and humans) making changes to this repository.
 Read [README.md](./README.md) for the product, [DESIGN.md](./DESIGN.md) for the
-extension's UI/interaction contract, and `docs/specs/` (design + implementation
-plan + plan review; **local-only and gitignored** — they are absent from a fresh
-clone) for the original intent and decision log.
+extension's UI/interaction contract, [GLOSSARY.md](./GLOSSARY.md) for the
+domain language, and `docs/adr/` for durable decisions. `docs/specs/` (design +
+implementation plan + plan review) is **local-only and gitignored** — absent
+from a fresh clone.
 
 ## What this is
 
@@ -62,31 +63,36 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
 
 | File | Role |
 | --- | --- |
-| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, the single `/qdrant` command, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, lazy pi-tui). |
-| `src/commands.ts` | The `/qdrant <key>` grammar, pure: `QdrantKey`, `ArgShape`/`ARG_SHAPE`, the `INDEX_KINDS` registry, `parseQdrantArgs`, `checkArgShape`, `splitKeyedArg`, `getQdrantCompletions`. No pi imports, no runtime. |
-| `src/handlers.ts` | Handlers for the `/qdrant <key>` cases (status/settings/remember/search/forget/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. |
+| `src/index.ts` | Entry (factory default export). `wireApi()` registers tools, the single `/qdrant` command, and mode-dependent lifecycle hooks over a structural `WireApi`; the real `factory` adapts the pi `ExtensionAPI` into that seam (commands → entries, `ctx.ui` capture, entry renderer, host bridge). The registered command is a thin per-invocation closure that resolves the LIVE UI (`commandUI`/`hostBridge`), the kind runners and the notice/status seams, then delegates all routing to `command-run.ts`. Re-exports `CommandUi`. |
+| `src/commands.ts` | The `/qdrant <key>` grammar **and the one command registry**, pure: `QdrantKey`, `ArgShape`/`ARG_SHAPE`, the `INDEX_KINDS` registry, `COMMAND_ROWS` (help text + completion summaries, keyed by `QdrantKey` so a missing/dead row is a build error), `parseQdrantArgs`, `checkArgShape`, `splitKeyedArg`, `getQdrantCompletions`. No pi imports, no runtime. |
+| `src/command-run.ts` | The `/qdrant <key>` dispatcher: `runQdrantCommand(args, CommandDeps)` owns the grammar gate (bare form, unknown key, every `checkArgShape` error row), the one-shot migration-notice call past the gate, every key's routing, the settings form/screen/usage decision (tui vs rpc vs usage) and the index gate + result rows. `CommandDeps` carries the handler IO, the LIVE invocation `CommandUi` (re-exported by `index.ts`), the optional host bridge, the kind runners and the notice/footer seams — no pi surface, fully unit-tested with fakes. |
+| `src/handlers.ts` | Handlers for the `/qdrant <key>` cases (status/settings/remember/search/forget/clear/help) + `runSettingsForm` (interactive `ctx.ui` flow). All IO via `HandlerIO` (live getters over the runtime); output is `emit(e)` — one structured `OutEntry` per command. Settings writes delegate to `settings-write.ts`. No collection-readiness cache here (or anywhere in the runtime): the adapter owns readiness. |
+| `src/settings-write.ts` | The one settings-write policy shared by the CLI, the RPC form and the TUI settings screen: the reserved `default` clear (matched before validation, idempotent), `setConfigField` validation, allowlist → project store vs global file routing (D10: global writes persist through the GLOBAL reader), empty-secret → `null`, and every settings emission (confirmations, error, pi-blackhole conflict, `codeKnowledge` reload notice). Synchronous; call sites keep interaction only. |
 | `src/out.ts` | Typed entry-output model: `OutEntry` builders, `renderOut` (single source of content + style roles), `outText` (plain projection). Pure — no pi imports, fully unit-tested. |
-| `src/config.ts` | `DEFAULTS`, `readGlobalConfig` (the global layer: defaults → file → env; `loadConfig` is its historical alias), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form), `SETTING_FIELDS` (the one editable-key list, read by the form and the `/qdrant settings` grammar). Knows nothing about projects. |
-| `src/project-settings.ts` | Per-project override store (allowlisted keys only): `PROJECT_OVERRIDABLE_FIELDS`, `loadProjectSettings` / `saveProjectSettings` / `clearProjectField`, and `readEffectiveConfig` (env → project → global → `DEFAULTS`). Lives here, not `config.ts`, to keep imports one-directional (`config.ts` ← `project-settings.ts`, no ESM cycle). |
-| `src/mode.ts` | Runtime mode resolution: `detectBlackhole`, `resolveMode` (mode1 = blackhole present; mode2 = own capture), `agentDirFromEnv`. |
+| `src/config.ts` | `DEFAULTS`, the one config field table `CONFIG_FIELD_SPECS` (every `Config` key → its env var, env usability/parse rule, CLI validation rule and project-override flag), `readGlobalConfig` (the global layer: defaults → file → env, rules read from the table; `loadConfig` is its historical alias), `writeConfigFile`, `isConfigMode`, `setConfigField` (shared validation, CLI + form — per-field rules from the table), `SETTING_FIELDS` (the one editable-key list, read by the form and the `/qdrant settings` grammar). Knows nothing about projects. |
+| `src/project-settings.ts` | Per-project override store (allowlisted keys only): `PROJECT_OVERRIDABLE_FIELDS`/`ProjectOverridableField` derived from the table's override flag, `loadProjectSettings` / `saveProjectSettings` / `clearProjectField`, `readEffectiveConfig` (env → project → global → `DEFAULTS`; the project layer fills the gap only where the env layer has no usable value, per the field's table row) and `envMask` (the same usability rule). Lives here, not `config.ts`, to keep imports one-directional (`config.ts` ← `project-settings.ts`, no ESM cycle). |
+| `src/mode.ts` | Runtime mode resolution: `detectBlackhole`, `resolveMode` (pure; mode1 = blackhole present; mode2 = own capture), `runtimeModeState(cfg, agentDir)` (one detection: the mode + the raw presence flag in one paired result every runtime/command call site reads), `agentDirFromEnv`. |
 | `src/project.ts` | `projectIdFrom` — hashes the nearest git root realpath → `pi-mem-<16hex>`. |
-| `src/qdrant.ts` | `QdrantClient` (REST) + `QdrantLike` interface (test seam). |
+| `src/qdrant.ts` | `QdrantClient` (REST) + `QdrantLike` — the **total** store seam (every capability required; a store missing one is a compile error, not a runtime branch). The adapter is the one owner of collection readiness: `ensureCollection` memoizes verified collections in `ensured`, and `clearCollection` invalidates the memo. |
 | `src/embeddings.ts` | `EmbeddingClient` — OpenAI-compatible `/embeddings`, dimension checks. |
 | `src/ids.ts` | `normalizeText`, `contentHash`, `pointId` (deterministic ids). |
+| `src/writes.ts` | `applyWrites` — the one owner of the write protocol (embed → ensure → invalidate → upsert), per-call dimension policy (`recreate` for interactive, `error` for background), invalidation strategies (none / files / source-entry-ids), the shared write chunk cap (`WRITE_CHUNK_SIZE`), and the failure report. Never throws and never logs: callers map its report to their own results and `console.error` sentences. |
 | `src/blackhole.ts` | Read pi-blackhole pending artifacts (Mode 1) — `parseOmEntry`, `readPendingArtifacts`. |
-| `src/ingest.ts` | `ingestItems` batch upsert + `artifactToIngestItem`. |
-| `src/tools-core.ts` | `rememberLogic`, `memorySearchLogic`, `forgetLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
+| `src/ingest.ts` | `ingestItems` — existing-point skip → read-only dimension pre-flight (#72) → one `applyWrites` batch with source-entry supersede; `artifactToIngestItem`. |
+| `src/tools-core.ts` | `rememberLogic` (existing-point skip → `applyWrites` with the interactive `recreate` policy), `memorySearchLogic`, `forgetLogic` — shared by tools and commands; take `ToolDeps` (no output channel). Code queries (`type: "code"`) search at `codeScoreThreshold`. |
 | `src/capture.ts` | Mode 2: `captureAtCompaction` (compaction summary → session_summary point). |
 | `src/codescan.ts` | Standalone structural code extractor (opt-in, zero-dep): repo walk + per-language line matchers → deterministic per-symbol/per-file summaries. |
-| `src/code-sync.ts` | `syncCodeKnowledge` — scan → Qdrant snapshot (file_path→file_sha) → per-file diff → per whole-file batch: embed → delete-by-file_path → upsert. Batches are built from whole files so each file is replaced atomically and a failed embed never deletes. Never throws; Qdrant is the cache. |
+| `src/code-sync.ts` | `planSync` (pure scan×snapshot diff + whole-file batching) and `syncCodeKnowledge` — ensure → scan → snapshot → plan → `applyWrites` → extras delete → totals. A file is never split across batches and a failed embed never deletes. Never throws; Qdrant is the cache. `SYNC_BATCH_SIZE` is re-exported from `writes.ts`. |
 | `src/render.ts` | Tool-path text blocks (`renderHits` + `sourcePointer`), LLM-facing — deliberately outside the entry UI. |
-| `src/entry-render.ts` | Lazy pi-tui renderer: maps an `OutEntry` (via `renderOut` roles) to one multi-line `Text` + `keyHint` (only collapsed search summaries expand). No Box/card machinery — status renders unboxed like every entry. `RendererOptions.TextCtor` is the unit-test seam. |
-| `src/deps.ts` | `makeRuntime` (resolves the project first, then the effective config; assembles cfg + clients + handlers IO), `applyConfig` (hot reload after settings writes), `writeGlobalConfigAndReload` (D10: persist the global file through `readGlobalConfig`, then re-apply the effective reader). |
-| `src/types.ts` | Shared types: `Config`, `MemoryType`, `SourceKind`, `PointPayload`, `SearchHit`, `RuntimeDeps`, `ToolDeps`. |
+| `src/entry-render.ts` | Renderer: maps an `OutEntry`'s roles (via `renderOut`) → one multi-line `Text` + `keyHint` (only collapsed search summaries expand). No Box/card machinery — status renders unboxed like every entry. `RendererOptions.TextCtor` is the unit-test seam. |
+| `src/host-bridge.ts` | Host bridge: the host-shaped component types (`SettingsHost`, `SettingsList`/`Input`/`DynamicBorder` ctors, item/theme shapes) plus the guarded lazy imports of pi-tui / pi-coding-agent behind `loadHostModules()`/`hostModules()` — members stay `undefined` until they resolve (plain-node safe). |
+| `src/deps.ts` | `makeRuntime` (resolves the project first, then the effective config; assembles cfg + clients + handlers IO through the shared `buildClients` path), `applyConfig` (hot reload after settings writes; same client path), `writeGlobalConfigAndReload` (D10: persist the global file through `readGlobalConfig`, then re-apply the effective reader). Threads no collection-readiness cache — readiness lives on the qdrant adapter (`ensured`). |
+| `src/types.ts` | Shared types: `Config`, `MemoryType`, `SourceKind`, `PointPayload`, `SearchHit`, `RuntimeDeps`, `ToolDeps`. Neither deps type carries a collection-readiness cache: readiness is owned by the `QdrantLike` adapter. |
 | `src/pi-tui.d.ts` | Ambient types for the lazy `@earendil-works/pi-tui` import. |
 | `src/pi-coding-agent.d.ts` | Ambient types for the lazy `@earendil-works/pi-coding-agent` import (`keyHint`). |
 | `test/*.test.ts` | One test file per module, `node:test` + `node:assert/strict`. `integration.smoke.test.ts` is opt-in. |
-| `docs/specs/` | Original design doc, implementation plan, plan review. |
+| `docs/adr/` | Durable decisions with non-obvious trade-offs (tracked). Read before re-litigating an architecture choice. |
+| `docs/specs/` | Original design doc, implementation plan, plan review — local-only and gitignored. |
 
 ## Wiring pattern (when you add a feature)
 
@@ -98,16 +104,26 @@ when you change ingest/search/embedding/code-sync paths and have both servers up
   conditionally and are session-fixed exactly like lifecycle hooks — a mid-session
   settings flip takes effect on reload, and the settings output says so.
 - **Adding a command**: add a key to `QdrantKey` + `ARG_SHAPE` and a case in
-  `runQdrantCommand` (`src/index.ts`) — never a new registered command name —
-  implement the handler in `handlers.ts`, emit one structured entry through
-  `io.emit(...)` (builders + role rules live in `src/out.ts`; DESIGN.md owns the
-  strings), add a `COMMAND_ROWS` row, and cover it in `test/commands.test.ts`,
-  `test/handlers.test.ts` and `test/index.test.ts`. Completion and usage text
-  derive from the table, so they update for free.
-- **Changing config**: update `Config` in `types.ts`, `DEFAULTS`+`readGlobalConfig`
-  precedence and `SETTING_FIELDS` in `config.ts` so the form covers it. Validation goes in `setConfigField` — CLI and form share it. Adding
-  an **overridable** field is a `PROJECT_OVERRIDABLE_FIELDS` entry in
-  `project-settings.ts` plus the `Config`/`DEFAULTS`/`SETTING_FIELDS` updates, and
+  `runQdrantCommand` (`src/command-run.ts`) — never a new registered command
+  name — implement the handler in `handlers.ts`, emit one structured entry
+  through `io.emit(...)` (builders + role rules live in `src/out.ts`; DESIGN.md
+  owns the strings), add a `COMMAND_ROWS` entry in `src/commands.ts`, and cover
+  it in `test/commands.test.ts`, `test/handlers.test.ts` and
+  `test/command-run.test.ts`. Completion and usage text derive from the table,
+  so they update for free. Dispatch needs a runtime touchpoint? Add it to
+  `CommandDeps` and wire it in `wireApi`'s thin closure — never reach for
+  `rt`/`api` inside `command-run.ts`.
+- **Changing config**: update `Config` in `types.ts`, add the key's row to
+  `CONFIG_FIELD_SPECS` in `config.ts` (env var, env/file usability + validation
+  rules) and `DEFAULTS`/`SETTING_FIELDS` in `config.ts` so the form covers it;
+  `readGlobalConfig` and `setConfigField` read the new rules from the table.
+  Validation stays in the row's `validate` — CLI and form share it, and every write
+  runs through `applySettingWrite` (`src/settings-write.ts`), which owns the
+  reserved `default` clear, scope routing, the empty-secret → `null` rule and
+  all emissions; the CLI, RPC form and TUI screen contribute interaction only. Adding
+  an **overridable** field is marking its table row `overridable(...)` (the
+  allowlist and its key type derive from that flag) plus the
+  `Config`/`DEFAULTS`/`SETTING_FIELDS` updates, and
   `/qdrant settings` routes it to the project layer (add project-store +
   precedence tests). A **non-allowlisted** field routes to the global file and its
   write path keeps using `readGlobalConfig` (D10: persist with the reader of the
@@ -153,6 +169,11 @@ OpenAI-compatible embeddings endpoint (defaults `:8080/v1`, `nomic-embed-text`,
   delete-after-upsert wipe was invisible to a fully green suite. Make store fakes
   actually add/remove, and where ordering matters assert an operation timeline
   (e.g. a file's delete must precede its upsert) rather than just call shape.
+  Write-path tests share the stateful adapter in `test/support/memory-store.ts`
+  (`createMemoryStore`) instead of hand-rolling a `QdrantLike` fake.
+- **`QdrantLike` is total.** Every fake must implement every capability — there
+  is no optional method to feature-detect, so a store that lacks one fails the
+  build instead of taking a runtime branch.
 
 ## Definition of done
 

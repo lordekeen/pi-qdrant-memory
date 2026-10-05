@@ -352,11 +352,6 @@ export function clearNoCodeText(): string {
   return "clear: no code points indexed";
 }
 
-/** `/qdrant clear code` refused: the client cannot delete by source kind. */
-export function clearCodeUnsupportedText(): string {
-  return "error: clear failed: client does not support deletion by source kind";
-}
-
 /** `/qdrant clear code` success: the removed point count, singularised. */
 export function clearedCodeText(count: number): string {
   return `cleared: ${count} code memory point${count === 1 ? "" : "s"} removed`;
@@ -386,11 +381,6 @@ export function forgetRequiresUiText(): string {
 /** `/qdrant forget` declined — mirrors the clear cancellation wording. */
 export function forgetCancelledText(): string {
   return "forget: unchanged (cancelled)";
-}
-
-/** `/qdrant forget` refused: the client cannot delete points by id. */
-export function forgetUnsupportedText(): string {
-  return "error: forget failed: client does not support point deletion by id";
 }
 
 /** `/qdrant forget` success: the removed memory count. */

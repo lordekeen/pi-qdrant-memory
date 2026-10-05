@@ -1,7 +1,8 @@
 /**
  * The `/qdrant <key>` grammar — the single table the dispatcher, the argument
- * completion and the usage text all read, so a new key or a new enum value
- * cannot be added to one of them and forgotten in the others.
+ * completion and the usage text all read — plus the command registry the help
+ * rows and the completion summaries share, so a new key cannot be added to one
+ * surface and forgotten in another.
  *
  * Pure module: no pi imports, no network, no fs side effects. Data + parsing
  * only. `runCodeSync` closes over the runtime, so it lives in `wireApi`; the
@@ -86,17 +87,75 @@ export function isEnumKey(key: QdrantKey): key is EnumKey {
   return ARG_SHAPE[key].kind === "enum";
 }
 
-/** One-line summaries shown as argument-completion descriptions. */
-export const KEY_SUMMARY: Record<QdrantKey, string> = {
-  status: "connection health, active mode, collection status",
-  settings: "open the settings screen, or set a field: <key> <value>",
-  remember: "save durable knowledge now: <text>",
-  search: "semantic search of durable knowledge: <query>",
-  forget: "search and remove memories interactively: <query>",
-  clear: "reset the collection (all) or purge code summaries (code)",
-  help: "list the commands",
-  index: "re-index now: code",
-};
+/** One `/qdrant <key>` row of the command registry: the help entry's command +
+ *  description and the argument-completion summary live with the key, so the
+ *  two surfaces read one table and cannot drift. */
+export interface CommandRow {
+  /** The documented invocation, as printed by `/qdrant help`. */
+  cmd: string;
+  /** Help-entry description (`/qdrant help`). */
+  desc: string;
+  /** One-line summary shown as the argument-completion description. */
+  summary: string;
+  /** Help-visibility gate: the row renders only while this config flag is on. */
+  gated?: "codeKnowledge";
+}
+
+/**
+ * The one command registry. Declaration order IS the presentation order — the
+ * help rows (handlers.ts `helpHandler`) and the completion menu both read this
+ * table, so the most common key comes first (same order as `ARG_SHAPE`).
+ *
+ * Declared `as const satisfies Record<QdrantKey, CommandRow>`: a key added to
+ * `ARG_SHAPE` without a row, and a row for a key that does not exist, are both
+ * build errors.
+ */
+const COMMAND_ROWS_DEF = {
+  status: {
+    cmd: "/qdrant status",
+    desc: "connection health + active mode + collection status",
+    summary: "connection health, active mode, collection status",
+  },
+  settings: {
+    cmd: "/qdrant settings [key] [value]",
+    desc: "open the settings screen, or persist a config field — codeKnowledge/codeScoreThreshold apply to this project, other keys are global",
+    summary: "open the settings screen, or set a field: <key> <value>",
+  },
+  remember: {
+    cmd: "/qdrant remember <text>",
+    desc: "save durable knowledge now",
+    summary: "save durable knowledge now: <text>",
+  },
+  search: {
+    cmd: "/qdrant search <query>",
+    desc: "semantic search of durable knowledge",
+    summary: "semantic search of durable knowledge: <query>",
+  },
+  forget: {
+    cmd: "/qdrant forget <query>",
+    desc: "search and remove memories interactively",
+    summary: "search and remove memories interactively: <query>",
+  },
+  clear: {
+    cmd: "/qdrant clear all | code",
+    desc: "reset entire collection (all) or purge code summaries (code)",
+    summary: "reset the collection (all) or purge code summaries (code)",
+  },
+  index: {
+    cmd: "/qdrant index code",
+    desc: "re-index code summaries now",
+    summary: "re-index now: code",
+    gated: "codeKnowledge",
+  },
+  help: {
+    cmd: "/qdrant help",
+    desc: "this list",
+    summary: "list the commands",
+  },
+} as const satisfies Record<QdrantKey, CommandRow>;
+
+/** The registry, in declaration order; the help block reads its values. */
+export const COMMAND_ROWS: Readonly<Record<QdrantKey, CommandRow>> = COMMAND_ROWS_DEF;
 
 export function isQdrantKey(token: string): token is QdrantKey {
   return Object.hasOwn(ARG_SHAPE, token);
@@ -224,7 +283,7 @@ export function getQdrantCompletions(prefix: string): QdrantCompletion[] | null 
     const partial = typed.toLowerCase();
     return (Object.keys(ARG_SHAPE) as QdrantKey[])
       .filter((k) => k.startsWith(partial))
-      .map((k) => ({ value: k, label: k, description: KEY_SUMMARY[k] }));
+      .map((k) => ({ value: k, label: k, description: COMMAND_ROWS[k].summary }));
   }
   const head = typed.slice(0, gap);
   if (!isQdrantKey(head)) return [];

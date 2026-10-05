@@ -1,8 +1,7 @@
 import { makeRuntime, writeGlobalConfigAndReload } from "./deps.ts";
 import type { MakeRuntimeIO } from "./deps.ts";
 import { readGlobalConfig, takeLoadWarnings, writeConfigFile } from "./config.ts";
-import { agentDirFromEnv, detectBlackhole, loadHostAgentDir } from "./mode.ts";
-import { resolveMode } from "./mode.ts";
+import { agentDirFromEnv, loadHostAgentDir, runtimeModeState } from "./mode.ts";
 import { markCommandFormatNoticeShown, readState } from "./state.ts";
 import { rememberLogic, memorySearchLogic, forgetLogic } from "./tools-core.ts";
 import { renderHits } from "./render.ts";
@@ -12,83 +11,32 @@ import { captureAtCompaction } from "./capture.ts";
 import { projectIdFrom, findGitRoot } from "./project.ts";
 import { syncCodeKnowledge } from "./code-sync.ts";
 import type { SyncResult } from "./code-sync.ts";
-import { statusHandler, settingsHandler, rememberHandler, searchHandler, forgetHandler, clearHandler, helpHandler, depsToIO } from "./handlers.ts";
+import { depsToIO } from "./handlers.ts";
 import type { HandlerIO, SettingsUI } from "./handlers.ts";
-import { runSettingsForm } from "./handlers.ts";
+import { getQdrantCompletions } from "./commands.ts";
+import type { IndexKind } from "./commands.ts";
+import { runQdrantCommand } from "./command-run.ts";
+import type { CommandUi } from "./command-run.ts";
 import {
-  INDEX_KINDS,
-  USAGE_KEYS,
-  canonicalEnumArg,
-  canonicalIndexKind,
-  checkArgShape,
-  getQdrantCompletions,
-  isEnumKey,
-  parseQdrantArgs,
-  splitKeyedArg,
-} from "./commands.ts";
-import type { EnumKey, IndexKind, QdrantKey } from "./commands.ts";
-import {
-  clearUsageText,
   commandFormatNoticeEntry,
-  commandUsageText,
   errorEntry,
-  indexUsageText,
   loadWarningText,
   memoryHeaderText,
   message,
-  noArgumentText,
-  unexpectedArgumentText,
-  unknownKeyText,
-  unknownValueText,
-  codeMemoryDisabledText,
-  codeMemorySyncFailedText,
-  codeMemorySyncMessage,
 } from "./out.ts";
 import type { CodeMemoryHealth } from "./out.ts";
 import { QdrantError } from "./qdrant.ts";
-import { loadHostModules, hostModules, renderEntryComponent } from "./entry-render.ts";
-import type { RendererOptions, RendererTheme, SettingsHost } from "./entry-render.ts";
-import { openSettingsScreen } from "./settings-ui.ts";
+import { loadHostModules, hostModules } from "./host-bridge.ts";
+import { renderEntryComponent } from "./entry-render.ts";
+import type { RendererOptions, RendererTheme } from "./entry-render.ts";
+import type { SettingsHost } from "./host-bridge.ts";
 import type { CustomFactoryArgs, MountFn, SettingsComponent } from "./settings-ui.ts";
 import type { MemoryType, RuntimeDeps } from "./types.ts";
 
-/**
- * The settings screen's host requirements, checked against the resolved bridge.
- *
- * Returns undefined when the bridge is missing ANY of the three symbols the
- * screen cannot run without, which is what makes graceful degradation a hard
- * rule rather than a hope: the dispatch then falls back to the dialog form or
- * the usage entry instead of mounting a half-built screen.
- */
-function settingsHost(bridge: Partial<SettingsHost> | undefined): SettingsHost | undefined {
-  if (!bridge?.SettingsList || !bridge.Input || !bridge.getSettingsListTheme) return undefined;
-  return {
-    SettingsList: bridge.SettingsList,
-    Input: bridge.Input,
-    getSettingsListTheme: bridge.getSettingsListTheme,
-    ...(bridge.DynamicBorder ? { DynamicBorder: bridge.DynamicBorder } : {}),
-    ...(bridge.keyText ? { keyText: bridge.keyText } : {}),
-  };
-}
-
-/**
- * The live UI view of ONE command invocation (#56).
- *
- * Every field is read from the `ctx` the host passed to THAT handler — nothing
- * here is duck-typed and nothing is captured across handlers. `mode` is the
- * host's own predicate for "terminal-only UI is real"
- * (`dist/core/extensions/types.d.ts:216-219`), and `hasUI` is its
- * dialog-capable predicate (true in TUI and rpc).
- */
-export interface CommandUi {
-  hasUI: boolean;
-  mode: "tui" | "rpc" | "json" | "print";
-  /** select/input/confirm — present iff `hasUI`. */
-  dialogs?: SettingsUI;
-  /** `ctx.ui.custom` — present iff `mode === "tui"`. Its RPC implementation is
-   *  a no-op (`dist/modes/rpc/rpc-mode.js`), so the modal is gated on mode. */
-  custom?: MountFn;
-}
+// The dispatch's UI-view type lives with the dispatcher (command-run.ts) and is
+// re-exported here so the `WireApi` surface stays importable from the entry
+// module, where the adapter that builds it lives.
+export type { CommandUi } from "./command-run.ts";
 
 /**
  * Narrow structural surface the wiring logic depends on. Isolating pi's real
@@ -174,8 +122,8 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
   // Registration-time mode: decides which lifecycle hooks are wired (mode1 →
   // session_shutdown ingest; mode2 → compaction capture). A mode change via
   // /qdrant settings applies to the hooks at the next session; the footer and
-  // every command re-resolve the mode live (see currentMode).
-  const registrationMode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
+  // every command re-resolve the mode live (see runtimeModeState).
+  const { mode: registrationMode } = runtimeModeState(rt.cfg, rt.agentDir);
   // Same session-fixation rule for code memory: the code_memory tool is
   // registered here iff enabled; a mid-session flip is covered by the settings
   // reload notice (spec §12). The single /qdrant command is registered
@@ -236,7 +184,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
    * a lifecycle handler. */
   const refreshStatus = async (): Promise<void> => {
     const points = await collectionPoints();
-    const mode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
+    const { mode } = runtimeModeState(rt.cfg, rt.agentDir);
     api.setStatus(memoryHeaderText(points === undefined
       ? { mode, collection: rt.projectId }
       : { mode, collection: rt.projectId, points }));
@@ -367,8 +315,10 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
   // ── /qdrant command ────────────────────────────────────────────────────────
   // ONE pi command with a subcommand key: the host splits the line on the first
   // space (agent-session.ts), so "/qdrant search foo" arrives here as the command
-  // "qdrant" with args "search foo". The grammar (ARG_SHAPE, the kind registry,
-  // completion) lives in src/commands.ts; this block is the only routing code.
+  // "qdrant" with args "search foo". The grammar (ARG_SHAPE, the registry,
+  // completion) lives in src/commands.ts and the routing lives in
+  // src/command-run.ts; this block only registers the command and binds the
+  // invocation's live UI to the stateless dispatcher.
   const indexRunners: Record<IndexKind, () => Promise<SyncResult>> = { code: runCodeSync };
 
   /** One-shot arm of the migration notice (plan Part D.2). Called ONLY once a
@@ -388,147 +338,28 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     try { markCommandFormatNoticeShown(rt.agentDir); } catch { /* best-effort: advisory state */ }
   };
 
-  /** Usage line for a key whose bounded token is missing, keyed by the `enum`
-   *  keys of ARG_SHAPE (`Record<EnumKey, string>`): a future enum key is a
-   *  compile error here, never a silent fall-through to another key's text
-   *  (#62). The strings come from out.ts; the index line is generated from
-   *  INDEX_KINDS so it cannot drift. */
-  const ENUM_USAGE: Record<EnumKey, string> = {
-    clear: clearUsageText(),
-    index: indexUsageText(INDEX_KINDS),
-  };
-
-  /** Only `enum` keys can report `missing-value`, so the guard always holds; it
-   *  exists to narrow the key without a cast. The non-enum branch prints the
-   *  generic usage line — unreachable, but never another key's text. */
-  const enumUsageText = (key: QdrantKey): string =>
-    isEnumKey(key) ? ENUM_USAGE[key] : commandUsageText(USAGE_KEYS);
-
-  const runQdrantCommand = async (args: string): Promise<void> => {
-    const parsed = parseQdrantArgs(args);
-    if (parsed.key === undefined) {
-      // Bare form: self-documenting in every mode — the status block plus the
-      // command list. Anything else is an unknown key.
-      if (parsed.raw === "") {
-        markNoticeShown();
-        await statusHandler(io);
-        await helpHandler(io);
-        return;
-      }
-      io.emit(errorEntry(unknownKeyText(parsed.raw, USAGE_KEYS)));
-      return;
-    }
-    const key = parsed.key;
-    const problem = checkArgShape(key, parsed.rest);
-    if (problem) {
-      // Nothing is guessed: a missing bounded token prints that key's own usage
-      // line; anything else is one error entry naming the correction.
-      if (problem.kind === "missing-value") { io.emit(message(enumUsageText(key))); return; }
-      if (problem.kind === "no-argument") { io.emit(errorEntry(noArgumentText(key))); return; }
-      if (problem.kind === "unknown-value") { io.emit(errorEntry(unknownValueText(key, problem.value, problem.values, USAGE_KEYS))); return; }
-      io.emit(errorEntry(unexpectedArgumentText(problem.corrected)));
-      return;
-    }
-    // Past the grammar gate: the user typed a valid `/qdrant <key> [...]`, so
-    // the migration notice has served its purpose (Part D.2).
-    markNoticeShown();
-    switch (key) {
-      case "status":
-        await statusHandler(io);
-        return;
-      case "help":
-        await helpHandler(io);
-        return;
-      case "search":
-        // free text, verbatim — never re-tokenised
-        await searchHandler(io, parsed.rest);
-        return;
-      case "remember":
-        await rememberHandler(io, parsed.rest);
-        void refreshStatus();
-        return;
-      case "forget":
-        await forgetHandler(io, parsed.rest, api.commandUI?.()?.dialogs);
-        void refreshStatus();
-        return;
-      case "settings": {
-        if (parsed.rest === "") {
-          const ui = api.commandUI?.();
-          // Plan B.5, decided from the LIVE ctx of this invocation:
-          //   mode === "tui" → pi's own SettingsList modal
-          //   hasUI          → the select → input → confirm sequence (rpc)
-          //   otherwise      → the usage entry
-          // `ctx.ui.custom` is a silent no-op under rpc
-          // (dist/modes/rpc/rpc-mode.js), so the modal is gated on `mode`, not
-          // on `hasUI`.
-          if (ui?.mode === "tui" && ui.custom) {
-            const host = settingsHost(api.hostBridge?.());
-            if (host) {
-              await openSettingsScreen(io, host, ui.custom);
-              return;
-            }
-          }
-          if (ui?.hasUI && ui.dialogs) { await runSettingsForm(ui.dialogs, io); return; }
-          // No dialog-capable UI (print/headless): print usage.
-          await settingsHandler(io);
-          return;
-        }
-        // Only the key token is bounded; the value is the verbatim remainder.
-        const { field, value } = splitKeyedArg(parsed.rest);
-        await settingsHandler(io, field, value);
-        return;
-      }
-      case "clear": {
-        // The target in the registry's own spelling (`clear ALL` → `all`);
-        // checkArgShape already accepted it, so `?? ""` is unreachable and lands
-        // on the usage line rather than dispatching an unvalidated token.
-        const target = canonicalEnumArg("clear", parsed.rest) ?? "";
-        // commandUI() is undefined when no dialog-capable UI is present — the
-        // handler then refuses to clear `all` rather than deleting blindly.
-        await clearHandler(io, target, api.commandUI?.()?.dialogs);
-        void refreshStatus();
-        return;
-      }
-      case "index": {
-        // The kind in the registry's own spelling (`index CODE` → `code`), so
-        // INDEX_KINDS[kind] is always a real entry — no cast, no guess. The
-        // undefined branch is unreachable and prints the key's own usage line.
-        const kind = canonicalIndexKind(parsed.rest);
-        if (kind === undefined) { io.emit(message(enumUsageText("index"))); return; }
-        // Live-config guard (spec §10.1/§12): after a mid-session flip-off this
-        // answers honestly instead of silently indexing; the code_memory TOOL
-        // still requires the session reload. Declared per kind via INDEX_KINDS.
-        const gate = INDEX_KINDS[kind].gate;
-        if (rt.cfg[gate] !== "on") {
-          io.emit(message(codeMemoryDisabledText(gate)));
-          return;
-        }
-        const r = await indexRunners[kind]();
-        if (!r.ok) {
-          io.emit(errorEntry(codeMemorySyncFailedText(r.error)));
-          return;
-        }
-        io.emit(message(codeMemorySyncMessage({
-          files: r.files,
-          symbols: r.symbols,
-          deleted: r.deleted,
-        })));
-        return;
-      }
-    }
-    // Compile-time exhaustiveness (#62): every key returns above, so control
-    // only reaches this line if a key was added to ARG_SHAPE without an arm —
-    // then `key` is no longer `never` and the build fails instead of the
-    // command answering "unknown key" for a *valid* key.
-    const unhandled: never = key;
-    throw new Error(`pi-qdrant-memory: unhandled /qdrant key ${unhandled}`);
+  /** Thin per-invocation adapter: the LIVE UI of this invocation (`commandUI`)
+   *  plus the runtime's own seams (`hostBridge`, the kind runners, the notice
+   *  latch, the footer repaint) are resolved here, per call — the dispatcher in
+   *  command-run.ts stays stateless and holds no captured ctx (#56). Reading
+   *  the UI inside the closure (never at registration) is what makes a stale
+   *  capture impossible. */
+  const executeQdrantCommand = async (args: string): Promise<void> => {
+    await runQdrantCommand(args, {
+      io,
+      ui: api.commandUI?.(),
+      host: api.hostBridge?.(),
+      index: (kind) => indexRunners[kind](),
+      notice: markNoticeShown,
+      refreshStatus,
+    });
   };
 
   const commands: CommandDef[] = [
     {
       name: "qdrant",
       description: "Show status, search memories, and manage settings for this project",
-      execute: runQdrantCommand,
+      execute: executeQdrantCommand,
       getArgumentCompletions: getQdrantCompletions,
     },
   ];
@@ -602,7 +433,7 @@ export function wireApi(api: WireApi, rt: RuntimeDeps): () => void {
     // the stored-memory count + mode + project collection as the state
     // (DESIGN.md footer-status). Mode is re-resolved live so a /qdrant settings
     // mode change is reflected without a restart.
-    const mode = resolveMode(rt.cfg, detectBlackhole(rt.agentDir));
+    const { mode } = runtimeModeState(rt.cfg, rt.agentDir);
     api.setStatus(memoryHeaderText({ mode, collection: rt.projectId }));
     if (mode === "mode1") await ingestPending();
     void refreshStatus(); // repaint with the count once known, best-effort
