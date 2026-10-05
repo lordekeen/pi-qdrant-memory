@@ -5,6 +5,13 @@ follow [semantic versioning](https://semver.org/); releases are cut
 automatically from [conventional commits](https://www.conventionalcommits.org/)
 by [release-please](.github/workflows/release-please.yml).
 
+## [0.6.1](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.6.0...v0.6.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* second-token /qdrant completions no longer replace the whole command ([#74](https://github.com/lordekeen/pi-qdrant-memory/issues/74)) ([0109ec0](https://github.com/lordekeen/pi-qdrant-memory/commit/0109ec011c737506a73432ff1fd7968b1f65bf2c))
+
 ## [0.6.0](https://github.com/lordekeen/pi-qdrant-memory/compare/v0.5.0...v0.6.0) (2026-10-05)
 
 
