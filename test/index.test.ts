@@ -28,6 +28,23 @@ async function settle(): Promise<void> {
   await new Promise((r) => setImmediate(r));
 }
 
+/** Poll a fire-and-forget side effect to completion instead of guessing a tick
+ *  count. The code sync crosses real I/O boundaries (the repo scan awaits file
+ *  reads), so a fixed number of `settle()` rounds is not a contract: this waits
+ *  for the effect and still fails loudly when it never happens.
+ *
+ *  Yields with a TIMER, not `setImmediate`: an immediate-polling loop keeps the
+ *  check phase hot and can starve the very file-read completions the sync is
+ *  waiting on. A timer yield lets the pending I/O run first. */
+async function until(condition: () => boolean, what: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  assert.fail(`timed out waiting for ${what}`);
+}
+
 function fakeApi(): WireApi & { tools: unknown[]; commands: unknown[]; events: Record<string, unknown[]>; entries: unknown[]; statuses: string[] } {
   const api = {
     tools: [], commands: [], events: {} as Record<string, unknown[]>, entries: [], statuses: [],
@@ -449,8 +466,7 @@ test("session_start gate reads the LIVE effective value: an override-on project 
     try {
       const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
       await onStart({}, { cwd: repo });
-      await settle();
-      await settle();
+      await until(() => snapshots >= 1, "the live-config code sync to run");
       // …but the live effective value turned on, so the sync runs (indexing for
       // the next session even though this session's tool set is fixed).
       assert.equal(localRt.cfg.codeKnowledge, "on");
@@ -477,12 +493,15 @@ test("/qdrant status reflects collection totals from codeMemoryState after sync"
       ["b.ts", sha(bContent)],
       ["c.ts", sha(cContent)],
     ]);
+    let synced = false;
 
     const recording: QdrantLike = {
       ...qdrant,
       async codeIndexSnapshot() { return snapshot; },
       // countCodeSymbols (not countBySourceKind): file anchors are excluded (#49).
-      async countCodeSymbols() { return 18; },
+      // It is the LAST store call of a sync, so waiting for it means the sync
+      // reached its end before the status entry is read.
+      async countCodeSymbols() { synced = true; return 18; },
     };
     const localRt = runtimeWith(
       agentDir,
@@ -495,8 +514,7 @@ test("/qdrant status reflects collection totals from codeMemoryState after sync"
     try {
       const onStart = api.events["session_start"][0] as (p: unknown, ctx?: unknown) => Promise<void>;
       await onStart({}, { cwd: repo });
-      await settle();
-      await settle();
+      await until(() => synced, "the session-start code sync to finish");
 
       await qdrantCmd(api)("status");
 

@@ -142,7 +142,7 @@ export function planSync(scan: ScanResult, snapshot: Map<string, string>): SyncP
 export async function syncCodeKnowledge(deps: SyncDeps): Promise<SyncResult> {
   try {
     await deps.qdrant.ensureCollection(deps.projectId, deps.expectedDimension);
-    const scan = scanRepo(deps.repoRoot);
+    const scan = await scanRepo(deps.repoRoot);
     if (scan.capped) {
       console.error(`pi-qdrant-memory: code sync hit the ${String(MAX_FILES)}-file cap — some files were not indexed`);
     }

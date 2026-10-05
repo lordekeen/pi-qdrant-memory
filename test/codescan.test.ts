@@ -13,7 +13,7 @@ function fixture(): string {
   return mkdtempSync(join(tmpdir(), "pi-qm-scan-"));
 }
 
-test("scanRepo extracts tsjs top-level definitions with docs and ranges", () => {
+test("scanRepo extracts tsjs top-level definitions with docs and ranges", async () => {
   const root = fixture();
   try {
     mkdirSync(join(root, "src"));
@@ -37,7 +37,7 @@ test("scanRepo extracts tsjs top-level definitions with docs and ranges", () => 
       "",
       "export const twice = (n: number) => n * 2;",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     assert.equal(files.length, 1);
     const file = files[0]!;
     assert.equal(file.filePath, "src/a.ts");
@@ -60,7 +60,7 @@ test("scanRepo extracts tsjs top-level definitions with docs and ranges", () => 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo handles python indent logic, docstrings, and privacy", () => {
+test("scanRepo handles python indent logic, docstrings, and privacy", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "mod.py"), [
@@ -79,7 +79,7 @@ test("scanRepo handles python indent logic, docstrings, and privacy", () => {
       "async def afunc():",
       "    return 4",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     const file = files[0]!;
     const byName = new Map(file.nodes.map((n) => [n.name, n]));
     assert.equal(file.nodes.length, 4); // class Thing, top_level, _private, afunc — method excluded
@@ -93,7 +93,7 @@ test("scanRepo handles python indent logic, docstrings, and privacy", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo falls back to generic tables for other languages", () => {
+test("scanRepo falls back to generic tables for other languages", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "main.go"), [
@@ -106,7 +106,7 @@ test("scanRepo falls back to generic tables for other languages", () => {
       "  A int",
       "}",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
     assert.equal(byName.get("AddOne")!.kind, "function");
     assert.equal(byName.get("AddOne")!.doc, "Adds one.");
@@ -114,7 +114,7 @@ test("scanRepo falls back to generic tables for other languages", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo skips vendor/dot dirs, oversized files, and unknown extensions", () => {
+test("scanRepo skips vendor/dot dirs, oversized files, and unknown extensions", async () => {
   const root = fixture();
   try {
     mkdirSync(join(root, "node_modules"));
@@ -127,42 +127,42 @@ test("scanRepo skips vendor/dot dirs, oversized files, and unknown extensions", 
     writeFileSync(join(root, "src", "ok.ts"), "function keep() {}\n");
     writeFileSync(join(root, "src", "big.ts"), "const pad = \"" + "x".repeat(1_000_001) + "\";\nfunction dropped() {}\n");
     writeFileSync(join(root, "src", "notes.txt"), "function notCode() {}\n");
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     assert.deepEqual(files.map((f) => f.filePath), ["src/ok.ts"]);
     assert.equal(files[0]!.nodes.length, 1);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo reports the file-count cap instead of truncating silently", () => {
+test("scanRepo reports the file-count cap instead of truncating silently", async () => {
   const root = fixture();
   try {
     mkdirSync(join(root, "src"));
     for (let i = 0; i < 5; i++) {
       writeFileSync(join(root, "src", `f${String(i)}.ts`), `function fn${String(i)}() {}\n`);
     }
-    const { files, capped } = scanRepo(root, { maxFiles: 3 });
+    const { files, capped } = await scanRepo(root, { maxFiles: 3 });
     assert.equal(files.length, 3);
     assert.equal(capped, true);
-    const full = scanRepo(root, { maxFiles: MAX_FILES });
+    const full = await scanRepo(root, { maxFiles: MAX_FILES });
     assert.equal(full.capped, false);
     assert.equal(full.files.length, 5);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("sha is stable for identical content and differs for changed content", () => {
+test("sha is stable for identical content and differs for changed content", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "a.ts"), "function one() {}\n");
-    const first = scanRepo(root).files[0]!.sha;
-    const second = scanRepo(root).files[0]!.sha;
+    const first = (await scanRepo(root)).files[0]!.sha;
+    const second = (await scanRepo(root)).files[0]!.sha;
     assert.equal(first, second);
     writeFileSync(join(root, "a.ts"), "function one() { return 1; }\n");
-    const changed = scanRepo(root).files[0]!.sha;
+    const changed = (await scanRepo(root)).files[0]!.sha;
     assert.notEqual(first, changed);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("summaries are deterministic and carry provenance (spec §6.3/§6.4)", () => {
+test("summaries are deterministic and carry provenance (spec §6.3/§6.4)", async () => {
   const root = fixture();
   try {
     mkdirSync(join(root, "src"));
@@ -172,7 +172,7 @@ test("summaries are deterministic and carry provenance (spec §6.3/§6.4)", () =
       "  return a + b;",
       "}",
     ].join("\n"));
-    const file = scanRepo(root).files[0]!;
+    const file = (await scanRepo(root)).files[0]!;
     const node = file.nodes[0]!;
     const s1 = summaryFor(node);
     const s2 = summaryFor(node);
@@ -185,7 +185,7 @@ test("summaries are deterministic and carry provenance (spec §6.3/§6.4)", () =
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("endLine does not bleed past brace-less and single-line declarations", () => {
+test("endLine does not bleed past brace-less and single-line declarations", async () => {
   const root = fixture();
   try {
     mkdirSync(join(root, "src"));
@@ -208,7 +208,7 @@ test("endLine does not bleed past brace-less and single-line declarations", () =
       "  }",
       "}",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
     assert.equal(byName.get("Shape")!.endLine, 3);
     assert.equal(byName.get("Pair")!.endLine, 5); // was 16 (bled to next decl)
@@ -222,7 +222,7 @@ test("endLine does not bleed past brace-less and single-line declarations", () =
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("doc capture handles multi-line JSDoc and empty python docstrings", () => {
+test("doc capture handles multi-line JSDoc and empty python docstrings", async () => {
   const root = fixture();
   try {
     mkdirSync(join(root, "src"));
@@ -243,7 +243,7 @@ test("doc capture handles multi-line JSDoc and empty python docstrings", () => {
       "def g():",
       "    return 2",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     const ts = files.find((f) => f.filePath === "src/a.ts")!;
     assert.equal(ts.nodes[0]!.doc, "Adds numbers. Second line.");
     const py = files.find((f) => f.filePath === "empty.py")!;
@@ -253,7 +253,7 @@ test("doc capture handles multi-line JSDoc and empty python docstrings", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("tab-indented files are not misread as top-level", () => {
+test("tab-indented files are not misread as top-level", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "tabs.ts"), [
@@ -263,13 +263,13 @@ test("tab-indented files are not misread as top-level", () => {
       "\t}",
       "}",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     assert.equal(files[0]!.nodes.length, 1);
     assert.equal(files[0]!.nodes[0]!.name, "outer");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo skips Python venv directories", () => {
+test("scanRepo skips Python venv directories", async () => {
   const root = fixture();
   try {
     // Standard un-dotted venv with a .py file inside
@@ -293,12 +293,12 @@ test("scanRepo skips Python venv directories", () => {
     mkdirSync(join(root, "src"));
     writeFileSync(join(root, "src", "app.py"), "def main(): pass\n");
 
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     assert.deepEqual(files.map((f) => f.filePath), ["src/app.py"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo handles opening brace on subsequent line (Allman style)", () => {
+test("scanRepo handles opening brace on subsequent line (Allman style)", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "allman.ts"), [
@@ -314,7 +314,7 @@ test("scanRepo handles opening brace on subsequent line (Allman style)", () => {
       "  doWork() {}",
       "}",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
 
     const add = byName.get("add")!;
@@ -328,7 +328,7 @@ test("scanRepo handles opening brace on subsequent line (Allman style)", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo detects multiline arrow function declarations", () => {
+test("scanRepo detects multiline arrow function declarations", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "arrows.ts"), [
@@ -338,7 +338,7 @@ test("scanRepo detects multiline arrow function declarations", () => {
       "  return items.length;",
       "};",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
 
     const proc = byName.get("processData")!;
@@ -349,7 +349,7 @@ test("scanRepo detects multiline arrow function declarations", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo handles multiline Python signatures and single-quote docstrings", () => {
+test("scanRepo handles multiline Python signatures and single-quote docstrings", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "multi.py"), [
@@ -366,7 +366,7 @@ test("scanRepo handles multiline Python signatures and single-quote docstrings",
       "    '''Single-quote doc.'''",
       "    pass",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
 
     const calc = byName.get("calculate")!;
@@ -380,7 +380,7 @@ test("scanRepo handles multiline Python signatures and single-quote docstrings",
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo rejects multiline non-arrow assignments with parentheses", () => {
+test("scanRepo rejects multiline non-arrow assignments with parentheses", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "nonarrow.ts"), [
@@ -388,12 +388,12 @@ test("scanRepo rejects multiline non-arrow assignments with parentheses", () => 
       "  1 + 2",
       ");",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     assert.equal(files[0]!.nodes.length, 0);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo handles parameter braces in destructuring and inline object types (#14)", () => {
+test("scanRepo handles parameter braces in destructuring and inline object types (#14)", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "destruct.ts"), [
@@ -413,7 +413,7 @@ test("scanRepo handles parameter braces in destructuring and inline object types
       "",
       "export function noopDestruct({ x }: { x: number }): void {}",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
 
     const single = byName.get("setupSingle")!;
@@ -438,7 +438,7 @@ test("scanRepo handles parameter braces in destructuring and inline object types
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo correctly extracts endLine for definitions longer than 200 lines (#19)", () => {
+test("scanRepo correctly extracts endLine for definitions longer than 200 lines (#19)", async () => {
   const root = fixture();
   try {
     const body = Array.from({ length: 250 }, (_v, i) => `  const x${i} = ${i};`).join("\n");
@@ -447,7 +447,7 @@ test("scanRepo correctly extracts endLine for definitions longer than 200 lines 
       body,
       "}",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     assert.equal(files.length, 1);
     const node = files[0]!.nodes[0]!;
     assert.equal(node.name, "longFunction");
@@ -458,7 +458,7 @@ test("scanRepo correctly extracts endLine for definitions longer than 200 lines 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo extracts split arrow functions with return type on next line (#15)", () => {
+test("scanRepo extracts split arrow functions with return type on next line (#15)", async () => {
   const root = fixture();
   try {
     writeFileSync(join(root, "splitarrow.ts"), [
@@ -467,7 +467,7 @@ test("scanRepo extracts split arrow functions with return type on next line (#15
       "  return value.toFixed(2);",
       "};",
     ].join("\n"));
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     assert.equal(files.length, 1);
     assert.equal(files[0]!.nodes.length, 1);
     const node = files[0]!.nodes[0]!;
@@ -479,7 +479,7 @@ test("scanRepo extracts split arrow functions with return type on next line (#15
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scanRepo correctly extracts endLine in files with CRLF line endings (#47)", () => {
+test("scanRepo correctly extracts endLine in files with CRLF line endings (#47)", async () => {
   const root = fixture();
   try {
     const crlfContent = [
@@ -496,7 +496,7 @@ test("scanRepo correctly extracts endLine in files with CRLF line endings (#47)"
     ].join("\r\n");
     writeFileSync(join(root, "crlf.ts"), crlfContent);
 
-    const { files } = scanRepo(root);
+    const { files } = await scanRepo(root);
     assert.equal(files.length, 1);
     const byName = new Map(files[0]!.nodes.map((n) => [n.name, n]));
 
