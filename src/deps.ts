@@ -24,6 +24,33 @@ interface RuntimeClients {
   qdrant: QdrantLike;
 }
 
+/** The connection a built client belongs to: `${url}\n${apiKey}`. Keyed on the
+ *  client itself, so the record dies with the client it describes. */
+const clientConnections = new WeakMap<QdrantLike, string>();
+
+function qdrantConnection(cfg: Config): string {
+  return `${cfg.qdrantUrl}\n${cfg.qdrantApiKey ?? ""}`;
+}
+
+/**
+ * Resolve the Qdrant client for `cfg`, keeping `previous` when the connection
+ * fields did not change.
+ *
+ * Keeping it is not cosmetic: the client owns `ensureCollection`'s readiness
+ * memo (and its in-flight ensure map), and `reloadEffectiveConfig()` runs on
+ * every `session_start` and after every settings write. Rebuilding
+ * unconditionally discarded the memo each time, so the first operation of every
+ * session re-verified a collection the store had already confirmed — a `GET`
+ * plus the two payload-index `PUT`s. A changed url/apiKey still rebuilds,
+ * because the old client would talk to the wrong store.
+ */
+function resolveQdrant(previous: QdrantLike, cfg: Config): QdrantLike {
+  if (clientConnections.get(previous) === qdrantConnection(cfg)) return previous;
+  const client = new QdrantClient(cfg.qdrantUrl, cfg.qdrantApiKey) as QdrantLike;
+  clientConnections.set(client, qdrantConnection(cfg));
+  return client;
+}
+
 /**
  * The one client-building path `makeRuntime` and `applyConfig` share: an
  * `EmbeddingClient` + `QdrantClient` pair for `cfg`, with an injected test seam
@@ -31,13 +58,13 @@ interface RuntimeClients {
  * rebound together structurally — wiring only one of them is the stale-client
  * hazard a hot config reload must never reintroduce.
  */
-function buildClients(cfg: Config, resolvedIO: RuntimeDeps["resolvedIO"]): RuntimeClients {
+function buildClients(rt: RuntimeDeps, cfg: Config, resolvedIO: RuntimeDeps["resolvedIO"]): RuntimeClients {
   const embeddingClient = new EmbeddingClient(
     cfg.embeddingBaseURL, cfg.embeddingModel, cfg.embeddingApiKey, cfg.expectedDimension);
   return {
     embed: resolvedIO?.embed ?? ((text: string) => embeddingClient.embed(text)),
     embedBatch: resolvedIO?.embedBatch ?? ((texts: string[]) => embeddingClient.embedBatch(texts)),
-    qdrant: resolvedIO?.qdrant ?? (new QdrantClient(cfg.qdrantUrl, cfg.qdrantApiKey) as QdrantLike),
+    qdrant: resolvedIO?.qdrant ?? resolveQdrant(rt.qdrant, cfg),
   };
 }
 
@@ -49,22 +76,33 @@ export async function makeRuntime(
 ): Promise<RuntimeDeps> {
   // Project id FIRST: the project layer is part of the effective config (D7).
   const projectId = await projectIdFrom(cwd);
-  const cfg = readEffectiveConfig(agentDir, projectId, env);
-  const resolvedIO = { embed: io.embed, embedBatch: io.embedBatch, qdrant: io.qdrant };
   const rt: RuntimeDeps = {
-    cfg,
+    cfg: readEffectiveConfig(agentDir, projectId, env),
     agentDir,
     cwd,
     projectId,
     env,
-    resolvedIO,
-    ...buildClients(cfg, resolvedIO),
+    resolvedIO: { embed: io.embed, embedBatch: io.embedBatch, qdrant: io.qdrant },
+    // First attachment: no previous client, so this one is always built. The
+    // throwaway embed below is replaced from `clients` before the runtime is
+    // returned, and assignments to `rt` cannot pre-empt the closure that reads
+    // it (`reloadEffectiveConfig` is only called after assembly).
+    embed: async () => [],
+    // SAFETY: not a value any caller can observe — `resolveQdrant` reads it
+    // before anything else and the placeholder is overwritten with the built
+    // client below, still inside this function. It exists only because the
+    // runtime must exist to own the client-identity WeakMap entry.
+    qdrant: undefined as unknown as QdrantLike,
     embedProbeCache: undefined,
     readGlobalConfig: io.readGlobalConfig,
     writeGlobalConfig: io.writeGlobalConfig,
     print: io.print,
     reloadEffectiveConfig: () => applyConfig(rt, readEffectiveConfig(agentDir, rt.projectId, env)),
   };
+  const clients = buildClients(rt, rt.cfg, rt.resolvedIO);
+  rt.embed = clients.embed;
+  rt.embedBatch = clients.embedBatch;
+  rt.qdrant = clients.qdrant;
   return rt;
 }
 
@@ -84,12 +122,14 @@ export function writeGlobalConfigAndReload(rt: RuntimeDeps, agentDir: string, ne
  * and rebuilds the embedding/Qdrant clients so a `/qdrant settings` write takes
  * effect immediately instead of at the next session. Respects injected test
  * seams (resolvedIO) when present; `buildClients` rebuilds every client slice
- * together, so the batch embed can never keep talking to a stale client.
+ * together, so the batch embed can never keep talking to a stale client — and
+ * `resolveQdrant` keeps the Qdrant client when the connection is unchanged, so
+ * a reload does not throw away the readiness memo.
  */
 export function applyConfig(rt: RuntimeDeps, cfg: Config): void {
   rt.cfg = cfg;
   rt.embedProbeCache = undefined;
-  const clients = buildClients(cfg, rt.resolvedIO);
+  const clients = buildClients(rt, cfg, rt.resolvedIO);
   rt.embed = clients.embed;
   rt.embedBatch = clients.embedBatch;
   rt.qdrant = clients.qdrant;
